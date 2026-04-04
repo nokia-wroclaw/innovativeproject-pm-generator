@@ -1,0 +1,18 @@
+[project]
+name = "genpm"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "findspark>=2.0.1",
+    "ipykernel>=7.2.0",
+    "pandas>=3.0.1",
+    "plotly>=6.6.0",
+    "polars>=1.39.3",
+    "pre-commit>=4.5.1",
+    "pyarrow>=23.0.1",
+    "pyspark>=4.1.1",
+]
+
+# TODO: move it to separate spark dir
