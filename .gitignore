@@ -220,3 +220,7 @@ data/
 *.tsv
 # include env.template
 !.env.template
+
+
+# Frontend
+node_modules/
