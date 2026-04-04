@@ -1,0 +1,56 @@
+/* RESET I PODSTAWA - To gwarantuje wypełnienie ekranu */
+html, body {
+  margin: 0;
+  padding: 0;
+  width: 100%;
+  height: 100%;
+  overflow: hidden; /* Zapobiega "podwójnemu" przewijaniu strony */
+}
+
+/* Główny kontener całej aplikacji */
+.layout {
+  display: flex;
+  width: 100vw;
+  height: 100vh;
+  font-family: 'Inter', -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  background-color: #ffffff;
+  color: #121212;
+}
+
+/* Główny obszar treści */
+.content {
+  flex: 1;
+  background-color: #ffffff;
+  padding: 50px 60px;
+  /* Pozwala przewijać tylko treść, jeśli jest jej dużo,
+     podczas gdy sidebar (jeśli go dodasz) zostanie w miejscu */
+  overflow-y: auto;
+  height: 100%;
+  box-sizing: border-box; /* Ważne: padding nie powiększa kontenera */
+}
+
+/* Globalna typografia */
+.content h1 {
+  color: #000000;
+  margin-top: 0;
+  font-size: 2.5rem;
+  font-weight: 700;
+  letter-spacing: -0.02em;
+  margin-bottom: 1rem;
+}
+
+/* Błękitny detal */
+.content h1::after {
+  content: '';
+  display: block;
+  width: 40px;
+  height: 4px;
+  background-color: #005AFF;
+  margin-top: 15px;
+}
+
+.content p {
+  color: #6b7280;
+  font-size: 1.1rem;
+  line-height: 1.6;
+}
