@@ -10,7 +10,7 @@
           </tr>
         </thead>
         <tbody>
-          <tr v-for="(row, index) in paginatedData" :key="index" class="table-row">
+          <tr v-for="row in data" :key="row.id" class="table-row">
             <td v-for="col in columns" :key="col.key" class="table-cell">
               <slot :name="`cell-${col.key}`" :row="row">
                 {{ row[col.key] }}
@@ -24,10 +24,10 @@
     <div class="table-footer">
       <div class="footer-left">
         <button
-          @click="loadData"
+          @click="refresh"
           class="refresh-button"
           :disabled="isLoading"
-          title="Refresh Data"
+          title="Refresh data"
         >
           <RefreshCw :class="{ 'spinning': isLoading }" :size="16" />
         </button>
@@ -43,7 +43,7 @@
         </button>
 
         <span class="page-info">
-          Page {{ currentPage }} of {{ totalPages }}
+          Page {{ currentPage }} for {{ totalPages }}
         </span>
 
         <button
@@ -78,26 +78,40 @@ const props = defineProps({
 });
 
 const data = ref([]);
+const totalItems = ref(0);
 const isLoading = ref(true);
 const currentPage = ref(1);
 
-const totalPages = computed(() => Math.ceil(data.value.length / props.perPage));
-
-const paginatedData = computed(() => {
-  const start = (currentPage.value - 1) * props.perPage;
-  const end = start + props.perPage;
-  return data.value.slice(start, end);
-});
+const totalPages = computed(() => Math.ceil(totalItems.value / props.perPage));
 
 const loadData = async () => {
   isLoading.value = true;
   try {
-    data.value = await props.provider();
-    currentPage.value = 1;
+    const response = await props.provider({
+      page: currentPage.value,
+      limit: props.perPage
+    });
+
+    data.value = response.data || [];
+    totalItems.value = response.total || 0;
   } catch (error) {
     data.value = [];
+    totalItems.value = 0;
   } finally {
     isLoading.value = false;
+  }
+};
+
+watch(currentPage, () => {
+  loadData();
+});
+
+
+const refresh = () => {
+  if (currentPage.value === 1) {
+    loadData();
+  } else {
+    currentPage.value = 1;
   }
 };
 

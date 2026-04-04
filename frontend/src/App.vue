@@ -15,7 +15,7 @@
         </button>
       </header>
 
-      <DataTable :columns="tableColumns" :provider="fetchModelsProvider" />
+      <DataTable :columns="tableColumns" :provider="fetchModelsProvider" :per-page="10"/>
 
       <BaseModal
         :show="isModalOpen"
@@ -85,26 +85,36 @@ const handleSave = () => {
   resetForm();
 };
 
-const fetchModelsProvider = async () => {
+const fetchModelsProvider = async ({ page, limit }) => {
   return new Promise((resolve) => {
     setTimeout(() => {
-      resolve([
+      // Just a symulation there will be a real API call here
+      const allData = [
         { id: '1', name: 'AAA', accuracy: '94.2%', status: 'aaa', createdAt: '2026-03-15' },
         { id: '2', name: 'BBB', accuracy: '89.1%', status: 'as', createdAt: '2026-04-01' },
         { id: '3', name: 'CCC', accuracy: '91.5%', status: 'sfasd', createdAt: '2026-04-02' },
-        { id: '4', name: 'DD', accuracy: '96.8%', status: 'sfasda', createdAt: '2026-04-03' },
-        { id: '4', name: 'DD', accuracy: '96.8%', status: 'sfasda', createdAt: '2026-04-03' },
-        { id: '4', name: 'DD', accuracy: '96.8%', status: 'sfasda', createdAt: '2026-04-03' },
-        { id: '4', name: 'DD', accuracy: '96.8%', status: 'sfasda', createdAt: '2026-04-03' },
-        { id: '4', name: 'DD', accuracy: '96.8%', status: 'sfasda', createdAt: '2026-04-03' },
-        { id: '4', name: 'DD', accuracy: '96.8%', status: 'sfasda', createdAt: '2026-04-03' },
-        { id: '4', name: 'DD', accuracy: '96.8%', status: 'sfasda', createdAt: '2026-04-03' },
-        { id: '4', name: 'DD', accuracy: '96.8%', status: 'sfasda', createdAt: '2026-04-03' },
-        { id: '4', name: 'DD', accuracy: '96.8%', status: 'sfasda', createdAt: '2026-04-03' },
-        { id: '4', name: 'DD', accuracy: '96.8%', status: 'sfasda', createdAt: '2026-04-03' },
-        { id: '4', name: 'DD', accuracy: '96.8%', status: 'sfasda', createdAt: '2026-04-03' },
-        { id: '4', name: 'DD', accuracy: '96.8%', status: 'sfasda', createdAt: '2026-04-03' },
-      ]);
+        { id: '4', name: 'DD1', accuracy: '96.8%', status: 'sfasda', createdAt: '2026-04-03' },
+        { id: '5', name: 'DD2', accuracy: '96.8%', status: 'sfasda', createdAt: '2026-04-03' },
+        { id: '6', name: 'DD3', accuracy: '96.8%', status: 'sfasda', createdAt: '2026-04-03' },
+        { id: '7', name: 'DD4', accuracy: '96.8%', status: 'sfasda', createdAt: '2026-04-03' },
+        { id: '8', name: 'DD5', accuracy: '96.8%', status: 'sfasda', createdAt: '2026-04-03' },
+        { id: '9', name: 'DD6', accuracy: '96.8%', status: 'sfasda', createdAt: '2026-04-03' },
+        { id: '10', name: 'DD7', accuracy: '96.8%', status: 'sfasda', createdAt: '2026-04-03' },
+        { id: '11', name: 'DD8', accuracy: '96.8%', status: 'sfasda', createdAt: '2026-04-03' },
+        { id: '12', name: 'DD9', accuracy: '96.8%', status: 'sfasda', createdAt: '2026-04-03' },
+        { id: '13', name: 'DD10', accuracy: '96.8%', status: 'sfasda', createdAt: '2026-04-03' },
+        { id: '14', name: 'DD11', accuracy: '96.8%', status: 'sfasda', createdAt: '2026-04-03' },
+        { id: '15', name: 'DD12', accuracy: '96.8%', status: 'sfasda', createdAt: '2026-04-03' },
+      ];
+
+      const start = (page - 1) * limit;
+      const end = start + limit;
+      const paginatedData = allData.slice(start, end);
+
+      resolve({
+        data: paginatedData,
+        total: allData.length
+      });
     }, 1500);
   });
 };
@@ -120,7 +130,6 @@ body, html {
   padding: 0;
   width: 100%;
   height: 100%;
-  font-family: 'Inter', sans-serif;
 }
 
 .app-wrapper {

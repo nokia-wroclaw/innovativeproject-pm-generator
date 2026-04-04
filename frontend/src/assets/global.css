@@ -4,13 +4,14 @@ html, body {
   width: 100%;
   height: 100%;
   overflow: hidden;
+  font-family: 'Inter', sans-serif;
 }
 
 .layout {
   display: flex;
   width: 100vw;
   height: 100vh;
-  font-family: 'Inter', -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  font-family: 'Inter', sans-serif;
   background-color: #ffffff;
   color: #121212;
 }
