@@ -1,13 +1,11 @@
-/* RESET I PODSTAWA - To gwarantuje wypełnienie ekranu */
 html, body {
   margin: 0;
   padding: 0;
   width: 100%;
   height: 100%;
-  overflow: hidden; /* Zapobiega "podwójnemu" przewijaniu strony */
+  overflow: hidden;
 }
 
-/* Główny kontener całej aplikacji */
 .layout {
   display: flex;
   width: 100vw;
@@ -17,19 +15,15 @@ html, body {
   color: #121212;
 }
 
-/* Główny obszar treści */
 .content {
   flex: 1;
   background-color: #ffffff;
   padding: 50px 60px;
-  /* Pozwala przewijać tylko treść, jeśli jest jej dużo,
-     podczas gdy sidebar (jeśli go dodasz) zostanie w miejscu */
   overflow-y: auto;
   height: 100%;
-  box-sizing: border-box; /* Ważne: padding nie powiększa kontenera */
+  box-sizing: border-box;
 }
 
-/* Globalna typografia */
 .content h1 {
   color: #000000;
   margin-top: 0;
@@ -39,7 +33,6 @@ html, body {
   margin-bottom: 1rem;
 }
 
-/* Błękitny detal */
 .content h1::after {
   content: '';
   display: block;
