@@ -4,4 +4,4 @@ set -euo pipefail
 
 source "$(dirname "$0")/docker_utils.sh"
 
-execute_docker_compose fastapi sh -c "cd /app && uv run mypy app"
+execute_docker_compose app sh -c "cd /app && uv run mypy app"

@@ -6,7 +6,7 @@ RUN apk add --no-cache gcc musl-dev postgresql-dev libffi-dev
 
 COPY --from=ghcr.io/astral-sh/uv:0.8.13 /uv /uvx /bin/
 
-COPY backend/pyproject.toml backend/uv.lock ./
+COPY apps/backend/pyproject.toml apps/backend/uv.lock ./
 
 RUN uv sync --frozen --dev
 
@@ -18,8 +18,8 @@ RUN apk add --no-cache libpq
 
 COPY --from=ghcr.io/astral-sh/uv:0.8.13 /uv /uvx /bin/
 COPY --from=builder /app/.venv /app/.venv
-COPY backend/pyproject.toml backend/uv.lock ./
-COPY backend/app ./app
+COPY apps/backend/pyproject.toml apps/backend/uv.lock ./
+COPY apps/backend/app ./app
 
 ENV PATH="/app/.venv/bin:$PATH"
 

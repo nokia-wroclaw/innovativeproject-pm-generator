@@ -3,7 +3,7 @@
 set -e
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-REPO_ROOT="$(dirname "$SCRIPT_DIR")"
+REPO_ROOT="$(dirname "$(dirname "$SCRIPT_DIR")")"
 BUILD_DIR="$REPO_ROOT/build"
 
 cd "$REPO_ROOT"
@@ -15,6 +15,7 @@ if [ ! -f .env ]; then
     echo "" >> .env
     echo "USER_GID=$(id -g)" >> .env
     echo "USER_UID=$(id -u)" >> .env
+    echo "USER=$USER" >> .env
   else
     echo "Error, couldnt create .env, .env.template is missing in $BUILD_DIR"
     exit 1
@@ -75,7 +76,7 @@ export MINIO_WEBCONSOLE_PORT=$((9001 + PORT_OFFSET))
 
 echo "Starting environment for $USER-$USER_UID on ports: Jupyter=$JUPYTER_PORT, SparkUI=$SPARK_UI_PORT, SparkMaster=$SPARK_MASTER_PORT, MinIO_API=$MINIO_API_PORT, MinIO_UI=$MINIO_WEBCONSOLE_PORT, FastAPI=$FASTAPI_PORT, Postgres=$POSTGRES_PORT"
 
-docker compose -f docker-compose.yml up -d --build
+docker compose -f infra/docker-compose.yml up -d --build
 
 
 echo "======================================================================"
