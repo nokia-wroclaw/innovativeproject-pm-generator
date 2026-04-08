@@ -76,7 +76,7 @@ export MINIO_WEBCONSOLE_PORT=$((9001 + PORT_OFFSET))
 
 echo "Starting environment for $USER-$USER_UID on ports: Jupyter=$JUPYTER_PORT, SparkUI=$SPARK_UI_PORT, SparkMaster=$SPARK_MASTER_PORT, MinIO_API=$MINIO_API_PORT, MinIO_UI=$MINIO_WEBCONSOLE_PORT, FastAPI=$FASTAPI_PORT, Postgres=$POSTGRES_PORT"
 
-docker compose -f infra/docker-compose.yml up -d --build
+docker compose -p "${USER}_project" -f infra/docker-compose.yml up -d --build
 
 
 echo "======================================================================"
