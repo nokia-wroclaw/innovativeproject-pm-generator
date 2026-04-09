@@ -1,24 +1,53 @@
 services:
   # Update this to the name of the service you want to work with in your docker-compose.yml file
   spark-jupyter:
-    # Uncomment if you want to override the service's Dockerfile to one in the .devcontainer
-    # folder. Note that the path of the Dockerfile and context is relative to the *primary*
-    # docker-compose.yml file (the first in the devcontainer.json "dockerComposeFile"
-    # array). The sample below assumes your primary file is in the root of your project.
-    #
-    # build:
-    #   context: .
-    #   dockerfile: .devcontainer/Dockerfile
-
+    container_name: $USER-devcontainer-genpm-spark
+    build:
+      context: ..
+      dockerfile: build/Spark.Dockerfile
+      args:
+        - USER_UID=${USER_UID:-1000}
+        - USER_GID=${USER_GID:-1000}
+        - USERNAME=sparkuser # Dodaj to jawnie
+        - SPARK_GROUP=sparkgroup # Dodaj to jawnie
+        - SPARK_GROUP_GID=1005
+    ports:
+      - "${JUPYTER_PORT}:4041"
+      - "${SPARK_MASTER_PORT}:18080"
+      - "${SPARK_UI_PORT}:4040"
     volumes:
-      # Update this to wherever you want VS Code to mount the folder of your project
-      - ..:/workspaces:cached
-
-    # Uncomment the next four lines if you will use a ptrace-based debugger like C++, Go, and Rust.
-    # cap_add:
-    #   - SYS_PTRACE
-    # security_opt:
-    #   - seccomp:unconfined
-
-    # Overrides default command so things don't shut down after the process ends.
+      - ..:/workspaces/innovativeproject-pm-generator:cached
+      # - /home/shared_dir:/home/sparkuser/app/data/shared_dir
+    env_file:
+      - ../.env
+    deploy:
+      resources:
+        reservations:
+          cpus: '0.18'
+          memory: '20G'
     command: sleep infinity
+  # spark-jupyter:
+  #   # Uncomment if you want to override the service's Dockerfile to one in the .devcontainer
+  #   # folder. Note that the path of the Dockerfile and context is relative to the *primary*
+  #   # docker-compose.yml file (the first in the devcontainer.json "dockerComposeFile"
+  #   # array). The sample below assumes your primary file is in the root of your project.
+  #   #
+  #   build:
+  #     context: .
+  #     dockerfile: 
+  #     args:
+  #       USER_GID: ${USER_GID}
+  #       SPARK_GROUP_GID: ${SPARK_GROUP_GID}
+
+  #   volumes:
+  #     # Update this to wherever you want VS Code to mount the folder of your project
+  #     - ..:/workspaces:cached
+
+  #   # Uncomment the next four lines if you will use a ptrace-based debugger like C++, Go, and Rust.
+  #   # cap_add:
+  #   #   - SYS_PTRACE
+  #   # security_opt:
+  #   #   - seccomp:unconfined
+
+  #   # Overrides default command so things don't shut down after the process ends.
+  #   command: sleep infinity

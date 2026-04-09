@@ -1,8 +1,8 @@
 services:
   spark-jupyter:
-    container_name: genpm-spark
+    container_name: $USER-genpm-spark
     build:
-      context: .
+      context: ..
       dockerfile: build/Spark.Dockerfile
       args:
         - USER_UID=${USER_UID}
@@ -12,11 +12,11 @@ services:
       - "${SPARK_MASTER_PORT}:18080"
       - "${SPARK_UI_PORT}:4040"
     volumes:
-      - ./notebooks:/home/sparkuser/app/notebooks
-      - ./backend:/home/sparkuser/app/backend
+      - ../tools/notebooks:/home/sparkuser/app/notebooks
+      - ../apps/spark:/home/sparkuser/app
       - /home/shared_dir:/home/sparkuser/app/data/shared_dir
     env_file:
-      - .env
+      - ../.env
     deploy:
       resources:
         reservations:
@@ -24,23 +24,23 @@ services:
           memory: '20G'
 
   fastapi:
-    container_name: genpm-app
+    container_name: $USER-genpm-app
     build:
-      context: .
+      context: ..
       dockerfile: build/FastAPI.Dockerfile
     ports:
       - "${FASTAPI_PORT}:8000"
     volumes:
-      - ./backend/app:/app/app
+      - ../apps/backend/app:/app/app
     environment:
       DATABASE_URL: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
-    command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload --reload-dir /app
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload --reload-dir /app/app
     depends_on:
       - postgres
 
   postgres:
     image: postgres:16-alpine
-    container_name: genpm-db
+    container_name: $USER-genpm-db
     environment:
       POSTGRES_DB: ${POSTGRES_DB}
       POSTGRES_USER: ${POSTGRES_USER}
@@ -52,7 +52,7 @@ services:
 
   minio:
     image: quay.io/minio/minio:latest
-    container_name: genpm-s3
+    container_name: $USER-genpm-s3
     ports:
       - "${MINIO_API_PORT}:9000"
       - "${MINIO_WEBCONSOLE_PORT}:9001"
@@ -61,7 +61,7 @@ services:
       MINIO_ROOT_PASSWORD: ${MINIO_PASSWORD}
     command: server /data --console-address ":9001"
     volumes:
-      - ${MINIO_DIRECTORY}/data:/data
+      - /${MINIO_DIRECTORY}/data:/data
 
 volumes:
   postgres_data:

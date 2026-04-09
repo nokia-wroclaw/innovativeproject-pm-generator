@@ -8,7 +8,7 @@ __pycache__/
 # .*
 
 # include devcontainer support
-!.devcontainer
+!tools/.devcontainer
 !.pre-commit-config.yaml
 
 # Distribution / packaging
@@ -103,7 +103,7 @@ ipython_config.py
 #   This is especially recommended for binary packages to ensure reproducibility, and is more
 #   commonly ignored for libraries.
 uv.lock
-!backend/uv.lock
+!apps/backend/uv.lock
 
 # poetry
 #   Similar to Pipfile.lock, it is generally recommended to include poetry.lock in version control.
