@@ -12,10 +12,13 @@
 	// The 'service' property is the name of the service for the container that VS Code should
 	// use. Update this value and .devcontainer/docker-compose.yml to the real service name.
 	"service": "spark-jupyter",
-
+	"initializeCommand": "[ -n \"$DEVCONTAINER_SSH_PORT\" ] || (echo 'ERROR: Run start_env.sh first and open VS Code from that shell' && exit 1)",
+  	"appPort": "${localEnv:DEVCONTAINER_SSH_PORT}:22",
 	// The optional 'workspaceFolder' property is the path VS Code should open by default when
 	// connected. This is typically a file mount in .devcontainer/docker-compose.yml
-	"workspaceFolder": "/workspaces/innovativeproject-pm-generator",
+	"workspaceFolder": "/home/sparkuser/app",
+  	"workspaceMount": "source=${localWorkspaceFolder},target=/home/sparkuser/app,type=bind",
+
 	"features": {
 		// Add this first!
 		"ghcr.io/devcontainers/features/node": {
@@ -27,9 +30,19 @@
 		}
 	},
 	"mounts": [
-		"source=/home/shared_dir,target=/workspaces/innovativeproject-pm-generator/data/shared_dir,type=bind,consistency=cached"
+		"source=/home/shared_dir,target=/home/sparkuser/app/data/shared_dir,type=bind,consistency=cached"
     ],
-
+	"customizations": {
+		"vscode": {
+		"extensions": [
+			"ms-python.python",
+			"ms-python.vscode-pylance",
+			"charliermarsh.ruff",
+			"njpwerner.autodocstring",
+			"ms-toolsai.jupyter"
+		]
+		}
+	},
 	// Features to add to the dev container. More info: https://containers.dev/features.
 	// "features": {},
 
@@ -43,8 +56,8 @@
 	// "shutdownAction": "none",
 
 	// Uncomment the next line to run commands after the container is created.
-	// TODO: FIX this so pre-commit and uv works
-	// "postCreateCommand": "uv sync && uv run pre-commit install"
+	// PLEASE REMEMBER TO ADD PACKAGES TO A SPECIFIC PACKAGE
+	"postCreateCommand": "uv sync --all-packages && uv run pre-commit install"
 
 	// Configure tool-specific properties.
 	// "customizations": {},

@@ -72,7 +72,12 @@ export FASTAPI_PORT=$((8000 + PORT_OFFSET))
 export POSTGRES_PORT=$((5432 + PORT_OFFSET))
 export MINIO_API_PORT=$((9000 + PORT_OFFSET))
 export MINIO_WEBCONSOLE_PORT=$((9001 + PORT_OFFSET))
+export DEVCONTAINER_SSH_PORT=$((2222 + PORT_OFFSET))
 
+# Write devcontainer env vars to .bashrc (run only once and reenter VS code process)
+grep -q "DEVCONTAINER_SSH_PORT" ~/.bashrc || echo "export DEVCONTAINER_SSH_PORT=$DEVCONTAINER_SSH_PORT" >> ~/.bashrc
+grep -q "USER_UID" ~/.bashrc            || echo "export USER_UID=$USER_UID" >> ~/.bashrc
+grep -q "USER_GID" ~/.bashrc            || echo "export USER_GID=$USER_GID" >> ~/.bashrc
 
 echo "Starting environment for $USER-$USER_UID on ports: Jupyter=$JUPYTER_PORT, SparkUI=$SPARK_UI_PORT, SparkMaster=$SPARK_MASTER_PORT, MinIO_API=$MINIO_API_PORT, MinIO_UI=$MINIO_WEBCONSOLE_PORT, FastAPI=$FASTAPI_PORT, Postgres=$POSTGRES_PORT"
 
