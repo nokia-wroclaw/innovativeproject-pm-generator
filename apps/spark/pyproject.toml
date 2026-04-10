@@ -12,6 +12,7 @@ dependencies = [
     "pre-commit>=4.5.1",
     "pyarrow>=23.0.1",
     "pyspark>=4.1.1",
+    "jupyter"
 ]
 
 [build-system]
