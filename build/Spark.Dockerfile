@@ -59,6 +59,8 @@ WORKDIR /home/$USERNAME/app
 
 COPY --chown=$USER_UID:$USER_GID pyproject.toml uv.lock ./
 
+COPY --chown=$USER_UID:$USER_GID apps/spark/ ./app
+
 RUN uv sync --frozen
 
 ENV PATH="/home/$USERNAME/app/.venv/bin:$PATH"
