@@ -9,6 +9,10 @@ sudo chown -R \<profile name>:<profile name> /home/\<profile name>/.docker <br>
 ## How to route a docker prots through OUR port on vm
 run `./bin/start_env.sh` and paste the command filled with your ports
 
+## Devcontainer support (VS code users)
+1. run `./bin/start_env.sh` (run ONLY ONCE)
+2. restart VS code instance and install Devcontainer vs-code extension
+3. run in vs-code: `>Dev Containers: Rebuild and Reopen in Container`
 
 ### Dependencies
 Backend FastAPI uses uv.
