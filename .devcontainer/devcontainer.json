@@ -61,7 +61,7 @@
 
 	// Uncomment the next line to run commands after the container is created.
 	// PLEASE REMEMBER TO ADD PACKAGES TO A SPECIFIC PACKAGE
-	"postCreateCommand": "uv sync --all-packages && uv run pre-commit install"
+	"postCreateCommand": "uv sync && uv run pre-commit install"
 
 	// Configure tool-specific properties.
 	// "customizations": {},
