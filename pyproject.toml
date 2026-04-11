@@ -8,20 +8,20 @@ dependencies = []
 
 [tool.uv]
 package = false
-default-groups = ["spark","backend", "dev"]
+default-groups = ["generator","backend", "dev"]
 
 [tool.uv.workspace]
 members = [
     "apps/backend",
-    "apps/spark"
+    "apps/generator"
 ]
 
 [tool.uv.sources]
-genpm-spark = { workspace = true }
+genpm-generator = { workspace = true }
 genpm-backend = { workspace = true }
 
 
 [dependency-groups]
 dev = ["ruff>=0.15.10"]
-spark = ["genpm-spark"]
+generator = ["genpm-generator"]
 backend = ["genpm-backend"]

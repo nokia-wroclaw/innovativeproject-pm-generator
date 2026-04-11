@@ -1,7 +1,7 @@
 [project]
-name = "genpm-spark"
+name = "genpm-generator"
 version = "0.1.0"
-description = "Data and Spark processing for GenPM"
+description = "Data pipeline processing for GenPM"
 requires-python = ">=3.11"
 dependencies = [
     "findspark>=2.0.1",
