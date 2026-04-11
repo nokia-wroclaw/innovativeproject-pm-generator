@@ -7,7 +7,7 @@ sudo usermod -aG docker \<profile name> <br>
 sudo chown -R \<profile name>:<profile name> /home/\<profile name>/.docker <br>
 
 ## How to route a docker prots through OUR port on vm
-run `./bin/start_env.sh` and paste the command filled with your ports
+run `./tools/bin/start_env.sh` and paste the command filled with your ports
 
 
 ### Dependencies
@@ -23,7 +23,7 @@ docker compose exec fastapi sh -c "cd /app && uv add --dev <package>"
 
 ### Ruff and MyPy scripts
 Use simple scripts from bin:
-- ./bin/be_ruff.sh            # lint
-- ./bin/be_ruff.sh --fix      # lint + autofix
-- ./bin/be_mypy.sh
-- ./bin/be_verify.sh          # ruff + mypy
+- ./tools/bin/be_ruff.sh            # lint
+- ./tools/bin/be_ruff.sh --fix      # lint + autofix
+- ./tools/bin/be_mypy.sh
+- ./tools/bin/be_verify.sh          # ruff + mypy
