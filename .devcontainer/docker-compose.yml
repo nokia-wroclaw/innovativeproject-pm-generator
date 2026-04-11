@@ -10,12 +10,11 @@ services:
       args:
         - USER_UID=${USER_UID:-1000}
         - USER_GID=${USER_GID:-1000}
-        - USERNAME=sparkuser # Dodaj to jawnie
-        - SPARK_GROUP=sparkgroup # Dodaj to jawnie
+        - USERNAME=sparkuser
+        - SPARK_GROUP=sparkgroup
         - SPARK_GROUP_GID=1005
     volumes:
       - ..:/home/sparkuser/app:cached
-
     deploy:
       resources:
         reservations:
