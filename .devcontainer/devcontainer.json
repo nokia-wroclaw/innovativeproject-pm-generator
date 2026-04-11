@@ -18,7 +18,10 @@
 	// connected. This is typically a file mount in .devcontainer/docker-compose.yml
 	"workspaceFolder": "/home/sparkuser/app",
   	"workspaceMount": "source=${localWorkspaceFolder},target=/home/sparkuser/app,type=bind",
-
+	"remoteEnv": {
+		"UV_PROJECT_ENVIRONMENT": "/home/sparkuser/app/.venv",
+		"VIRTUAL_ENV": "/home/sparkuser/app/.venv"
+	},
 	"features": {
 		// Add this first!
 		"ghcr.io/devcontainers/features/node": {
