@@ -31,7 +31,7 @@ RUN SPARK_DOWNLOAD_URL="https://archive.apache.org/dist/spark/spark-${SPARK_VERS
 
 ARG USERNAME=sparkuser
 ARG USER_UID
-ARG USER_GID=1005
+ARG USER_GID
 
 ARG SPARK_GROUP=sparkusers
 ARG SPARK_GROUP_GID=1005

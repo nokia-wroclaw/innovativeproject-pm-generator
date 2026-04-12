@@ -1,6 +1,6 @@
 services:
   spark-jupyter:
-    container_name: $USER-genpm-spark
+    # container_name: $USER-genpm-spark
     build:
       context: ..
       dockerfile: build/Spark.Dockerfile
