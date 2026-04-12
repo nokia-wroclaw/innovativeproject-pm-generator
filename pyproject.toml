@@ -1,6 +1,6 @@
 [project]
 name = "genpm"
-version = "0.1.0"
+version = "0.0.1"
 description = "GenPM monorepo workspace"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -8,9 +8,20 @@ dependencies = []
 
 [tool.uv]
 package = false
+default-groups = ["generator","backend", "dev"]
 
 [tool.uv.workspace]
 members = [
-    "backend",
-    "spark"
+    "apps/backend",
+    "apps/generator"
 ]
+
+[tool.uv.sources]
+genpm-generator = { workspace = true }
+genpm-backend = { workspace = true }
+
+
+[dependency-groups]
+dev = ["ruff>=0.15.10"]
+generator = ["genpm-generator"]
+backend = ["genpm-backend"]

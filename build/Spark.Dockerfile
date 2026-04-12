@@ -31,7 +31,7 @@ RUN SPARK_DOWNLOAD_URL="https://archive.apache.org/dist/spark/spark-${SPARK_VERS
 
 ARG USERNAME=sparkuser
 ARG USER_UID
-ARG USER_GID=1005
+ARG USER_GID
 
 ARG SPARK_GROUP=sparkusers
 ARG SPARK_GROUP_GID=1005
@@ -49,16 +49,20 @@ RUN echo "spark.eventLog.enabled true" >> $SPARK_HOME/conf/spark-defaults.conf \
     && echo "spark.eventLog.dir file://${SPARK_HOME}/event_logs" >> $SPARK_HOME/conf/spark-defaults.conf \
     && echo "spark.history.fs.logDirectory file://${SPARK_HOME}/event_logs" >> $SPARK_HOME/conf/spark-defaults.conf
 
-RUN pip install --no-cache-dir jupyter findspark pyspark
-
 COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /bin/
 
 COPY build/entrypoint.sh /home/spark/entrypoint.sh
-
 RUN chmod +x /home/spark/entrypoint.sh
 
 USER $USERNAME
 WORKDIR /home/$USERNAME/app
 
+COPY --chown=$USER_UID:$USER_GID pyproject.toml uv.lock ./
+
+COPY --chown=$USER_UID:$USER_GID apps/generator/ ./apps/generator/
+
+RUN uv sync --frozen
+
+ENV PATH="/home/$USERNAME/app/.venv/bin:$PATH"
 EXPOSE 4040 4041 18080 8888
 ENTRYPOINT ["/home/spark/entrypoint.sh"]

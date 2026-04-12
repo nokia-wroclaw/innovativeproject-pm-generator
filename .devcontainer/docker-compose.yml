@@ -2,24 +2,19 @@ services:
   # Update this to the name of the service you want to work with in your docker-compose.yml file
   spark-jupyter:
     container_name: $USER-devcontainer-genpm-spark
+    env_file:
+      - ../.env
     build:
       context: ..
       dockerfile: build/Spark.Dockerfile
       args:
         - USER_UID=${USER_UID:-1000}
         - USER_GID=${USER_GID:-1000}
-        - USERNAME=sparkuser # Dodaj to jawnie
-        - SPARK_GROUP=sparkgroup # Dodaj to jawnie
+        - USERNAME=sparkuser
+        - SPARK_GROUP=sparkgroup
         - SPARK_GROUP_GID=1005
-    ports:
-      - "${JUPYTER_PORT}:4041"
-      - "${SPARK_MASTER_PORT}:18080"
-      - "${SPARK_UI_PORT}:4040"
     volumes:
-      - ..:/workspaces/innovativeproject-pm-generator:cached
-      # - /home/shared_dir:/home/sparkuser/app/data/shared_dir
-    env_file:
-      - ../.env
+      - ..:/home/sparkuser/app:cached
     deploy:
       resources:
         reservations:
@@ -34,7 +29,7 @@ services:
   #   #
   #   build:
   #     context: .
-  #     dockerfile: 
+  #     dockerfile:
   #     args:
   #       USER_GID: ${USER_GID}
   #       SPARK_GROUP_GID: ${SPARK_GROUP_GID}

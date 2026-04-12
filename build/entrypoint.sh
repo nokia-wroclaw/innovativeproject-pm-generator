@@ -8,8 +8,9 @@ setup_env() {
 
     if [ -f "pyproject.toml" ]; then
         echo "pyproject.toml found creating .venv"
-        uv sync
-
+        rm -rf /home/sparkuser/app/.venv
+        uv sync --package genpm-generator --no-cache
+        source /home/sparkuser/app/.venv/bin/activate
         uv run python -m ipykernel install --user --name=spark-env --display-name "Python (Spark Project)"
     else
         echo "Couldn' t find any pyproject.toml in $(pwd)"

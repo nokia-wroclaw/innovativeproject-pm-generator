@@ -12,8 +12,7 @@ services:
       - "${SPARK_MASTER_PORT}:18080"
       - "${SPARK_UI_PORT}:4040"
     volumes:
-      - ../tools/notebooks:/home/sparkuser/app/notebooks
-      - ../apps/spark:/home/sparkuser/app
+      - ../apps/generator:/home/sparkuser/app
       - /home/shared_dir:/home/sparkuser/app/data/shared_dir
     env_file:
       - ../.env
