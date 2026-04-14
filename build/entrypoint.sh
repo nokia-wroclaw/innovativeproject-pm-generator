@@ -1,27 +1,24 @@
 #!/bin/bash
 set -e
 
-sudo chown -R sparkuser:sparkuser $SPARK_HOME/logs $SPARK_HOME/event_logs
+APP_HOME="${APP_HOME:-/home/sparkuser/app}"
+export HOME="${APP_HOME}/apps/generator"
 
-setup_env() {
-    echo "Looking for pyproject.toml in $(pwd)"
+if ! mkdir -p "$HOME" 2>/dev/null || [ ! -w "$HOME" ]; then
+    export HOME="/tmp"
+fi
 
-    if [ -f "pyproject.toml" ]; then
-        echo "pyproject.toml found creating .venv"
-        rm -rf /home/sparkuser/app/.venv
-        uv sync --package genpm-generator --no-cache
-        source /home/sparkuser/app/.venv/bin/activate
-        uv run python -m ipykernel install --user --name=spark-env --display-name "Python (Spark Project)"
-    else
-        echo "Couldn' t find any pyproject.toml in $(pwd)"
-    fi
-}
+export JUPYTER_CONFIG_DIR="$HOME/.jupyter"
+export JUPYTER_DATA_DIR="$HOME/.local/share/jupyter"
+export JUPYTER_RUNTIME_DIR="/tmp/jupyter-runtime"
+
+mkdir -p "$JUPYTER_CONFIG_DIR" "$JUPYTER_DATA_DIR" "$JUPYTER_RUNTIME_DIR"
 
 start_jupyter() {
     echo "Starting Spark History Server..."
     echo "Starting Jupyter Notebook..."
-    $SPARK_HOME/sbin/start-history-server.sh && jupyter notebook --ip=0.0.0.0 --port=4041 --no-browser --NotebookApp.token='' --NotebookApp.password=''
+    $SPARK_HOME/sbin/start-history-server.sh || true
+    jupyter notebook --ip=0.0.0.0 --port=4041 --no-browser --NotebookApp.token='' --NotebookApp.password='' --notebook-dir="${APP_HOME}/apps/generator"
 }
 
-setup_env
 start_jupyter

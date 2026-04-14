@@ -25,5 +25,5 @@ def generate(
 
 # dummy endpoint for testing
 @router.get("/test", response_model=GenerationRead)
-def test(service: GenerationService = Depends(get_generation_service)):
+def test(service: GenerationService = Depends(get_generation_service)) -> GenerationRead:
     return GenerationRead(name="test123", number=67)

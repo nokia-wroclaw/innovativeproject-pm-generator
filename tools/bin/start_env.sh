@@ -2,6 +2,17 @@
 
 set -e
 
+BUILD_MODE="auto"
+
+if [ "$1" = "--build" ]; then
+  BUILD_MODE="build"
+elif [ "$1" = "--no-build" ]; then
+  BUILD_MODE="no-build"
+elif [ -n "$1" ]; then
+  echo "Usage: $0 [--build|--no-build]"
+  exit 1
+fi
+
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(dirname "$(dirname "$SCRIPT_DIR")")"
 BUILD_DIR="$REPO_ROOT/build"
@@ -83,7 +94,21 @@ grep -q "^export USER=" ~/.bashrc                || echo "export USER=$USER" >> 
 
 echo "Starting environment for $USER-$USER_UID on ports: Jupyter=$JUPYTER_PORT, SparkUI=$SPARK_UI_PORT, SparkMaster=$SPARK_MASTER_PORT, MinIO_API=$MINIO_API_PORT, MinIO_UI=$MINIO_WEBCONSOLE_PORT, FastAPI=$FASTAPI_PORT, Postgres=$POSTGRES_PORT"
 
-docker compose -p "${USER}_project" -f infra/docker-compose.yml up -d --build
+uv sync --quiet
+
+if [ "$BUILD_MODE" = "auto" ]; then
+  if docker image inspect genpm/spark-jupyter:latest >/dev/null 2>&1 && docker image inspect genpm/fastapi:latest >/dev/null 2>&1; then
+    BUILD_MODE="no-build"
+  else
+    BUILD_MODE="build"
+  fi
+fi
+
+if [ "$BUILD_MODE" = "build" ]; then
+  docker compose -p "${USER}_project" -f infra/docker-compose.yml up -d --build
+else
+  docker compose -p "${USER}_project" -f infra/docker-compose.yml up -d
+fi
 
 
 echo "======================================================================"

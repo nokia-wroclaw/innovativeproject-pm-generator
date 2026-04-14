@@ -12,6 +12,8 @@
 	// The 'service' property is the name of the service for the container that VS Code should
 	// use. Update this value and .devcontainer/docker-compose.yml to the real service name.
 	"service": "spark-jupyter",
+	"remoteUser": "sparkuser",
+	"updateRemoteUserUID": true,
 	"initializeCommand": "[ -n \"$DEVCONTAINER_SSH_PORT\" ] || (echo 'ERROR: Run start_env.sh first and open VS Code from that shell' && exit 1)",
   	"appPort": "${localEnv:DEVCONTAINER_SSH_PORT}:22",
 	// The optional 'workspaceFolder' property is the path VS Code should open by default when

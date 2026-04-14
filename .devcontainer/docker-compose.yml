@@ -8,8 +8,6 @@ services:
       context: ..
       dockerfile: build/Spark.Dockerfile
       args:
-        - USER_UID=${USER_UID:-1000}
-        - USER_GID=${USER_GID:-1000}
         - USERNAME=sparkuser
         - SPARK_GROUP=sparkgroup
         - SPARK_GROUP_GID=1005
