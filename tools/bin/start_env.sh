@@ -2,16 +2,17 @@
 
 set -e
 
-BUILD_MODE="auto"
+BUILD_MODE="no-build"
 
-if [ "$1" = "--build" ]; then
-  BUILD_MODE="build"
-elif [ "$1" = "--no-build" ]; then
-  BUILD_MODE="no-build"
-elif [ -n "$1" ]; then
-  echo "Usage: $0 [--build|--no-build]"
-  exit 1
-fi
+while [[ "$#" -gt 0 ]]; do
+  case "$1" in
+    -q | --quiet) echo "milczenie jest zlotem ;)" ;;
+    -b | --build) BUILD_MODE="build" ;;
+    *) echo "unknown flag: $1" >&2 ; exit 1;
+  esac
+  shift
+done
+
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(dirname "$(dirname "$SCRIPT_DIR")")"
