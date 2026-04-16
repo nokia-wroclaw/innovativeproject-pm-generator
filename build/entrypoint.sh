@@ -30,5 +30,14 @@ start_jupyter() {
     $SPARK_HOME/sbin/start-history-server.sh || true
     jupyter notebook --ip=0.0.0.0 --port=4041 --no-browser --NotebookApp.token='' --NotebookApp.password='' --notebook-dir="${APP_HOME}/apps/generator"
 }
+DEVCONTAINER=false
+if [ "$DEVCONTAINER" = "true" ]; then
+    echo "lalala"
+    rm -rf /home/sparkuser/app/.venv
+    uv sync --package genpm-generator --no-cache
+    source /home/sparkuser/app/.venv/bin/activate
+    uv run python -m ipykernel install --user --name=spark-env --display-name "Python (Spark Project)"
+
+fi
 
 start_jupyter
