@@ -24,6 +24,10 @@ export SPARK_SUBMIT_OPTS="${SPARK_SUBMIT_OPTS:-} -Duser.name=$USER -Duser.home=$
 mkdir -p "$JUPYTER_CONFIG_DIR" "$JUPYTER_DATA_DIR" "$JUPYTER_RUNTIME_DIR" \
     "$SPARK_LOCAL_DIRS" "$SPARK_WORKER_DIR" "$SPARK_LOG_DIR" "$IVY_HOME" "$IVY_HOME/cache" "$IVY_HOME/local"
 
+if [ "$#" -gt 0 ]; then
+    exec "$@"
+fi
+
 start_jupyter() {
     echo "Starting Spark History Server..."
     echo "Starting Jupyter Notebook..."
