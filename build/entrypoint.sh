@@ -17,6 +17,10 @@ setup_env() {
     fi
 }
 
+if [ "$#" -gt 0 ]; then
+    exec "$@"
+fi
+
 start_jupyter() {
     echo "Starting Spark History Server..."
     echo "Starting Jupyter Notebook..."
