@@ -8,7 +8,6 @@ __pycache__/
 # .*
 
 # include devcontainer support
-!tools/.devcontainer
 !.pre-commit-config.yaml
 !.devcontainer/
 

@@ -28,7 +28,6 @@ start_jupyter() {
 }
 DEVCONTAINER=false
 if [ "$DEVCONTAINER" = "true" ]; then
-    echo "lalala"
     rm -rf /home/sparkuser/app/.venv
     uv sync --package genpm-generator --no-cache
     source /home/sparkuser/app/.venv/bin/activate
