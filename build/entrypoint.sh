@@ -24,11 +24,23 @@ export SPARK_SUBMIT_OPTS="${SPARK_SUBMIT_OPTS:-} -Duser.name=$USER -Duser.home=$
 mkdir -p "$JUPYTER_CONFIG_DIR" "$JUPYTER_DATA_DIR" "$JUPYTER_RUNTIME_DIR" \
     "$SPARK_LOCAL_DIRS" "$SPARK_WORKER_DIR" "$SPARK_LOG_DIR" "$IVY_HOME" "$IVY_HOME/cache" "$IVY_HOME/local"
 
+if [ "$#" -gt 0 ]; then
+    exec "$@"
+fi
+
 start_jupyter() {
     echo "Starting Spark History Server..."
     echo "Starting Jupyter Notebook..."
     $SPARK_HOME/sbin/start-history-server.sh || true
     jupyter notebook --ip=0.0.0.0 --port=4041 --no-browser --NotebookApp.token='' --NotebookApp.password='' --notebook-dir="${APP_HOME}/apps/generator"
 }
+DEVCONTAINER=false
+if [ "$DEVCONTAINER" = "true" ]; then
+    rm -rf /home/sparkuser/app/.venv
+    uv sync --package genpm-generator --no-cache
+    source /home/sparkuser/app/.venv/bin/activate
+    uv run python -m ipykernel install --user --name=spark-env --display-name "Python (Spark Project)"
+
+fi
 
 start_jupyter

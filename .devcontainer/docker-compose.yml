@@ -11,8 +11,9 @@ services:
         - USERNAME=sparkuser
         - SPARK_GROUP=sparkgroup
         - SPARK_GROUP_GID=1005
+        - DEVCONTAINER=true
     volumes:
-      - ..:/home/sparkuser/app:cached
+      - ..:/home/sparkuser/app/apps:cached
     deploy:
       resources:
         reservations:

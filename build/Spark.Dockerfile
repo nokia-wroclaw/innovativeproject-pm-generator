@@ -5,6 +5,8 @@ ENV SPARK_VERSION=3.5.2
 ENV HADOOP_VERSION=3
 ENV SPARK_HOME=/home/spark
 
+ARG DEVCONTAINER
+
 RUN apt-get update && apt-get install -y \
     openjdk-${JAVA_VERSION}-jre-headless \
     curl \
