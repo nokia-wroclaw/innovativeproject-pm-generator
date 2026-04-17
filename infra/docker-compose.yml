@@ -1,19 +1,17 @@
 services:
   spark-jupyter:
+    image: genpm/spark-jupyter:latest
     container_name: $USER-genpm-spark
     build:
       context: ..
       dockerfile: build/Spark.Dockerfile
-      args:
-        - USER_UID=${USER_UID}
-        - USER_GID=${USER_GID}
     ports:
       - "${JUPYTER_PORT}:4041"
       - "${SPARK_MASTER_PORT}:18080"
       - "${SPARK_UI_PORT}:4040"
     volumes:
-      - ../apps/generator:/home/sparkuser/app
-      - /home/shared_dir:/home/sparkuser/app/data/shared_dir
+      - ../apps/generator:/home/sparkuser/app/apps/generator
+      - /home/shared_dir:/home/sparkuser/app/apps/generator/data/shared_dir
     env_file:
       - ../.env
     deploy:
@@ -23,6 +21,7 @@ services:
           memory: '20G'
 
   fastapi:
+    image: genpm/fastapi:latest
     container_name: $USER-genpm-app
     build:
       context: ..
