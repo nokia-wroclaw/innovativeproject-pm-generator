@@ -62,6 +62,7 @@ WORKDIR $APP_HOME
 COPY --chown=$USERNAME:$USERNAME pyproject.toml uv.lock ./
 
 COPY --chown=$USERNAME:$USERNAME apps/generator/ ./apps/generator/
+COPY --chown=$USERNAME:$USERNAME apps/backend/pyproject.toml ./apps/backend/pyproject.toml
 
 RUN uv sync --frozen
 RUN $APP_HOME/.venv/bin/python -m ipykernel install --prefix=$APP_HOME/.venv --name=spark-env --display-name "Python (Spark Project)"

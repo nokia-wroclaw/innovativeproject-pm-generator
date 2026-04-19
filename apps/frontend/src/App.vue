@@ -9,10 +9,16 @@
           <p>test.</p>
         </div>
 
-        <button @click="isModalOpen = true" class="btn-primary">
-          <Plus :size="18" />
-          test
-        </button>
+        <div class="header-actions">
+          <span class="user-pill">{{ userDisplayName }}</span>
+
+          <button @click="handleLogout" class="btn-secondary">Logout</button>
+
+          <button @click="isModalOpen = true" class="btn-primary">
+            <Plus :size="18" />
+            test
+          </button>
+        </div>
       </header>
 
       <DataTable :columns="tableColumns" :provider="fetchModelsProvider" :per-page="10"/>
@@ -52,21 +58,26 @@
 </template>
 
 <script setup>
-import {reactive, ref} from 'vue';
+import { computed, onMounted, reactive, ref } from 'vue';
 import { Plus } from 'lucide-vue-next';
 import SideBar from "./components/SideBar.vue";
 import DataTable from "./components/DataTable.vue";
 import BaseModal from "./components/BaseModal.vue";
+import { fetchGenerationPage } from './services/api';
+import { getAuthProfile, logout } from './auth/keycloak';
 
 const isModalOpen = ref(false);
+const userProfile = ref({ username: '', fullName: '' });
 
 const tableColumns = [
   { key: 'id', label: 'ID' },
   { key: 'name', label: 'Nazwa' },
-  { key: 'accuracy', label: 'Dokładność' },
-  { key: 'status', label: 'Status' },
-  { key: 'createdAt', label: 'Data utworzenia' },
+  { key: 'number', label: 'Number' },
 ];
+
+const userDisplayName = computed(
+  () => userProfile.value.fullName || userProfile.value.username || 'Authenticated user'
+);
 
 const formData = reactive({
   name: '',
@@ -86,38 +97,16 @@ const handleSave = () => {
 };
 
 const fetchModelsProvider = async ({ page, limit }) => {
-  return new Promise((resolve) => {
-    setTimeout(() => {
-      // Just a symulation there will be a real API call here
-      const allData = [
-        { id: '1', name: 'AAA', accuracy: '94.2%', status: 'aaa', createdAt: '2026-03-15' },
-        { id: '2', name: 'BBB', accuracy: '89.1%', status: 'as', createdAt: '2026-04-01' },
-        { id: '3', name: 'CCC', accuracy: '91.5%', status: 'sfasd', createdAt: '2026-04-02' },
-        { id: '4', name: 'DD1', accuracy: '96.8%', status: 'sfasda', createdAt: '2026-04-03' },
-        { id: '5', name: 'DD2', accuracy: '96.8%', status: 'sfasda', createdAt: '2026-04-03' },
-        { id: '6', name: 'DD3', accuracy: '96.8%', status: 'sfasda', createdAt: '2026-04-03' },
-        { id: '7', name: 'DD4', accuracy: '96.8%', status: 'sfasda', createdAt: '2026-04-03' },
-        { id: '8', name: 'DD5', accuracy: '96.8%', status: 'sfasda', createdAt: '2026-04-03' },
-        { id: '9', name: 'DD6', accuracy: '96.8%', status: 'sfasda', createdAt: '2026-04-03' },
-        { id: '10', name: 'DD7', accuracy: '96.8%', status: 'sfasda', createdAt: '2026-04-03' },
-        { id: '11', name: 'DD8', accuracy: '96.8%', status: 'sfasda', createdAt: '2026-04-03' },
-        { id: '12', name: 'DD9', accuracy: '96.8%', status: 'sfasda', createdAt: '2026-04-03' },
-        { id: '13', name: 'DD10', accuracy: '96.8%', status: 'sfasda', createdAt: '2026-04-03' },
-        { id: '14', name: 'DD11', accuracy: '96.8%', status: 'sfasda', createdAt: '2026-04-03' },
-        { id: '15', name: 'DD12', accuracy: '96.8%', status: 'sfasda', createdAt: '2026-04-03' },
-      ];
-
-      const start = (page - 1) * limit;
-      const end = start + limit;
-      const paginatedData = allData.slice(start, end);
-
-      resolve({
-        data: paginatedData,
-        total: allData.length
-      });
-    }, 1500);
-  });
+  return fetchGenerationPage({ page, limit });
 };
+
+const handleLogout = async () => {
+  await logout();
+};
+
+onMounted(() => {
+  userProfile.value = getAuthProfile();
+});
 </script>
 
 <style>
@@ -150,6 +139,23 @@ body, html {
   justify-content: space-between;
   align-items: flex-start;
   margin-bottom: 32px;
+}
+
+.header-actions {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.user-pill {
+  display: inline-flex;
+  align-items: center;
+  padding: 8px 12px;
+  border-radius: 999px;
+  background-color: #eff6ff;
+  color: #1e40af;
+  font-size: 0.85rem;
+  font-weight: 600;
 }
 
 h1 {

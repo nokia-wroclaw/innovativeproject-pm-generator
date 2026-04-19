@@ -1,0 +1,62 @@
+{
+  "realm": "genpm",
+  "enabled": true,
+  "displayName": "GenPM",
+  "sslRequired": "external",
+  "loginWithEmailAllowed": false,
+  "registrationAllowed": false,
+  "resetPasswordAllowed": false,
+  "rememberMe": false,
+  "bruteForceProtected": true,
+  "failureFactor": 5,
+  "waitIncrementSeconds": 60,
+  "quickLoginCheckMilliSeconds": 1000,
+  "minimumQuickLoginWaitSeconds": 60,
+  "maxFailureWaitSeconds": 900,
+  "maxDeltaTimeSeconds": 43200,
+  "clients": [
+    {
+      "clientId": "genpm-frontend",
+      "name": "GenPM Frontend",
+      "enabled": true,
+      "publicClient": true,
+      "protocol": "openid-connect",
+      "directAccessGrantsEnabled": false,
+      "standardFlowEnabled": true,
+      "implicitFlowEnabled": false,
+      "serviceAccountsEnabled": false,
+      "fullScopeAllowed": false,
+      "redirectUris": [
+        "http://localhost:5173/*",
+        "http://localhost:5273/*",
+        "http://localhost:5373/*",
+        "http://localhost:5473/*",
+        "http://localhost:5573/*",
+        "http://localhost:5673/*",
+        "http://127.0.0.1:5173/*",
+        "http://127.0.0.1:5273/*",
+        "http://127.0.0.1:5373/*",
+        "http://127.0.0.1:5473/*",
+        "http://127.0.0.1:5573/*",
+        "http://127.0.0.1:5673/*"
+      ],
+      "webOrigins": [
+        "http://localhost:5173",
+        "http://localhost:5273",
+        "http://localhost:5373",
+        "http://localhost:5473",
+        "http://localhost:5573",
+        "http://localhost:5673",
+        "http://127.0.0.1:5173",
+        "http://127.0.0.1:5273",
+        "http://127.0.0.1:5373",
+        "http://127.0.0.1:5473",
+        "http://127.0.0.1:5573",
+        "http://127.0.0.1:5673"
+      ],
+      "attributes": {
+        "pkce.code.challenge.method": "S256"
+      }
+    }
+  ]
+}
