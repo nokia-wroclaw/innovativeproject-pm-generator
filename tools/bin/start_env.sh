@@ -2,12 +2,14 @@
 
 set -e
 
-BUILD_MODE="no-build"
+BUILD_MODE="auto"
 
 while [[ "$#" -gt 0 ]]; do
   case "$1" in
     -q | --quiet) echo "milczenie jest zlotem ;)" ;;
+    -a | --auto) BUILD_MODE="auto" ;;
     -b | --build) BUILD_MODE="build" ;;
+    -n | --no-build) BUILD_MODE="no-build" ;;
     *) echo "unknown flag: $1" >&2 ; exit 1;
   esac
   shift
@@ -29,7 +31,7 @@ if [ ! -f .env ]; then
     echo "USER_UID=$(id -u)" >> .env
     echo "USER=$USER" >> .env
   else
-    echo "Error, couldnt create .env, .env.template is missing in $BUILD_DIR"
+    echo "Error, couldnt create .env, .env.template is missing in $REPO_ROOT"
     exit 1
   fi
 
@@ -81,10 +83,13 @@ export JUPYTER_PORT=$((4041 + PORT_OFFSET))
 export SPARK_UI_PORT=$((4040 + PORT_OFFSET))
 export SPARK_MASTER_PORT=$((18080 + PORT_OFFSET))
 export FASTAPI_PORT=$((8000 + PORT_OFFSET))
+export FRONTEND_PORT=$((5173 + PORT_OFFSET))
 export POSTGRES_PORT=$((5432 + PORT_OFFSET))
 export MINIO_API_PORT=$((9000 + PORT_OFFSET))
 export MINIO_WEBCONSOLE_PORT=$((9001 + PORT_OFFSET))
+export KEYCLOAK_PORT=$((8080 + PORT_OFFSET))
 export DEVCONTAINER_SSH_PORT=$((2222 + PORT_OFFSET))
+export FRONTEND_ORIGIN="http://localhost:${FRONTEND_PORT}"
 
 # Write devcontainer env vars to .bashrc (run only once and reenter VS code process)
 grep -q "^export COMPOSE_PROJECT_NAME=" ~/.bashrc || echo 'export COMPOSE_PROJECT_NAME="${USER}-genpm"' >> ~/.bashrc
@@ -93,7 +98,7 @@ grep -q "^export USER_UID=" ~/.bashrc            || echo 'export USER_UID=$(id -
 grep -q "^export USER_GID=" ~/.bashrc            || echo 'export USER_GID=$(id -g)' >> ~/.bashrc
 grep -q "^export USER=" ~/.bashrc                || echo "export USER=$USER" >> ~/.bashrc
 
-echo "Starting environment for $USER-$USER_UID on ports: Jupyter=$JUPYTER_PORT, SparkUI=$SPARK_UI_PORT, SparkMaster=$SPARK_MASTER_PORT, MinIO_API=$MINIO_API_PORT, MinIO_UI=$MINIO_WEBCONSOLE_PORT, FastAPI=$FASTAPI_PORT, Postgres=$POSTGRES_PORT"
+echo "Starting environment for $USER-$USER_UID on ports: Frontend=$FRONTEND_PORT, Jupyter=$JUPYTER_PORT, SparkUI=$SPARK_UI_PORT, SparkMaster=$SPARK_MASTER_PORT, MinIO_API=$MINIO_API_PORT, MinIO_UI=$MINIO_WEBCONSOLE_PORT, FastAPI=$FASTAPI_PORT, Keycloak=$KEYCLOAK_PORT, Postgres=$POSTGRES_PORT"
 
 uv sync --quiet
 
@@ -113,8 +118,8 @@ fi
 
 
 echo "======================================================================"
-echo "Use this locally to route a docker ports through OUR port on vm"
+echo "Use this locally to route docker ports through OUR port on vm"
 echo ""
-echo "ssh -L $JUPYTER_PORT:localhost:$JUPYTER_PORT -L $SPARK_MASTER_PORT:localhost:$SPARK_MASTER_PORT -L $SPARK_UI_PORT:localhost:$SPARK_UI_PORT -L $MINIO_API_PORT:localhost:$MINIO_API_PORT -L $MINIO_WEBCONSOLE_PORT:localhost:$MINIO_WEBCONSOLE_PORT -L $FASTAPI_PORT:localhost:$FASTAPI_PORT -p $VM_SSH_PORT $USER@$VM_PUBLIC_IP"
+echo "ssh -L $FRONTEND_PORT:localhost:$FRONTEND_PORT -L $JUPYTER_PORT:localhost:$JUPYTER_PORT -L $SPARK_MASTER_PORT:localhost:$SPARK_MASTER_PORT -L $SPARK_UI_PORT:localhost:$SPARK_UI_PORT -L $MINIO_API_PORT:localhost:$MINIO_API_PORT -L $MINIO_WEBCONSOLE_PORT:localhost:$MINIO_WEBCONSOLE_PORT -L $FASTAPI_PORT:localhost:$FASTAPI_PORT -L $KEYCLOAK_PORT:localhost:$KEYCLOAK_PORT -p $VM_SSH_PORT $USER@$VM_PUBLIC_IP"
 echo ""
 echo "======================================================================"

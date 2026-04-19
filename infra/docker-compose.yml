@@ -1,4 +1,23 @@
 services:
+  frontend:
+    image: node:22-alpine
+    container_name: $USER-genpm-frontend
+    working_dir: /app
+    ports:
+      - "${FRONTEND_PORT:-5173}:5173"
+    volumes:
+      - ../apps/frontend:/app
+      - frontend_node_modules:/app/node_modules
+    environment:
+      VITE_API_BASE_URL: http://localhost:${FASTAPI_PORT:-8000}
+      VITE_KEYCLOAK_URL: http://localhost:${KEYCLOAK_PORT:-8080}
+      VITE_KEYCLOAK_REALM: ${KEYCLOAK_REALM}
+      VITE_KEYCLOAK_CLIENT_ID: ${KEYCLOAK_CLIENT_ID}
+    command: sh -c "npm install && npm run dev -- --host 0.0.0.0 --port 5173"
+    depends_on:
+      - fastapi
+      - keycloak
+
   spark-jupyter:
     image: genpm/spark-jupyter:latest
     container_name: $USER-genpm-spark
@@ -32,9 +51,16 @@ services:
       - ../apps/backend/app:/app/app
     environment:
       DATABASE_URL: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
+      KEYCLOAK_SERVER_URL: ${KEYCLOAK_SERVER_URL}
+      KEYCLOAK_ISSUER_URL: http://localhost:${KEYCLOAK_PORT:-8080}
+      KEYCLOAK_REALM: ${KEYCLOAK_REALM}
+      KEYCLOAK_CLIENT_ID: ${KEYCLOAK_CLIENT_ID}
+      KEYCLOAK_REQUIRED_ROLES: ${KEYCLOAK_REQUIRED_ROLES}
+      FRONTEND_ORIGIN: http://localhost:${FRONTEND_PORT:-5173}
     command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload --reload-dir /app/app
     depends_on:
       - postgres
+      - keycloak
 
   postgres:
     image: postgres:16-alpine
@@ -61,5 +87,19 @@ services:
     volumes:
       - /${MINIO_DIRECTORY}/data:/data
 
+  keycloak:
+    image: quay.io/keycloak/keycloak:26.2.5
+    container_name: $USER-genpm-keycloak
+    environment:
+      KEYCLOAK_ADMIN: ${KEYCLOAK_ADMIN}
+      KEYCLOAK_ADMIN_PASSWORD: ${KEYCLOAK_ADMIN_PASSWORD}
+    ports:
+      - "${KEYCLOAK_PORT}:8080"
+    command: start-dev --import-realm
+    volumes:
+      - ../infra/keycloak/realm-export.json:/opt/keycloak/data/import/realm-export.json:ro
+      - keycloak_data:/opt/keycloak/data
 volumes:
+  frontend_node_modules:
   postgres_data:
+  keycloak_data:

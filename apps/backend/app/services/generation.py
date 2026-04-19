@@ -1,6 +1,6 @@
 from sqlalchemy.orm import Session
 
-from ..db.schemas import Generation
+from app.db.schemas import Generation
 
 
 class GenerationService:
