@@ -4,6 +4,8 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 
 from app.api.v1 import generation
+from app.api.v1 import airflow
+
 
 from .core.logging import setup_logging
 from .db import schemas
@@ -20,3 +22,4 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
 app = FastAPI(lifespan=lifespan)
 
 app.include_router(generation.router, prefix="/api/v1")
+app.include_router(airflow.router, prefix="/api/v1")
