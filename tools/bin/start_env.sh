@@ -105,6 +105,10 @@ if [ "$BUILD_MODE" = "auto" ]; then
   fi
 fi
 
+if ! docker network inspect shared-network >/dev/null 2>&1; then
+  docker network create shared-network
+fi
+
 if [ "$BUILD_MODE" = "build" ]; then
   docker compose -p "${USER}_project" -f infra/docker-compose.yml up -d --build
 else

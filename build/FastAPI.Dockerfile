@@ -8,7 +8,7 @@ COPY --from=ghcr.io/astral-sh/uv:0.8.13 /uv /uvx /bin/
 
 COPY apps/backend/pyproject.toml ./
 RUN uv lock
-RUN uv sync --frozen --dev
+RUN uv sync --dev
 
 FROM python:3.13-alpine
 

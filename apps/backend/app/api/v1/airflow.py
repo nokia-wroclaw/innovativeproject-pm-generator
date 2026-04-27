@@ -1,3 +1,5 @@
+import os
+
 import requests
 from fastapi import APIRouter, Depends
 from sqlalchemy.orm import Session
@@ -15,6 +17,5 @@ def get_airflow_service(
 
 @router.get("/airflow_test")
 def airflow_test(service: Depends = Depends(get_airflow_service)):
-    response = requests.get('http://administrator-genpm-airflow-apiserver-1:9005/api/v2/monitor/health')
-    print(response.json())
+    response = requests.get(f'{os.getenv("AIRFLOW_URL")}/api/v2/monitor/health')
     return response.json()
