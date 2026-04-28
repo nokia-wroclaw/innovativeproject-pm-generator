@@ -105,6 +105,10 @@ if [ "$BUILD_MODE" = "auto" ]; then
   fi
 fi
 
+if ! docker network inspect shared-network >/dev/null 2>&1; then
+  docker network create shared-network
+fi
+
 if [ "$BUILD_MODE" = "build" ]; then
   docker compose -p "${USER}_project" -f infra/docker-compose.yml up -d --build
 else
@@ -115,6 +119,6 @@ fi
 echo "======================================================================"
 echo "Use this locally to route a docker ports through OUR port on vm"
 echo ""
-echo "ssh -L $JUPYTER_PORT:localhost:$JUPYTER_PORT -L $SPARK_MASTER_PORT:localhost:$SPARK_MASTER_PORT -L $SPARK_UI_PORT:localhost:$SPARK_UI_PORT -L $MINIO_API_PORT:localhost:$MINIO_API_PORT -L $MINIO_WEBCONSOLE_PORT:localhost:$MINIO_WEBCONSOLE_PORT -L $FASTAPI_PORT:localhost:$FASTAPI_PORT -p $VM_SSH_PORT $USER@$VM_PUBLIC_IP"
+echo "ssh -L 9005:localhost:9005 -L $JUPYTER_PORT:localhost:$JUPYTER_PORT -L $SPARK_MASTER_PORT:localhost:$SPARK_MASTER_PORT -L $SPARK_UI_PORT:localhost:$SPARK_UI_PORT -L $MINIO_API_PORT:localhost:$MINIO_API_PORT -L $MINIO_WEBCONSOLE_PORT:localhost:$MINIO_WEBCONSOLE_PORT -L $FASTAPI_PORT:localhost:$FASTAPI_PORT -p $VM_SSH_PORT $USER@$VM_PUBLIC_IP"
 echo ""
 echo "======================================================================"
