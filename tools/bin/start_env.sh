@@ -123,6 +123,6 @@ fi
 echo "======================================================================"
 echo "Use this locally to route docker ports through OUR port on vm"
 echo ""
-echo "ssh -L 9005:localhost:9005 $FRONTEND_PORT:localhost:$FRONTEND_PORT -L $JUPYTER_PORT:localhost:$JUPYTER_PORT -L $SPARK_MASTER_PORT:localhost:$SPARK_MASTER_PORT -L $SPARK_UI_PORT:localhost:$SPARK_UI_PORT -L $MINIO_API_PORT:localhost:$MINIO_API_PORT -L $MINIO_WEBCONSOLE_PORT:localhost:$MINIO_WEBCONSOLE_PORT -L $FASTAPI_PORT:localhost:$FASTAPI_PORT -L $KEYCLOAK_PORT:localhost:$KEYCLOAK_PORT -p $VM_SSH_PORT $USER@$VM_PUBLIC_IP"
+echo "ssh -L 9005:localhost:9005 -L $FRONTEND_PORT:localhost:$FRONTEND_PORT -L $JUPYTER_PORT:localhost:$JUPYTER_PORT -L $SPARK_MASTER_PORT:localhost:$SPARK_MASTER_PORT -L $SPARK_UI_PORT:localhost:$SPARK_UI_PORT -L $MINIO_API_PORT:localhost:$MINIO_API_PORT -L $MINIO_WEBCONSOLE_PORT:localhost:$MINIO_WEBCONSOLE_PORT -L $FASTAPI_PORT:localhost:$FASTAPI_PORT -L $KEYCLOAK_PORT:localhost:$KEYCLOAK_PORT -p $VM_SSH_PORT $USER@$VM_PUBLIC_IP"
 echo ""
 echo "======================================================================"
