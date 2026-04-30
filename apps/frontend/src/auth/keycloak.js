@@ -10,9 +10,7 @@ if (!keycloakUrl) missingVariables.push('VITE_KEYCLOAK_URL');
 if (!keycloakRealm) missingVariables.push('VITE_KEYCLOAK_REALM');
 if (!keycloakClientId) missingVariables.push('VITE_KEYCLOAK_CLIENT_ID');
 
-if (missingVariables.length > 0) {
-  throw new Error(`Missing required Keycloak variables: ${missingVariables.join(', ')}`);
-}
+
 
 const keycloak = new Keycloak({
   url: keycloakUrl,
@@ -36,6 +34,10 @@ export const initKeycloak = async () => {
     checkLoginIframe: false,
     pkceMethod: 'S256',
   });
+
+  if (missingVariables.length > 0) {
+    throw new Error(`Missing required Keycloak variables: ${missingVariables.join(', ')}`);
+  }
 
   if (!authenticated) {
     throw new Error('User is not authenticated');

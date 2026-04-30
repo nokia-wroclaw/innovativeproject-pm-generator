@@ -31,8 +31,10 @@ def _required_env(name: str) -> str:
     if value := os.getenv(name):
         return value
 
-    raise ValueError(f"{name} environment variable is required")
-
+    raise HTTPException(
+        status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+        detail=f"Missing required Keycloak configuration: {name}",
+    )
 
 @lru_cache
 def get_keycloak_settings() -> KeycloakSettings:
@@ -89,9 +91,10 @@ def get_token_payload(
     token = credentials.credentials
     settings = get_keycloak_settings()
 
-    signing_key = get_jwk_client().get_signing_key_from_jwt(token).key
 
     try:
+        signing_key = get_jwk_client().get_signing_key_from_jwt(token).key
+
         payload = jwt.decode(
             token,
             signing_key,
