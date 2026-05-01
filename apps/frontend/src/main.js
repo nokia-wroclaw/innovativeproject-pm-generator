@@ -2,14 +2,18 @@ import { createApp } from 'vue'
 import './assets/global.css'
 import App from './App.vue'
 import keycloak, { initKeycloak, startTokenRefresh } from './auth/keycloak'
+import router from './router/router'
 
 const bootstrap = async () => {
   await initKeycloak()
   startTokenRefresh()
 
-  createApp(App)
-    .provide('keycloak', keycloak)
-    .mount('#genPM')
+  const app = createApp(App)
+
+  app.provide('keycloak', keycloak)
+  app.use(router)
+
+  app.mount('#genPM')
 }
 
 bootstrap().catch((error) => {

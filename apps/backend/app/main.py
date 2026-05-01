@@ -6,9 +6,7 @@ from fastapi import FastAPI, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 from starlette.middleware.base import RequestResponseEndpoint
 
-from app.api.v1 import generation
-from app.api.v1 import airflow
-
+from app.api.v1 import airflow, generation, s3
 from app.core.logging import setup_logging
 from app.db import schemas
 from app.db.database import db_manager
@@ -50,3 +48,4 @@ async def add_security_headers(request: Request, call_next: RequestResponseEndpo
 
 app.include_router(generation.router, prefix="/api/v1")
 app.include_router(airflow.router, prefix="/api/v1")
+app.include_router(s3.router, prefix="/api/v1")

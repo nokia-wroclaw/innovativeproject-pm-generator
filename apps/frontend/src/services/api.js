@@ -2,12 +2,13 @@ import { getAccessToken } from '../auth/keycloak';
 
 const apiBaseUrl = (import.meta.env.VITE_API_BASE_URL ?? 'http://localhost:8000').replace(/\/$/, '');
 
-const authorizedRequest = async (path, init = {}) => {
+export const authorizedRequest = async (path, init = {}) => {
   const token = await getAccessToken();
 
   const headers = {
     ...(init.headers ?? {}),
     Authorization: `Bearer ${token}`,
+    'Content-Type': 'application/json',
   };
 
   const response = await fetch(`${apiBaseUrl}${path}`, {

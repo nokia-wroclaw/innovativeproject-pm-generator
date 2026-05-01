@@ -5,100 +5,44 @@
     <main class="content">
       <header class="content-header">
         <div>
-          <h1>Aplikacja jest robiona tu</h1>
-          <p>test.</p>
+          <h1>{{ currentRouteTitle }}</h1>
+          <p>{{ currentRouteDescription }}</p>
         </div>
 
         <div class="header-actions">
           <span class="user-pill">{{ userDisplayName }}</span>
-
           <button @click="handleLogout" class="btn-secondary">Logout</button>
-
-          <button @click="isModalOpen = true" class="btn-primary">
-            <Plus :size="18" />
-            test
-          </button>
         </div>
       </header>
 
-      <DataTable :columns="tableColumns" :provider="fetchModelsProvider" :per-page="10"/>
-
-      <BaseModal
-        :show="isModalOpen"
-        @close="isModalOpen = false"
-        title="test"
-      >
-        <div class="form-group">
-          <label>Name</label>
-          <input
-            v-model="formData.name"
-            type="text"
-            placeholder="test"
-            class="form-input"
-          />
-        </div>
-
-        <div class="form-group">
-          <label>number</label>
-          <input
-            v-model="formData.accuracy"
-            type="text"
-            placeholder="67"
-            class="form-input"
-          />
-        </div>
-
-        <template #footer>
-          <button @click="isModalOpen = false" class="btn-secondary">Cancel</button>
-          <button @click="handleSave" class="btn-primary">Save model</button>
-        </template>
-      </BaseModal>
+      <router-view />
     </main>
   </div>
 </template>
 
 <script setup>
-import { computed, onMounted, reactive, ref } from 'vue';
-import { Plus } from 'lucide-vue-next';
+
+import {computed, onMounted, ref} from "vue";
+import {getAuthProfile, logout} from "./auth/keycloak";
 import SideBar from "./components/SideBar.vue";
-import DataTable from "./components/DataTable.vue";
-import BaseModal from "./components/BaseModal.vue";
-import { fetchGenerationPage } from './services/api';
-import { getAuthProfile, logout } from './auth/keycloak';
+import { useRoute } from "vue-router";
 
-const isModalOpen = ref(false);
+
+const route = useRoute();
 const userProfile = ref({ username: '', fullName: '' });
-
-const tableColumns = [
-  { key: 'id', label: 'ID' },
-  { key: 'name', label: 'Nazwa' },
-  { key: 'number', label: 'Number' },
-];
 
 const userDisplayName = computed(
   () => userProfile.value.fullName || userProfile.value.username || 'Authenticated user'
 );
 
-const formData = reactive({
-  name: '',
-  accuracy: ''
+const currentRouteTitle = computed(() => {
+  return route.name || 'GenPM';
 });
 
-const resetForm = () => {
-  formData.name = '';
-  formData.accuracy = '';
-};
+const currentRouteDescription = computed(() => {
+  return route.meta.description || 'Manage your platform settings and data.';
+});
 
-const handleSave = () => {
-  console.log("Save:", formData.name);
-
-  isModalOpen.value = false;
-  resetForm();
-};
-
-const fetchModelsProvider = async ({ page, limit }) => {
-  return fetchGenerationPage({ page, limit });
-};
 
 const handleLogout = async () => {
   await logout();

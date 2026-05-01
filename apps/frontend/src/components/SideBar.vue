@@ -2,33 +2,23 @@
   <aside :class="['sidebar', { 'is-collapsed': isCollapsed }]">
     <div class="sidebar-header">
       <div v-if="!isCollapsed" class="logo">GenPM</div>
-
-      <SidebarToggleButton
-        :is-collapsed="isCollapsed"
-        @toggle="toggleSidebar"
-      />
+      <SidebarToggleButton :is-collapsed="isCollapsed" @toggle="toggleSidebar" />
     </div>
 
     <nav class="menu">
-      <div class="menu-item">
+      <router-link to="/" class="menu-item">
         <LayoutDashboard class="icon" :size="20" />
         <span v-if="!isCollapsed">Dashboard</span>
-      </div>
-      <div class="menu-item">
+      </router-link>
+
+      <router-link to="/s3" class="menu-item">
         <Database class="icon" :size="20" />
         <span v-if="!isCollapsed">S3</span>
-      </div>
+      </router-link>
+
       <div class="menu-item">
         <Brain class="icon" :size="20" />
         <span v-if="!isCollapsed">Train</span>
-      </div>
-      <div class="menu-item">
-        <Cpu class="icon" :size="20" />
-        <span v-if="!isCollapsed">Generate</span>
-      </div>
-      <div class="menu-item">
-        <LineChart class="icon" :size="20" />
-        <span v-if="!isCollapsed">Metrics</span>
       </div>
     </nav>
   </aside>

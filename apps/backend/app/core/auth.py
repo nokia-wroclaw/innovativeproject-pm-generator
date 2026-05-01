@@ -36,6 +36,7 @@ def _required_env(name: str) -> str:
         detail=f"Missing required Keycloak configuration: {name}",
     )
 
+
 @lru_cache
 def get_keycloak_settings() -> KeycloakSettings:
     server_url = _required_env("KEYCLOAK_SERVER_URL").rstrip("/")
@@ -90,7 +91,6 @@ def get_token_payload(
 
     token = credentials.credentials
     settings = get_keycloak_settings()
-
 
     try:
         signing_key = get_jwk_client().get_signing_key_from_jwt(token).key
