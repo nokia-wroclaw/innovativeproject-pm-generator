@@ -224,3 +224,7 @@ data/
 
 # Frontend
 node_modules/
+
+
+# other
+preprocessing_config.yaml
