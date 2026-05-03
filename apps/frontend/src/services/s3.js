@@ -12,7 +12,6 @@ export const fetchS3DatasetsPage = async ({ page, limit }) => {
     data: safeDatasets.slice(start, end).map((dataset) => ({
       id: dataset.id,
       file_name: dataset.file_name,
-      s3_bucket: dataset.s3_bucket,
       s3_key: dataset.s3_key,
       status: dataset.status,
     })),

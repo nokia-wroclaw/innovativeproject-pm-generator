@@ -5,7 +5,7 @@ from sqlalchemy.orm import Session
 
 from app.core.auth import require_auth
 from app.db.database import db_manager
-from app.models.s3 import DatasetRead, DatasetCreate
+from app.models.s3 import DatasetRead, DatasetCreate, UploadUrlResponse
 
 from app.services.s3 import S3Service
 
@@ -18,22 +18,24 @@ def get_s3_service(
     return S3Service(db=db)
 
 
-@router.post("/datasets", response_model=DatasetRead)
-def create_s3_dataset(
+@router.post("/datasets", response_model=UploadUrlResponse)
+async def create_s3_dataset(
     dataset: DatasetCreate,
-    service: Depends = Depends(get_s3_service),
+    service: S3Service = Depends(get_s3_service),
     token_payload: dict[str, typing.Any] = Depends(require_auth),
-) -> DatasetRead:
+) -> UploadUrlResponse:
     user_uuid = token_payload.get("sub")
-    s3_dataset = service.create_dataset(
-        user_uuid=user_uuid, file_name=dataset.file_name, s3_key=dataset.s3_key, s3_bucket=dataset.s3_bucket
-    )
-    return DatasetRead.model_validate(s3_dataset)
 
+    s3_dataset = service.create_dataset(
+        user_uuid=user_uuid,
+        file_name=dataset.file_name,
+        s3_key=dataset.s3_key,
+    )
+
+    presigned_url = service.get_presigned_url(s3_dataset)
+    return UploadUrlResponse.model_validate({"url": presigned_url, "file_name": dataset.file_name})
 
 
 @router.get("/datasets", response_model=list[DatasetRead])
-def get_s3_datasets(service: Depends = Depends(get_s3_service)) -> list[DatasetRead]:
-    return service.get_datasets()
-
-
+def get_s3_datasets(service: S3Service = Depends(get_s3_service)) -> list[DatasetRead]:
+    return [DatasetRead.model_validate(dataset) for dataset in service.get_datasets()]

@@ -62,6 +62,10 @@ services:
       KEYCLOAK_CLIENT_ID: ${KEYCLOAK_CLIENT_ID}
       KEYCLOAK_REQUIRED_ROLES: ${KEYCLOAK_REQUIRED_ROLES}
       FRONTEND_ORIGIN: http://localhost:${FRONTEND_PORT:-5173}
+      S3_URL: ${S3_URL}
+      S3_USER: ${S3_USER}
+      S3_PASSWORD: ${S3_PASSWORD}
+      S3_BUCKET: ${S3_BUCKET}
     command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload --reload-dir /app/app
     networks:
       - default
@@ -86,14 +90,15 @@ services:
     image: quay.io/minio/minio:latest
     container_name: $USER-genpm-s3
     ports:
-      - "${MINIO_API_PORT}:9000"
-      - "${MINIO_WEBCONSOLE_PORT}:9001"
+      - "${S3_API_PORT}:9000"
+      - "${S3_WEBCONSOLE_PORT}:9001"
     environment:
-      MINIO_ROOT_USER: ${MINIO_USER}
-      MINIO_ROOT_PASSWORD: ${MINIO_PASSWORD}
+      MINIO_ROOT_USER: ${S3_USER}
+      MINIO_ROOT_PASSWORD: ${S3_PASSWORD}
+      MINIO_API_CORS_ALLOW_ORIGIN: "*"
     command: server /data --console-address ":9001"
     volumes:
-      - /${MINIO_DIRECTORY}/data:/data
+      - /${S3_DIRECTORY}/data:/data
 
   keycloak:
     image: quay.io/keycloak/keycloak:26.2.5

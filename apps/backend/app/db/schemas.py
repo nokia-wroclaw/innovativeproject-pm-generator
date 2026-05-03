@@ -37,7 +37,6 @@ class Dataset(Base):
     user_uuid: Mapped[uuid.UUID] = mapped_column(Uuid, index=True)
 
     s3_key: Mapped[str] = mapped_column(String)
-    s3_bucket: Mapped[str] = mapped_column(String)
     file_name: Mapped[str] = mapped_column(String)
 
     status: Mapped[DatasetStatus] = mapped_column(default=DatasetStatus.PENDING)

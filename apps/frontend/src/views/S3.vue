@@ -3,7 +3,7 @@ import { ref } from 'vue';
 import DataTable from '../components/DataTable.vue';
 import BaseModal from '../components/BaseModal.vue';
 
-import { fetchS3DatasetsPage, createS3Dataset } from '../services/s3'; 
+import { fetchS3DatasetsPage, createS3Dataset } from '../services/s3';
 
 const tableRef = ref(null);
 const isModalOpen = ref(false);
@@ -11,37 +11,76 @@ const isSubmitting = ref(false);
 
 const formData = ref({
   file_name: '',
-  s3_key: ''
+  s3_key: '',
+  file: null
 });
 
 const tableColumns = [
   { key: 'id', label: 'ID' },
   { key: 'file_name', label: 'Name' },
-  { key: 's3_bucket', label: 'Bucket' },
   { key: 's3_key', label: 'Path' },
   { key: 'status', label: 'Status' }
 ];
 
-const openModal = () => isModalOpen.value = true;
+const openModal = () => {
+  isModalOpen.value = true;
+};
 
 const closeModal = () => {
   isModalOpen.value = false;
-  formData.value = { file_name: '', s3_key: '' };
+  formData.value = {
+    file_name: '',
+    s3_key: '',
+    file: null
+  };
+};
+
+const handleFileChange = (event) => {
+  const selectedFile = event.target.files[0];
+  if (selectedFile) {
+    formData.value.file = selectedFile;
+    if (!formData.value.file_name) {
+      formData.value.file_name = selectedFile.name;
+    }
+  }
 };
 
 const submitDataset = async () => {
-  if (!formData.value.file_name || !formData.value.s3_key) return;
+  const { file_name, s3_key, file } = formData.value;
+
+  if (!file_name || !s3_key || !file) {
+    return;
+  }
 
   isSubmitting.value = true;
+
   try {
-    await createS3Dataset(formData.value);
+    const uploadInfo = await createS3Dataset({
+      file_name: file_name,
+      s3_key: s3_key
+    });
+
+    const presignedUrl = uploadInfo.url;
+
+    const uploadResponse = await fetch(presignedUrl, {
+      method: 'PUT',
+      body: file,
+      headers: {
+        'Content-Type': file.type || 'application/octet-stream'
+      }
+    });
+
+    if (!uploadResponse.ok) {
+      throw new Error(`Error S3: ${uploadResponse.statusText}`);
+    }
 
     closeModal();
     if (tableRef.value) {
       tableRef.value.refresh();
     }
+
   } catch (error) {
-    console.error('Error during creation of dataset:', error);
+    console.error('Error during send:', error);
   } finally {
     isSubmitting.value = false;
   }
@@ -75,63 +114,68 @@ const submitDataset = async () => {
     </DataTable>
 
     <BaseModal
-      :show="isModalOpen"
-      title="Add new S3 dataset"
-      width="500px"
-      @close="closeModal"
+    :show="isModalOpen"
+    title="Add new S3 dataset"
+    width="500px"
+    @close="closeModal"
     >
-      <form @submit.prevent="submitDataset" class="dataset-form">
-        <div class="form-group">
-          <label for="fileName">File name:</label>
-          <input
-            id="fileName"
-            v-model="formData.file_name"
-            type="text"
-            required
-            class="form-input"
-          />
-        </div>
-        <div class="form-group">
-          <label for="s3Bucket">Bucket</label>
-          <input
-            id="s3Bucket"
-            v-model="formData.s3_bucket"
-            type="text"
-            required
-            class="form-input"
-          />
-        </div>
-        <div class="form-group">
-          <label for="s3Key">Path</label>
-          <input
-            id="s3Key"
-            v-model="formData.s3_key"
-            type="text"
-            required
-            class="form-input"
-          />
-        </div>
-      </form>
+    <form @submit.prevent="submitDataset" class="dataset-form">
+      <div class="form-group">
+        <label for="fileName">File name:</label>
+        <input
+          id="fileName"
+          v-model="formData.file_name"
+          type="text"
+          required
+          class="form-input"
+        />
+      </div>
 
-      <template #footer>
-        <button
-          type="button"
-          class="secondary-button"
-          @click="closeModal"
-          :disabled="isSubmitting"
-        >
-          Cancel
-        </button>
-        <button
-          type="button"
-          class="primary-button"
-          @click="submitDataset"
-          :disabled="isSubmitting || !formData.file_name || !formData.s3_key"
-        >
-          Confirm
-        </button>
-      </template>
-    </BaseModal>
+      <div class="form-group">
+        <label for="s3Key">Path (S3 Key):</label>
+        <input
+          id="s3Key"
+          v-model="formData.s3_key"
+          type="text"
+          required
+          class="form-input"
+        />
+      </div>
+
+      <div class="form-group" style="margin-top: 15px;">
+        <label for="fileUpload">Select file:</label>
+        <input
+          id="fileUpload"
+          type="file"
+          @change="handleFileChange"
+          required
+          class="form-input-file"
+        />
+        <small v-if="formData.file" class="file-info">
+          Selected: {{ formData.file.name }} ({{ (formData.file.size / 1024).toFixed(2) }} KB)
+        </small>
+      </div>
+    </form>
+
+    <template #footer>
+      <button
+        type="button"
+        class="secondary-button"
+        @click="closeModal"
+        :disabled="isSubmitting"
+      >
+        Cancel
+      </button>
+      <button
+        type="button"
+        class="primary-button"
+        @click="submitDataset"
+        :disabled="isSubmitting || !formData.file_name || !formData.s3_key || !formData.file"
+      >
+        {{ isSubmitting ? 'Uploading...' : 'Confirm' }}
+      </button>
+    </template>
+  </BaseModal>
   </div>
 </template>
 
