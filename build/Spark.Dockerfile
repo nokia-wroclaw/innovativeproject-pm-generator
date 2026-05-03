@@ -31,15 +31,14 @@ RUN SPARK_DOWNLOAD_URL="https://archive.apache.org/dist/spark/spark-${SPARK_VERS
     && rm apache-spark.tgz
 
 
-ARG USERNAME=sparkuser
+ARG USERNAME=hostuser
+ARG USER_UID=1000
+ARG USER_GID=1000
 
-ARG SPARK_GROUP=sparkusers
-ARG SPARK_GROUP_GID=1005
 ENV APP_HOME=/home/${USERNAME}/app
 
-RUN groupadd --gid 1000 $USERNAME \
-    && groupadd --gid $SPARK_GROUP_GID $SPARK_GROUP \
-    && useradd --uid 1000 --gid 1000 -m -s /bin/bash -G $SPARK_GROUP $USERNAME \
+RUN groupadd --gid $USER_GID $USERNAME \
+    && useradd --uid $USER_UID --gid $USER_GID -m -s /bin/bash $USERNAME \
     && echo "$USERNAME ALL=(ALL) NOPASSWD: ALL" >> /etc/sudoers
 
 RUN chown -R $USERNAME:$USERNAME ${SPARK_HOME} \

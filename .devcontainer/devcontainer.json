@@ -12,17 +12,17 @@
 	// The 'service' property is the name of the service for the container that VS Code should
 	// use. Update this value and .devcontainer/docker-compose.yml to the real service name.
 	"service": "spark-jupyter",
-	"remoteUser": "sparkuser",
+	"remoteUser": "${localEnv:USER}",
 	"updateRemoteUserUID": true,
 	"initializeCommand": "[ -n \"$DEVCONTAINER_SSH_PORT\" ] || (echo 'ERROR: Run start_env.sh first and open VS Code from that shell' && exit 1)",
   	"appPort": "${localEnv:DEVCONTAINER_SSH_PORT}:22",
 	// The optional 'workspaceFolder' property is the path VS Code should open by default when
 	// connected. This is typically a file mount in .devcontainer/docker-compose.yml
-	"workspaceFolder": "/home/sparkuser/app/apps",
-  	"workspaceMount": "source=${localWorkspaceFolder},target=/home/sparkuser/app/apps,type=bind",
+	"workspaceFolder": "/home/${localEnv:USER}/app/apps",
+  	"workspaceMount": "source=${localWorkspaceFolder},target=/home/${localEnv:USER}/app/apps,type=bind",
 	"remoteEnv": {
-		"UV_PROJECT_ENVIRONMENT": "/home/sparkuser/app/apps/.venv",
-		"VIRTUAL_ENV": "/home/sparkuser/app/apps/.venv"
+		"UV_PROJECT_ENVIRONMENT": "/home/${localEnv:USER}/app/apps/.venv",
+		"VIRTUAL_ENV": "/home/spa${localEnv:USER}/app/apps/.venv"
 	},
 	"features": {
 		// Add this first!
@@ -35,7 +35,7 @@
 		}
 	},
 	"mounts": [
-		"source=/home/shared_dir,target=/home/sparkuser/app/apps/data/shared_dir,type=bind,consistency=cached"
+		"source=/home/shared_dir,target=/home/${localEnv:USER}/app/apps/data/shared_dir,type=bind,consistency=cached"
     ],
 	"customizations": {
 		"vscode": {
