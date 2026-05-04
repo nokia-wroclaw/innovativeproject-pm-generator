@@ -22,7 +22,7 @@
   	"workspaceMount": "source=${localWorkspaceFolder},target=/home/${localEnv:USER}/app/apps,type=bind",
 	"remoteEnv": {
 		"UV_PROJECT_ENVIRONMENT": "/home/${localEnv:USER}/app/apps/.venv",
-		"VIRTUAL_ENV": "/home/spa${localEnv:USER}/app/apps/.venv"
+		"VIRTUAL_ENV": "/home/${localEnv:USER}/app/apps/.venv"
 	},
 	"features": {
 		// Add this first!
