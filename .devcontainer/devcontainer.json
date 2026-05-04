@@ -35,7 +35,7 @@
 		}
 	},
 	"mounts": [
-		"source=/home/shared_dir,target=/home/${localEnv:USER}/app/apps/data/shared_dir,type=bind,consistency=cached"
+		"source=/home/shared_dir,target=/home/${localEnv:USER}/app/apps/apps/generator/data/shared_dir,type=bind,consistency=cached"
     ],
 	"customizations": {
 		"vscode": {

@@ -13,7 +13,7 @@ services:
         - USERNAME=${USER:-hostuser}
         - DEVCONTAINER=true
     volumes:
-      - ..:/home/sparkuser/app/apps:cached
+      - ..:/home/${USER}/app/apps:cached
     deploy:
       resources:
         reservations:
