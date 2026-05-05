@@ -55,7 +55,7 @@ class S3Service:
         self._db.refresh(dataset)
         return dataset
 
-    def change_dataset_status(self, dataset_id: int, status: DatasetStatus) -> Dataset | None:
+    def change_dataset_status(self, dataset_id: int, status: DatasetStatus) -> type[Dataset]:
         dataset = self.get_dataset(dataset_id)
         dataset.status = status
         self._db.commit()
