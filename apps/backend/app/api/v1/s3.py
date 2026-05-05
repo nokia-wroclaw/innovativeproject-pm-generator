@@ -1,13 +1,22 @@
 import typing
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 
 from app.core.auth import require_auth
 from app.db.database import db_manager
-from app.models.s3 import DatasetRead, DatasetCreate, UploadUrlResponse
-
 from app.services.s3 import S3Service
+
+from app.models.s3 import (
+    DatasetRead,
+    DatasetCreate,
+    DatasetStatusUpdate,
+    PartInfo,
+    CompleteMultipartRequest,
+    AbortMultipartRequest,
+    MultipartInitiateResponse,
+    PartUrlResponse,
+)
 
 router = APIRouter(dependencies=[Depends(require_auth)])
 
@@ -18,12 +27,12 @@ def get_s3_service(
     return S3Service(db=db)
 
 
-@router.post("/datasets", response_model=UploadUrlResponse)
+@router.post("/datasets", response_model=DatasetRead)
 async def create_s3_dataset(
     dataset: DatasetCreate,
     service: S3Service = Depends(get_s3_service),
     token_payload: dict[str, typing.Any] = Depends(require_auth),
-) -> UploadUrlResponse:
+) -> DatasetRead:
     user_uuid = token_payload.get("sub")
 
     s3_dataset = service.create_dataset(
@@ -32,10 +41,77 @@ async def create_s3_dataset(
         s3_key=dataset.s3_key,
     )
 
-    presigned_url = service.get_presigned_url(s3_dataset)
-    return UploadUrlResponse.model_validate({"url": presigned_url, "file_name": dataset.file_name})
+    return DatasetRead.model_validate(s3_dataset)
+
+
+@router.post("/datasets/{dataset_id}/multipart/initiate", response_model=MultipartInitiateResponse)
+async def initiate_multipart(
+    dataset_id: int,
+    service: S3Service = Depends(get_s3_service),
+):
+    dataset = service.get_dataset(dataset_id)
+    if not dataset:
+        raise HTTPException(status_code=404, detail="Dataset not found")
+
+    result = service.initiate_multipart_upload(dataset)
+    return MultipartInitiateResponse.model_validate(result)
+
+
+@router.get("/datasets/{dataset_id}/multipart/part-url", response_model=PartUrlResponse)
+async def get_part_url(
+    dataset_id: int,
+    upload_id: str = Query(...),
+    part_number: int = Query(...),
+    service: S3Service = Depends(get_s3_service),
+):
+    dataset = service.get_dataset(dataset_id)
+    if not dataset:
+        raise HTTPException(status_code=404, detail="Dataset not found")
+
+    url = service.get_presigned_part_url(dataset.s3_key, upload_id, part_number)
+    return PartUrlResponse.model_validate({"url": url})
+
+
+@router.post("/datasets/{dataset_id}/multipart/complete")
+async def complete_multipart(
+    dataset_id: int, request: CompleteMultipartRequest, service: S3Service = Depends(get_s3_service)
+):
+    dataset = service.get_dataset(dataset_id)
+    if not dataset:
+        raise HTTPException(status_code=404, detail="Dataset not found")
+
+    parts_dict = [{"PartNumber": p.PartNumber, "ETag": p.ETag} for p in request.parts]
+    return service.complete_multipart_upload(dataset.s3_key, request.upload_id, parts_dict)
+
+
+@router.post("/datasets/{dataset_id}/multipart/abort")
+async def abort_multipart(
+    dataset_id: int, request: AbortMultipartRequest, service: S3Service = Depends(get_s3_service)
+):
+    dataset = service.get_dataset(dataset_id)
+    if not dataset:
+        raise HTTPException(status_code=404, detail="Dataset not found")
+
+    service.abort_multipart_upload(dataset.s3_key, request.upload_id)
+    return {"status": "aborted"}
+
+
+@router.post("/datasets/update_status", response_model=DatasetRead)
+async def confirm_s3_dataset(
+    dataset_status: DatasetStatusUpdate, service: S3Service = Depends(get_s3_service)
+) -> DatasetRead:
+    return DatasetRead.model_validate(
+        service.change_dataset_status(dataset_status.dataset_id, dataset_status.status)
+    )
 
 
 @router.get("/datasets", response_model=list[DatasetRead])
 def get_s3_datasets(service: S3Service = Depends(get_s3_service)) -> list[DatasetRead]:
     return [DatasetRead.model_validate(dataset) for dataset in service.get_datasets()]
+
+
+
+@router.delete("/datasets/{dataset_id}")
+def delete_s3_dataset(dataset_id: int, service: S3Service = Depends(get_s3_service)) -> dict:
+    service.delete_dataset(dataset_id)
+    return {"message": "dataset deleted successfully", "dataset_id": dataset_id}

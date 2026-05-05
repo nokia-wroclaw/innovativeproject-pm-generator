@@ -22,3 +22,31 @@ class DatasetCreate(BaseModel):
 class UploadUrlResponse(BaseModel):
     url: str
     file_name: str
+
+
+class DatasetStatusUpdate(BaseModel):
+    dataset_id: int
+    status: DatasetStatus
+
+
+class PartInfo(BaseModel):
+    PartNumber: int
+    ETag: str
+
+
+class CompleteMultipartRequest(BaseModel):
+    upload_id: str
+    parts: list[PartInfo]
+
+
+class AbortMultipartRequest(BaseModel):
+    upload_id: str
+
+
+class MultipartInitiateResponse(BaseModel):
+    upload_id: str
+    s3_key: str
+
+
+class PartUrlResponse(BaseModel):
+    url: str
