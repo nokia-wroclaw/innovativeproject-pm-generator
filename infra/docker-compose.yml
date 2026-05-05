@@ -24,6 +24,10 @@ services:
     build:
       context: ..
       dockerfile: build/Spark.Dockerfile
+      args:
+        USER_UID: ${USER_UID:-1000}
+        USER_GID: ${USER_GID:-1000}
+        USERNAME: ${USER:-hostuser}
     ports:
       - "${JUPYTER_PORT}:4041"
       - "${SPARK_MASTER_PORT}:18080"

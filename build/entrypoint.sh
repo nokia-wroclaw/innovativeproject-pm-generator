@@ -1,8 +1,8 @@
 #!/bin/bash
 set -e
 
-APP_HOME="${APP_HOME:-/home/sparkuser/app}"
-export USER="${USER:-sparkuser}"
+APP_HOME="${APP_HOME:-/home/${USER}/app}"
+export USER="${USER}"
 export LOGNAME="${LOGNAME:-$USER}"
 export HADOOP_USER_NAME="${HADOOP_USER_NAME:-$USER}"
 export HOME="${APP_HOME}/apps/generator"
@@ -40,7 +40,6 @@ if [ "$DEVCONTAINER" = "true" ]; then
     uv sync --package genpm-generator --no-cache
     source /home/sparkuser/app/.venv/bin/activate
     uv run python -m ipykernel install --user --name=spark-env --display-name "Python (Spark Project)"
-
 fi
 
 start_jupyter
