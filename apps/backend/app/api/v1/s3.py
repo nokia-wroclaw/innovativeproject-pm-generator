@@ -80,8 +80,8 @@ async def complete_multipart(
     if not dataset:
         raise HTTPException(status_code=404, detail="Dataset not found")
 
-    parts_dict = [{"PartNumber": p.PartNumber, "ETag": p.ETag} for p in request.parts]
-    return service.complete_multipart_upload(dataset.s3_key, request.upload_id, parts_dict)
+    parts_dicts = [{"PartNumber": p.PartNumber, "ETag": p.ETag} for p in request.parts]
+    return service.complete_multipart_upload(dataset.s3_key, request.upload_id, parts_dicts)
 
 
 @router.post("/datasets/{dataset_id}/multipart/abort")

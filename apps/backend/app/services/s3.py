@@ -1,5 +1,8 @@
 import os
+import unicodedata
 import uuid
+import re
+from pathlib import Path
 
 import boto3
 from botocore.client import Config
@@ -17,7 +20,7 @@ s3_client_internal = boto3.client(
     config=Config(signature_version="s3v4", s3={"addressing_style": "path"}),
 )
 
-S3_EXTERNAL_URL = os.getenv("S3_EXTERNAL_URL", "http://localhost:9000")
+S3_EXTERNAL_URL = os.getenv("S3_EXTERNAL_URL")
 
 s3_client_external = boto3.client(
     "s3",
@@ -39,21 +42,21 @@ class S3Service:
 
     def create_dataset(self, user_uuid: uuid.UUID, file_name: str, s3_key: str) -> Dataset:
         unique_id = str(uuid.uuid4())
-        final_s3_key = f"{s3_key}/{unique_id}_{file_name}"
 
-        dataset = Dataset(user_uuid=user_uuid, file_name=file_name, s3_key=final_s3_key)
+        name = Path(file_name).name
+        name = unicodedata.normalize("NFKD", name).encode("ascii", "ignore").decode("ascii")
+        name = re.sub(r"[^\w\.\-]", "_", name)
+
+        final_s3_key = f"{s3_key}/{unique_id}_{name}"
+
+        dataset = Dataset(user_uuid=user_uuid, file_name=name, s3_key=final_s3_key)
         self._db.add(dataset)
         self._db.commit()
         self._db.refresh(dataset)
         return dataset
 
-    def change_dataset_status(self, dataset_id: int, status: DatasetStatus) -> type[Dataset]:
-        dataset = self._db.query(Dataset).filter(Dataset.id == dataset_id).first()
-        if not dataset:
-            raise HTTPException(
-                status_code=404, detail=f"[S3] Couldn't find dataset with id: {dataset_id}"
-            )
-
+    def change_dataset_status(self, dataset_id: int, status: DatasetStatus) -> Dataset | None:
+        dataset = self.get_dataset(dataset_id)
         dataset.status = status
         self._db.commit()
         self._db.refresh(dataset)
@@ -103,12 +106,16 @@ class S3Service:
             raise HTTPException(status_code=400, detail=f"[S3] Cancel upload error: {str(e)}")
 
     def delete_dataset(self, dataset_id: int) -> None:
-        dataset = self._db.query(Dataset).filter(Dataset.id == dataset_id).first()
+        dataset = self.get_dataset(dataset_id)
         self._db.delete(dataset)
         self._db.commit()
 
-    def get_dataset(self, dataset_id: int) -> Dataset | None:
-        return self._db.query(Dataset).filter(Dataset.id == dataset_id).first()
+    def get_dataset(self, dataset_id: int) -> type[Dataset]:
+        dataset = self._db.query(Dataset).filter(Dataset.id == dataset_id).first()
+        if not dataset:
+            raise HTTPException(status_code=404, detail=f"[S3] Dataset not found: {dataset_id}")
+
+        return dataset
 
     def get_datasets(self) -> list[type[Dataset]]:
         return self._db.query(Dataset).all()
