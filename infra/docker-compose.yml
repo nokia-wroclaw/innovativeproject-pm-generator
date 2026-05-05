@@ -37,6 +37,9 @@ services:
       - /home/shared_dir:/home/sparkuser/app/apps/generator/data/shared_dir
     env_file:
       - ../.env
+    networks:
+      - default
+      - shared-network
     deploy:
       resources:
         reservations:
@@ -97,6 +100,9 @@ services:
       MINIO_ROOT_PASSWORD: ${S3_PASSWORD}
       MINIO_API_CORS_ALLOW_ORIGIN: "*"
     command: server /data --console-address ":9001"
+    networks:
+      - default
+      - shared-network
     volumes:
       - /${S3_DIRECTORY}/data:/data
 
