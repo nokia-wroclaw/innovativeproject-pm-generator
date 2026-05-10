@@ -1,11 +1,12 @@
-import os, shutil
-from math import ceil
+import os
+import shutil
 from pathlib import Path
-import yaml
 
-from .consts import SPARK_CHECKPOINT_PATH
+import yaml
 from dotenv import load_dotenv
 from pyspark.sql import DataFrame, SparkSession
+
+from .consts import SPARK_CHECKPOINT_PATH
 
 load_dotenv()
 
@@ -15,6 +16,10 @@ class SparkDataManager:
         SPARK_CORE_NUMBER = os.getenv("SPARK_CORE_NUMBER") or "8"
         SPARK_EXECUTOR_MEMORY = os.getenv("SPARK_EXECUTOR_MEMORY") or "10g"
         SPARK_DRIVER_MEMORY = os.getenv("SPARK_DRIVER_MEMORY") or "6g"
+        print("\tSPARK DATA MANAGER")
+        print(f"\n\tSPARK_CORE_NUMBER = {SPARK_CORE_NUMBER}")
+        print(f"\tSPARK_EXECUTOR_MEMORY = {SPARK_EXECUTOR_MEMORY}")
+        print(f"\tSPARK_DRIVER_MEMORY = {SPARK_DRIVER_MEMORY}")
 
         PARALLELISM_COUNT = "8"
 
@@ -67,8 +72,8 @@ def load_config(path: str) -> dict:
     config_path = Path(path)
     if not config_path.exists():
         raise FileNotFoundError(
-            f"Config file not found. Copy pipeline_config.yaml.example "
-            f"to pipeline_config.yaml and fill in your values."
+            "Config file not found. Copy pipeline_config.yaml.example "
+            "to pipeline_config.yaml and fill in your values."
         )
 
     with open(config_path) as f:
