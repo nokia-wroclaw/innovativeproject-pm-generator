@@ -34,8 +34,8 @@ services:
       - "${SPARK_MASTER_PORT}:18080"
       - "${SPARK_UI_PORT}:4040"
     volumes:
-      - ../apps/generator:/home/sparkuser/app/apps/generator
-      - /home/shared_dir:/home/sparkuser/app/apps/generator/data/shared_dir
+      - ../apps/generator:/home/${USER}/app/apps/generator
+      - /home/shared_dir:/home/${USER}/app/apps/generator/data/shared_dir
     env_file:
       - ../.env
     networks:
