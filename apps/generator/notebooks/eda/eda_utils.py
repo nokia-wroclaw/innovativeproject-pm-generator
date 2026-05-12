@@ -1,5 +1,10 @@
+import math
+
+import ipywidgets as widgets
 import pandas as pd
+import plotly.express as px
 import plotly.graph_objects as go
+from IPython.display import display
 from plotly.subplots import make_subplots
 from pyspark.ml.feature import VectorAssembler
 from pyspark.ml.stat import Correlation
@@ -810,3 +815,117 @@ def analyze_kpi_vs_metadata(df_kpi, df_meta):
     results_df = pd.DataFrame(results)
 
     return results_df
+
+
+def visualize_kpi_on_simple_reports_groups(kpi_reports_df, kpi_columns, metadata_columns):
+    dropdown_kpi = widgets.Dropdown(options=kpi_columns, description="Select KPI:")
+    dropdown_meta = widgets.Dropdown(options=metadata_columns, description="Group by:")
+    output_plot = widgets.Output()
+
+    def manualny_test_istotnosci(grupa1, grupa2):
+        if len(grupa1) < 2 or len(grupa2) < 2:
+            return "Not enough data for the test."
+
+        m1, m2 = grupa1.mean(), grupa2.mean()
+        v1, v2 = grupa1.var(), grupa2.var()
+        n1, n2 = len(grupa1), len(grupa2)
+
+        if v1 == 0 and v2 == 0:
+            return "Data in both groups are identical (no variance)."
+
+        t_stat = abs(m1 - m2) / math.sqrt((v1 / n1) + (v2 / n2))
+
+        if t_stat > 1.96:
+            return f"✅ SIGNIFICANT difference detected! (T-score = {t_stat:.2f} > threshold 1.96)"
+        else:
+            return f"❌ INSIGNIFICANT difference, likely due to chance. (T-score = {t_stat:.2f})"
+
+    def update_dashboard(kpi, meta):
+        with output_plot:
+            output_plot.clear_output(wait=True)
+
+            fig = px.box(
+                kpi_reports_df,
+                x=meta,
+                y=kpi,
+                title=f"Analysis: {kpi} grouped by {meta}",
+                color=meta,
+                template="plotly_white",
+            )
+            fig.show()
+
+            print("-" * 60)
+
+            grupy = kpi_reports_df[meta].dropna().unique()
+
+            if len(grupy) == 2:
+                g1_data = kpi_reports_df[kpi_reports_df[meta] == grupy[0]][kpi].dropna()
+                g2_data = kpi_reports_df[kpi_reports_df[meta] == grupy[1]][kpi].dropna()
+                print(f"Comparison: {grupy[0]} vs {grupy[1]}")
+                print(manualny_test_istotnosci(g1_data, g2_data))
+
+            elif len(grupy) > 2:
+                print(
+                    f"We have {len(grupy)} groups. \
+                        Analysis of percentage deviations between medians:"
+                )
+                mediany = kpi_reports_df.groupby(meta)[kpi].median()
+                for g, val in mediany.items():
+                    print(f" -> {g}: Median = {val:.2f}")
+
+                roznica_max_min = mediany.max() - mediany.min()
+                procentowo = (roznica_max_min / mediany.min()) * 100 if mediany.min() != 0 else 0
+                if procentowo > 15:
+                    print(
+                        f"✅ Business differences are noticeable \
+                              (Maximum spread: {procentowo:.1f}%)"
+                    )
+                else:
+                    print(f"❌ Distributions appear to be similar (Spread: {procentowo:.1f}%)")
+            else:
+                print("Not enough groups to compare.")
+
+    widgets.interactive(update_dashboard, kpi=dropdown_kpi, meta=dropdown_meta)
+    display(dropdown_kpi, dropdown_meta, output_plot)
+
+
+def visualize_heatmap_kpi_on_simple_reports_groups(kpi_reports_df, kpi_columns, metadata_columns):
+    print("Generating spread heatmaps for each metadata...")
+
+    for md_col in metadata_columns:
+        agg_df = kpi_reports_df.groupby(md_col)[kpi_columns].median()
+
+        if len(agg_df) < 2:
+            print(f"⏩ Skipping: {md_col} (Not enough unique groups to compare)")
+            continue
+
+        rozstrzaly = agg_df.max() - agg_df.min()
+
+        norm_df = (agg_df - agg_df.min()) / rozstrzaly.replace(0, 1)
+
+        hover_text = []
+        for i in range(len(agg_df.index)):
+            row_text = []
+            for j in range(len(agg_df.columns)):
+                val = agg_df.iloc[i, j]
+                row_text.append(f"Original median: {val:.3f}")
+            hover_text.append(row_text)
+
+        fig = px.imshow(
+            norm_df,
+            labels=dict(x="KPIs", y=f"Groups in '{md_col}'", color="Relative strength (0-1)"),
+            x=agg_df.columns,
+            y=agg_df.index,
+            title=f"Where are the biggest differences? Grouped by: {md_col}",
+            color_continuous_scale="RdYlBu_r",
+            aspect="auto",
+            height=400 + (len(agg_df.index) * 20),
+        )
+
+        fig.update_traces(
+            customdata=hover_text,
+            hovertemplate="Group: %{y}<br>KPI: \
+                %{x}<br>Relative scale: %{z:.2f}<br>%{customdata}<extra></extra>",
+        )
+
+        fig.show()
