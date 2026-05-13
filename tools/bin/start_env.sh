@@ -122,7 +122,7 @@ else
 fi
 
 if [ "$CREATE_BUCKET" = true ]; then
-  docker compose -p "${USER}_project" -f infra/docker-compose.yml exec -T minio mc alias set myminio http://localhost:9000 ${S3_USER} ${S3_PASSWORD}
+  docker compose -p "${USER}_project" -f infra/docker-compose.yml exec -T minio mc alias set myminio http://localhost:9000 ${AWS_ACCESS_KEY_ID} ${AWS_SECRET_ACCESS_KEY}
   docker compose -p "${USER}_project" -f infra/docker-compose.yml exec -T minio mc mb myminio/${S3_BUCKET} --ignore-existing
   docker compose -p "${USER}_project" -f infra/docker-compose.yml exec -T minio mc anonymous set public myminio/${S3_BUCKET}
 

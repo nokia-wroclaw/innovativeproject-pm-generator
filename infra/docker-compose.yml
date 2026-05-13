@@ -66,8 +66,9 @@ services:
       KEYCLOAK_REQUIRED_ROLES: ${KEYCLOAK_REQUIRED_ROLES}
       FRONTEND_ORIGIN: http://localhost:${FRONTEND_PORT:-5173}
       S3_URL: ${S3_URL}
-      S3_USER: ${S3_USER}
-      S3_PASSWORD: ${S3_PASSWORD}
+      S3_EXTERNAL_URL: ${S3_EXTERNAL_URL}
+      AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID}
+      AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY}
       S3_BUCKET: ${S3_BUCKET}
     command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload --reload-dir /app/app
     networks:
@@ -96,8 +97,8 @@ services:
       - "${S3_API_PORT}:9000"
       - "${S3_WEBCONSOLE_PORT}:9001"
     environment:
-      MINIO_ROOT_USER: ${S3_USER}
-      MINIO_ROOT_PASSWORD: ${S3_PASSWORD}
+      MINIO_ROOT_USER: ${AWS_ACCESS_KEY_ID}
+      MINIO_ROOT_PASSWORD: ${AWS_SECRET_ACCESS_KEY}
       MINIO_API_CORS_ALLOW_ORIGIN: "*"
     command: server /data --console-address ":9001"
     networks:

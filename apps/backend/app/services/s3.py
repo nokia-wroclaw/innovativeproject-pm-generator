@@ -10,24 +10,19 @@ from fastapi import HTTPException
 from sqlalchemy.orm import Session
 
 from app.db.schemas import Dataset, DatasetStatus
+from app.core.config import settings
+
 
 s3_client_internal = boto3.client(
     "s3",
-    endpoint_url=os.getenv("S3_URL"),
-    aws_access_key_id=os.getenv("S3_USER"),
-    aws_secret_access_key=os.getenv("S3_PASSWORD"),
-    region_name="us-east-1",
+    endpoint_url=str(settings.s3_url),
     config=Config(signature_version="s3v4", s3={"addressing_style": "path"}),
 )
 
-S3_EXTERNAL_URL = os.getenv("S3_EXTERNAL_URL")
 
 s3_client_external = boto3.client(
     "s3",
-    endpoint_url=S3_EXTERNAL_URL,
-    aws_access_key_id=os.getenv("S3_USER"),
-    aws_secret_access_key=os.getenv("S3_PASSWORD"),
-    region_name="us-east-1",
+    endpoint_url=str(settings.s3_external_url),
     config=Config(signature_version="s3v4", s3={"addressing_style": "path"}),
 )
 
