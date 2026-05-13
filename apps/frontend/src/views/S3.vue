@@ -197,7 +197,6 @@ const submitDataset = async () => {
     await processUploadLoop(file, uploadState, uploadTask);
 
   } catch (error) {
-    console.log(error)
     console.error('Failed to process dataset:', error);
     alert(error.message || 'Error processing dataset');
     isPreparing.value = false;
