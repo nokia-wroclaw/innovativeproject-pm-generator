@@ -67,7 +67,12 @@ export const abortMultipartUpload = async (datasetId, uploadId) => {
     body: JSON.stringify({ upload_id: uploadId })
   });
 };
-
+export const registerExistingS3Dataset = async (datasetData) => {
+  return await authorizedRequest('/api/v1/datasets/register', {
+    method: 'POST',
+    body: JSON.stringify(datasetData),
+  });
+};
 
 
 export const deleteS3Dataset = async (datasetID) => {

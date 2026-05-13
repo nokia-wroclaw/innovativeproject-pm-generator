@@ -34,6 +34,11 @@ class PartInfo(BaseModel):
     ETag: str
 
 
+class DatasetRegisterRequest(BaseModel):
+    s3_key: str
+    file_name: str | None = None
+
+
 class CompleteMultipartRequest(BaseModel):
     upload_id: str
     parts: list[PartInfo]

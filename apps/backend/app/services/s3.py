@@ -50,6 +50,30 @@ class S3Service:
         self._db.refresh(dataset)
         return dataset
 
+    def register_existing_dataset(
+        self, user_uuid: uuid.UUID, s3_key: str, file_name: str | None = None
+    ) -> Dataset:
+        try:
+            self.s3_client_internal.head_object(Bucket=S3_BUCKET, Key=s3_key)
+        except Exception as e:
+            raise HTTPException(
+                status_code=404, detail=f"[S3] Dataset not found on S3 or access denied: {str(e)}"
+            )
+
+        if not file_name:
+            file_name = Path(s3_key).name
+
+        name = unicodedata.normalize("NFKD", file_name).encode("ascii", "ignore").decode("ascii")
+        name = re.sub(r"[^\w\.\-]", "_", name)
+
+        dataset = Dataset(
+            user_uuid=user_uuid, file_name=name, s3_key=s3_key, status=DatasetStatus.COMPLETED
+        )
+        self._db.add(dataset)
+        self._db.commit()
+        self._db.refresh(dataset)
+        return dataset
+
     def change_dataset_status(self, dataset_id: int, status: DatasetStatus) -> type[Dataset]:
         dataset = self.get_dataset(dataset_id)
         dataset.status = status
@@ -102,6 +126,14 @@ class S3Service:
 
     def delete_dataset(self, dataset_id: int) -> None:
         dataset = self.get_dataset(dataset_id)
+
+        try:
+            self.s3_client_internal.delete_object(Bucket=S3_BUCKET, Key=dataset.s3_key)
+        except Exception as e:
+            raise HTTPException(
+                status_code=400, detail=f"[S3] Error deleting file from S3: {str(e)}"
+            )
+
         self._db.delete(dataset)
         self._db.commit()
 

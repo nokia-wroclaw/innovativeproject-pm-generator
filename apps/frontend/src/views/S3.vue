@@ -14,7 +14,8 @@ import {
   initiateMultipartUpload,
   getPresignedPartUrl,
   completeMultipartUpload,
-  abortMultipartUpload
+  abortMultipartUpload,
+  registerExistingS3Dataset
 } from '../services/s3';
 
 const CHUNK_SIZE = 5 * 1024 * 1024;
@@ -26,6 +27,8 @@ const isPreparing = ref(false);
 const activeRow = ref(null);
 const showDeleteComponent = ref(false);
 const activeUploads = ref([]);
+
+const uploadMode = ref('upload');
 
 const formData = ref({ file_name: '', s3_key: '', file: null });
 
@@ -70,7 +73,11 @@ onBeforeUnmount(() => {
 });
 
 const openModal = () => { isModalOpen.value = true; };
-const closeModal = () => { isModalOpen.value = false; formData.value = { file_name: '', s3_key: '', file: null }; };
+const closeModal = () => {
+  isModalOpen.value = false;
+  formData.value = { file_name: '', s3_key: '', file: null };
+  uploadMode.value = 'upload';
+};
 
 const handleRowAction = ({ type, row }) => {
   activeRow.value = row;
@@ -141,11 +148,25 @@ const processUploadLoop = async (file, uploadState, uploadTask) => {
 
 const submitDataset = async () => {
   const { file_name, s3_key, file } = formData.value;
-  if (!file_name || !s3_key || !file) return;
+
+  if (!s3_key) return;
 
   isPreparing.value = true;
 
   try {
+    if (uploadMode.value === 'register') {
+      await registerExistingS3Dataset({ file_name, s3_key });
+      closeModal();
+      if (tableRef.value) tableRef.value.refresh();
+      isPreparing.value = false;
+      return;
+    }
+
+    if (!file_name || !file) {
+      isPreparing.value = false;
+      return;
+    }
+
     const dataset = await createS3Dataset({ file_name, s3_key });
     const initResponse = await initiateMultipartUpload(dataset.id);
 
@@ -176,7 +197,9 @@ const submitDataset = async () => {
     await processUploadLoop(file, uploadState, uploadTask);
 
   } catch (error) {
-    console.error('Failed to initiate upload:', error);
+    console.log(error)
+    console.error('Failed to process dataset:', error);
+    alert(error.message || 'Error processing dataset');
     isPreparing.value = false;
   }
 };
@@ -282,25 +305,57 @@ const tableProviderWrapper = async (params) => {
       </template>
     </DataTable>
 
-    <BaseModal :show="isModalOpen" title="Add new S3 dataset" width="500px" @close="closeModal">
+    <BaseModal :show="isModalOpen" title="Add S3 dataset" width="500px" @close="closeModal">
       <form @submit.prevent="submitDataset" class="dataset-form">
+
         <div class="form-group">
-          <label for="fileName">File name:</label>
-          <input id="fileName" v-model="formData.file_name" type="text" required class="form-input" :disabled="isPreparing" />
+          <label>Action type:</label>
+          <div class="radio-group">
+            <label class="radio-label">
+              <input type="radio" value="upload" v-model="uploadMode" :disabled="isPreparing" />
+              Upload local file
+            </label>
+            <label class="radio-label">
+              <input type="radio" value="register" v-model="uploadMode" :disabled="isPreparing" />
+              Register existing S3 file
+            </label>
+          </div>
+        </div>
+
+        <div class="form-group">
+          <label for="fileName">File name <span v-if="uploadMode === 'register'">(Optional)</span>:</label>
+          <input
+            id="fileName"
+            v-model="formData.file_name"
+            type="text"
+            :required="uploadMode === 'upload'"
+            class="form-input"
+            :disabled="isPreparing"
+            :placeholder="uploadMode === 'register' ? 'Leave empty to use S3 key name' : ''"
+          />
         </div>
         <div class="form-group">
           <label for="s3Key">Path (S3 Key):</label>
-          <input id="s3Key" v-model="formData.s3_key" type="text" required class="form-input" :disabled="isPreparing" />
+          <input id="s3Key" v-model="formData.s3_key" type="text" required class="form-input" :disabled="isPreparing" placeholder="e.g. data/my-file.csv" />
         </div>
-        <div class="form-group file-upload-section">
+
+        <div class="form-group file-upload-section" v-if="uploadMode === 'upload'">
           <label for="fileUpload">Select file:</label>
           <input id="fileUpload" type="file" @change="handleFileChange" required class="form-input-file" :disabled="isPreparing" />
         </div>
+
       </form>
       <template #footer>
         <button type="button" class="secondary-button" @click="closeModal" :disabled="isPreparing">Cancel</button>
-        <button type="button" class="primary-button" @click="submitDataset" :disabled="isPreparing || !formData.file_name || !formData.s3_key || !formData.file">
-          {{ isPreparing ? 'Preparing...' : 'Start Upload' }}
+        <button
+          type="button"
+          class="primary-button"
+          @click="submitDataset"
+          :disabled="isPreparing || !formData.s3_key || (uploadMode === 'upload' && (!formData.file_name || !formData.file))"
+        >
+          <span v-if="isPreparing">Processing...</span>
+          <span v-else-if="uploadMode === 'register'">Register File</span>
+          <span v-else>Start Upload</span>
         </button>
       </template>
     </BaseModal>
@@ -345,6 +400,10 @@ const tableProviderWrapper = async (params) => {
 .form-input { padding: 10px 12px; border: 1px solid #d1d5db; border-radius: 6px; font-size: 0.95rem; outline: none; transition: border-color 0.2s; }
 .form-input:focus { border-color: #3b82f6; }
 .file-upload-section { margin-top: 10px; }
+
+.radio-group { display: flex; gap: 16px; align-items: center; padding: 6px 0; }
+.radio-label { display: flex; align-items: center; gap: 8px; font-size: 0.9rem; cursor: pointer; color: #4b5563; font-weight: normal !important; }
+.radio-label input[type="radio"] { cursor: pointer; }
 
 .table-upload-cell { display: flex; align-items: center; gap: 10px; min-width: 140px; }
 .table-progress-bar { flex-grow: 1; height: 8px; background-color: #e5e7eb; border-radius: 10px; overflow: hidden; }

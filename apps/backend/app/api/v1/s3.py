@@ -16,6 +16,7 @@ from app.models.s3 import (
     AbortMultipartRequest,
     MultipartInitiateResponse,
     PartUrlResponse,
+    DatasetRegisterRequest,
 )
 
 router = APIRouter(dependencies=[Depends(require_auth)])
@@ -84,6 +85,23 @@ async def complete_multipart(
     return service.complete_multipart_upload(dataset.s3_key, request.upload_id, parts_dicts)
 
 
+@router.post("/datasets/register", response_model=DatasetRead)
+async def register_s3_dataset(
+    request: DatasetRegisterRequest,
+    service: S3Service = Depends(get_s3_service),
+    token_payload: dict[str, typing.Any] = Depends(require_auth),
+) -> DatasetRead:
+    user_uuid = token_payload.get("sub")
+
+    s3_dataset = service.register_existing_dataset(
+        user_uuid=user_uuid,
+        s3_key=request.s3_key,
+        file_name=request.file_name,
+    )
+
+    return DatasetRead.model_validate(s3_dataset)
+
+
 @router.post("/datasets/{dataset_id}/multipart/abort")
 async def abort_multipart(
     dataset_id: int, request: AbortMultipartRequest, service: S3Service = Depends(get_s3_service)
@@ -108,7 +126,6 @@ async def confirm_s3_dataset(
 @router.get("/datasets", response_model=list[DatasetRead])
 def get_s3_datasets(service: S3Service = Depends(get_s3_service)) -> list[DatasetRead]:
     return [DatasetRead.model_validate(dataset) for dataset in service.get_datasets()]
-
 
 
 @router.delete("/datasets/{dataset_id}")
