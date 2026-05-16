@@ -301,28 +301,24 @@ def save_preprocessed_data(
         pm_df_long,
         PREPROCESSED_DATASET_PATH / "pm_data_long",
         mode="overwrite",
-        partitionBy=["kpi_id", "bts_id"],
     )
 
     sdm.write_parquet(
         pm_df_wide,
         PREPROCESSED_DATASET_PATH / "pm_data_wide",
         mode="overwrite",
-        partitionBy="bts_id",
     )
 
     sdm.write_parquet(
         kpi_definitions,
         PREPROCESSED_DATASET_PATH / "kpi_definitions",
         mode="overwrite",
-        partitionBy="kpi_id",
     )
 
     sdm.write_parquet(
         simple_reports,
         PREPROCESSED_DATASET_PATH / "simple_reports",
         mode="overwrite",
-        partitionBy="bts_id",
     )
 
 
@@ -366,7 +362,7 @@ def main():
     # Kpi wide format
     pm_df_wide = _pivot_pm_data(pm_df_long)
 
-    simple_reports = simple_reports_df_raw
+    simple_reports = simple_reports_pivot(simple_reports_df_raw)
 
     save_preprocessed_data(
         pm_df_long,
