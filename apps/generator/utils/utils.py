@@ -41,7 +41,7 @@ class SparkDataManager:
             for conf, val in spark_conf.items():
                 builder = builder.config(conf, val)
 
-        self.spark = builder.getOrCreate()
+        self.spark: SparkSession = builder.getOrCreate()
 
         checkpoint_directory = checkpoint_dir or str(SPARK_CHECKPOINT_PATH)
 
@@ -55,17 +55,18 @@ class SparkDataManager:
         # TODO: MINIO setup for sparksession
         pass
 
-    def read_parquet(
-        self,
-        path: Path | str,
-    ) -> DataFrame:
+    def read_parquet(self, path: Path | str, **options) -> DataFrame:
         # TODO: S3 compatability will be introduced here
-        return self.spark.read.parquet(str(path) if isinstance(path, Path) else path)
+        print(f"Reading Dataframe from {str(path)} ...")
+        return self.spark.read.parquet(str(path), **options)
 
     def write_parquet(self, df: DataFrame, path: Path | str, mode: str = "error", **kwargs):
-        string_path = str(path) if isinstance(path, Path) else path
-        print(f"writing DataFrame to {string_path} ...")
-        df.write.parquet(path=string_path, mode=mode, **kwargs)
+        print(f"Writing DataFrame to {str(path)} ...")
+        df.write.parquet(path=str(path), mode=mode, **kwargs)
+
+    def hard_checkpoint_to_parquet(self, df: DataFrame, path: Path | str) -> DataFrame:
+        self.write_parquet(df, path, mode="overwrite")
+        return self.read_parquet(path)
 
 
 def load_config(path: str) -> dict:
