@@ -4,7 +4,9 @@ version = "0.0.1"
 description = "GenPM monorepo workspace"
 readme = "README.md"
 requires-python = ">=3.11"
-dependencies = []
+dependencies = [
+    "holidays>=0.96",
+]
 
 [tool.uv]
 package = false
