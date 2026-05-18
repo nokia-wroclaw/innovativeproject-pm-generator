@@ -70,25 +70,25 @@ def _pivot_pm_data(pm_df_long: DataFrame) -> DataFrame:
 def fill_missing_timestamps(
     df: DataFrame,
     time_col: str,
-    station_col: str,
+    group_cols: list[str],
 ) -> DataFrame:
     """
     Fill missing hourly timestamps per station using each station's
     own min/max time range. Operates in long format — safe for large data.
     """
     print("PREPROCESSING: FILLING MISSING TIMESTAMPS")
-    # Per-station time bounds — small aggregation, stays distributed
-    station_bounds = df.groupBy(station_col).agg(
+    # Per-group time bounds — small aggregation, stays distributed
+    station_bounds = df.groupBy(*group_cols).agg(
         f.min(time_col).alias("min_t"), f.max(time_col).alias("max_t")
     )
 
-    # Generate hourly spine per station using sequence + explode
+    # Generate hourly spine per group using sequence + explode
     station_spines = station_bounds.withColumn(
         time_col, f.explode(f.sequence(f.col("min_t"), f.col("max_t"), f.expr("INTERVAL 1 HOUR")))
     ).drop("min_t", "max_t")
 
-    # Left join original data — only fills gaps, no cross-station explosion
-    return station_spines.join(df, on=[station_col, time_col], how="left")
+    # Left join original data — only fills gaps, no cross-group explosion
+    return station_spines.join(df, on=[*group_cols, time_col], how="left")
 
 
 def coalesce_kpi_version(
@@ -356,7 +356,7 @@ def main():
     pm_df_long, kpi_definitions = coalesce_kpi_version(pm_df_long_raw, kpi_definitions_df_raw)
 
     # Timestamp frequency uniformoty (1 hour) and KPI-bts recording range verification
-    pm_df_long = fill_missing_timestamps(pm_df_long, "start_time", "bts_id")
+    pm_df_long = fill_missing_timestamps(pm_df_long, "start_time", ["kpi_id", "bts_id", "distname"])
 
     pm_df_long = pm_df_long.cache()
     # Kpi wide format
