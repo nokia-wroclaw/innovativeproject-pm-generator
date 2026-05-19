@@ -16,10 +16,6 @@ class SparkDataManager:
         SPARK_EXECUTOR_MEMORY = os.getenv("SPARK_EXECUTOR_MEMORY") or "10g"
         SPARK_DRIVER_MEMORY = os.getenv("SPARK_DRIVER_MEMORY") or "6g"
         print("\tSPARK DATA MANAGER")
-        print(f"\n\tSPARK_CORE_NUMBER = {SPARK_CORE_NUMBER}")
-        print(f"\tSPARK_EXECUTOR_MEMORY = {SPARK_EXECUTOR_MEMORY}")
-        print(f"\tSPARK_DRIVER_MEMORY = {SPARK_DRIVER_MEMORY}")
-
         PARALLELISM_COUNT = "8"
 
         # spark session builder

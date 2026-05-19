@@ -11,10 +11,6 @@ from utils.utils import SparkDataManager
 logger = get_logger()
 sdm = SparkDataManager(SPARK_CONFIGS["FULL_HEAVY"])
 
-
-# PREPROCESSING_CONFIG = load_config(
-# "/home/sparkuser/app/apps/apps/generator/preprocessing/preprocessing_config.yaml")
-
 EDA_DATA_PATH = SHARED_DIR_PATH / "eda_data"
 PREPROCESSED_DATASET_PATH = SHARED_DIR_PATH / "preprocessed_dataset"
 
@@ -222,7 +218,7 @@ def coalesce_kpi_version(
 
     # ── 5. Union all chunks + rest
     df_result: DataFrame = reduce(lambda a, b: a.unionByName(b), result_frames + [pm_data_rest])
-
+    df_result = df_result.coalesce(512)
     # KPI definitions transform
     kpi_changed_definition_mapping = (
         kpi_changed_definition_mapping.withColumn(
@@ -284,11 +280,83 @@ def raw_pm_preperation(pm_df_long: DataFrame) -> DataFrame:
     return pm_df_long
 
 
-def drop_low_coverage_kpis(pm_df_long: DataFrame, minimal_coverage: float) -> DataFrame:
-    # First drop low coverage cells
+def drop_low_coverage(
+    pm_df: DataFrame,
+    cell_threshold: float = 0.5,
+    kpi_threshold: float = 0.5,
+) -> DataFrame:
+    """
+    Independently compute coverage at cell and KPI level, report bad ones,
+    then drop both.
 
-    # TODO: Still implement this
-    pass
+    Coverage definition:
+      - cell : non_null(kpi_value) / total rows  per (kpi_id, bts_id, distname)
+      - kpi  : non_null(kpi_value) / total rows  per kpi_id  (across ALL cells)
+
+    Dropping is additive — a row is removed if its cell OR its KPI is below
+    the respective threshold.
+    """
+
+    # ── Cell-level coverage ──────────────────────────────────────────────────
+    cell_stats = (
+        pm_df.groupBy("kpi_id", "bts_id", "distname")
+        .agg(
+            f.count("*").alias("total"),
+            f.count("kpi_value").alias("non_null"),
+        )
+        .withColumn("coverage", f.col("non_null") / f.col("total"))
+    )
+
+    good_cells = cell_stats.filter(f.col("coverage") >= cell_threshold)
+    bad_cells = cell_stats.filter(f.col("coverage") < cell_threshold)
+
+    n_cells = cell_stats.count()
+    n_bad_cells = bad_cells.count()
+    print(
+        f"[coverage] Cells  — dropped: {n_bad_cells:>6} / {n_cells}  "
+        f"(threshold={cell_threshold:.0%})"
+    )
+    print("[coverage] Worst offending cells:")
+    (
+        bad_cells.orderBy("coverage")
+        .select("kpi_id", "bts_id", "distname", "coverage")
+        .show(10, truncate=False)
+    )
+
+    # ── KPI-level coverage ───────────────────────────────────────────────────
+    kpi_stats = (
+        pm_df.groupBy("kpi_id")
+        .agg(
+            f.count("*").alias("total"),
+            f.count("kpi_value").alias("non_null"),
+        )
+        .withColumn("coverage", f.col("non_null") / f.col("total"))
+    )
+
+    good_kpis = kpi_stats.filter(f.col("coverage") >= kpi_threshold)
+    bad_kpis = kpi_stats.filter(f.col("coverage") < kpi_threshold)
+
+    n_kpis = kpi_stats.count()
+    n_bad_kpis = bad_kpis.count()
+    print(
+        f"[coverage] KPIs   — dropped: {n_bad_kpis:>6} / {n_kpis}  "
+        f"(threshold={kpi_threshold:.0%})"
+    )
+    print("[coverage] Dropped KPIs:")
+    (
+        bad_kpis.orderBy("coverage")
+        .select("kpi_id", "coverage", "total", "non_null")
+        .show(20, truncate=False)
+    )
+
+    # ── Drop: remove bad cells, then remove bad KPIs ─────────────────────────
+    df_clean = pm_df.join(
+        good_cells.select("kpi_id", "bts_id", "distname"),
+        on=["kpi_id", "bts_id", "distname"],
+        how="inner",
+    ).join(good_kpis.select("kpi_id"), on="kpi_id", how="inner")
+
+    return df_clean
 
 
 def save_preprocessed_data(
@@ -358,7 +426,10 @@ def main():
     # Timestamp frequency uniformoty (1 hour) and KPI-bts recording range verification
     pm_df_long = fill_missing_timestamps(pm_df_long, "start_time", ["kpi_id", "bts_id", "distname"])
 
+    pm_df_long = drop_low_coverage(pm_df_long, cell_threshold=0.5, kpi_threshold=0.5)
+
     pm_df_long = pm_df_long.cache()
+    pm_df_long.count()
     # Kpi wide format
     pm_df_wide = _pivot_pm_data(pm_df_long)
 
