@@ -1,5 +1,4 @@
 import os
-import shutil
 from pathlib import Path
 
 import yaml
@@ -45,9 +44,6 @@ class SparkDataManager:
 
         checkpoint_directory = checkpoint_dir or str(SPARK_CHECKPOINT_PATH)
 
-        if os.path.exists(checkpoint_directory):
-            shutil.rmtree(checkpoint_directory)
-        os.makedirs(checkpoint_directory, exist_ok=True)
         self.spark.sparkContext.setCheckpointDir(checkpoint_directory)
 
     @staticmethod
