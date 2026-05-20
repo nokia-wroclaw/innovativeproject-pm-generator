@@ -1,22 +1,36 @@
-import os
+"""Healthcheck proxy for Airflow.
 
-import requests
+Wraps Airflow's ``/api/v2/monitor/health`` so the frontend can probe the
+upstream from a single origin (no CORS gymnastics, our request id is honored).
+"""
+
+from __future__ import annotations
+
+from typing import Any
+
 from fastapi import APIRouter, Depends
-from sqlalchemy.orm import Session
 
-from app.db.database import db_manager
-from app.services.airflow import AirflowService
+from app.core.auth import require_auth
+from app.integrations.airflow.errors import AirflowIntegrationError, AirflowUnavailable
+from app.integrations.airflow.runtime import get_airflow_client
+from app.integrations.airflow.client import AirflowClient
 
-router = APIRouter()
-
-
-def get_airflow_service(
-    db: Session = Depends(db_manager.get_db),
-) -> AirflowService:
-    return AirflowService(db=db)
+router = APIRouter(prefix="/airflow", tags=["airflow"])
 
 
-@router.get("/airflow_test")
-def airflow_test(service: Depends = Depends(get_airflow_service)):
-    response = requests.get(f"{os.getenv('AIRFLOW_URL')}/api/v2/monitor/health")
-    return response.json()
+def _client() -> AirflowClient:
+    return get_airflow_client()
+
+
+@router.get("/health")
+async def airflow_health(
+    _user: dict[str, Any] = Depends(require_auth),
+    client: AirflowClient = Depends(_client),
+) -> dict[str, Any]:
+    try:
+        body = await client.healthcheck()
+    except AirflowIntegrationError:
+        raise
+    except Exception as exc:  # pragma: no cover - defensive
+        raise AirflowUnavailable(f"Healthcheck failed: {exc}") from exc
+    return {"status": "ok", "airflow": body}
