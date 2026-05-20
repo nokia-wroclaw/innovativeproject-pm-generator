@@ -3,7 +3,7 @@ import typing
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 
-from app.core.auth import require_auth
+from app.core.auth import require_admin, require_auth
 from app.db.database import db_manager
 from app.services.s3 import S3Service
 
@@ -11,12 +11,12 @@ from app.models.s3 import (
     DatasetRead,
     DatasetCreate,
     DatasetStatusUpdate,
-    PartInfo,
     CompleteMultipartRequest,
     AbortMultipartRequest,
     MultipartInitiateResponse,
     PartUrlResponse,
     DatasetRegisterRequest,
+    DatasetPreviewResponse,
 )
 
 router = APIRouter(dependencies=[Depends(require_auth)])
@@ -128,7 +128,19 @@ def get_s3_datasets(service: S3Service = Depends(get_s3_service)) -> list[Datase
     return [DatasetRead.model_validate(dataset) for dataset in service.get_datasets()]
 
 
+@router.get("/datasets/{dataset_id}/preview", response_model=DatasetPreviewResponse)
+def preview_s3_dataset(
+    dataset_id: int,
+    service: S3Service = Depends(get_s3_service),
+) -> DatasetPreviewResponse:
+    return DatasetPreviewResponse.model_validate(service.preview_dataset(dataset_id))
+
+
 @router.delete("/datasets/{dataset_id}")
-def delete_s3_dataset(dataset_id: int, service: S3Service = Depends(get_s3_service)) -> dict:
+def delete_s3_dataset(
+    dataset_id: int,
+    service: S3Service = Depends(get_s3_service),
+    _: dict[str, typing.Any] = Depends(require_admin),
+) -> dict:
     service.delete_dataset(dataset_id)
     return {"message": "dataset deleted successfully", "dataset_id": dataset_id}

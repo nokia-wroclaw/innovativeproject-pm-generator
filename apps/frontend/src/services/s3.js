@@ -81,3 +81,7 @@ export const deleteS3Dataset = async (datasetID) => {
   });
 };
 
+export const fetchDatasetPreview = async (datasetId) => {
+  return await authorizedRequest(`/api/v1/datasets/${datasetId}/preview`);
+};
+

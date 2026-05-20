@@ -1,0 +1,252 @@
+/* S3 view — dataset table, upload progress, modals */
+
+.s3-page {
+  display: flex;
+  flex-direction: column;
+  gap: 24px;
+}
+
+.s3-toolbar {
+  display: flex;
+  justify-content: flex-end;
+}
+
+/* Add dataset modal form */
+.s3-form {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.s3-form .form-group {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-bottom: 0;
+}
+
+.s3-form .form-group label {
+  margin-bottom: 0;
+}
+
+.s3-radio-group {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 16px;
+  align-items: center;
+  padding: 6px 0;
+}
+
+.s3-radio-label {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 0.9rem;
+  font-weight: 400;
+  color: #4b5563;
+  cursor: pointer;
+}
+
+.s3-radio-label input[type="radio"] {
+  cursor: pointer;
+}
+
+.s3-optional {
+  font-weight: 400;
+  color: #6b7280;
+}
+
+.s3-form-input-file {
+  width: 100%;
+  font-size: 0.9rem;
+  color: #374151;
+}
+
+/* Table: upload progress */
+.s3-upload-cell {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 140px;
+}
+
+.s3-progress-bar {
+  flex-grow: 1;
+  height: 8px;
+  background-color: #e5e7eb;
+  border-radius: 10px;
+  overflow: hidden;
+}
+
+.s3-progress-fill {
+  height: 100%;
+  background-color: #2563eb;
+  transition: width 0.3s ease;
+}
+
+.s3-progress-text {
+  font-size: 0.75rem;
+  font-weight: 600;
+  color: #2563eb;
+  min-width: 2.5rem;
+}
+
+/* Table: status badges */
+.s3-status-badge {
+  display: inline-block;
+  padding: 4px 10px;
+  border-radius: 9999px;
+  font-size: 0.75rem;
+  font-weight: 600;
+  text-transform: uppercase;
+}
+
+.s3-status-completed {
+  background-color: #dcfce7;
+  color: #166534;
+}
+
+.s3-status-uploading {
+  background-color: #e0e7ff;
+  color: #4338ca;
+}
+
+.s3-status-failed {
+  background-color: #fee2e2;
+  color: #991b1b;
+}
+
+.s3-status-pending {
+  background-color: #fef08a;
+  color: #854d0e;
+}
+
+.s3-status-unknown {
+  background-color: #f3f4f6;
+  color: #4b5563;
+}
+
+.s3-status-waiting {
+  color: #9ca3af;
+  font-size: 0.85rem;
+  font-style: italic;
+}
+
+/* Row actions dropdown */
+.dropdown-item.s3-action-analyze {
+  color: #2563eb;
+}
+
+.dropdown-item.s3-action-analyze:hover {
+  background-color: #eff6ff;
+}
+
+.dropdown-item.s3-action-delete {
+  color: #ef4444;
+}
+
+.dropdown-item.s3-action-delete:hover {
+  background-color: #fee2e2;
+}
+
+/* default dropdown item color when no action class is set */
+.dropdown-item:not(.s3-action-analyze):not(.s3-action-delete) {
+  color: #374151;
+}
+
+.dropdown-item:not(.s3-action-analyze):not(.s3-action-delete):hover {
+  background-color: #f3f4f6;
+}
+
+/* Resume upload modal */
+.s3-resume-content p {
+  margin: 0 0 10px 0;
+}
+
+.s3-resume-hint {
+  font-size: 0.9rem;
+  color: #4b5563;
+}
+
+.s3-resume-error {
+  font-size: 0.85rem;
+  color: #ef4444;
+  margin-top: 8px;
+}
+
+.s3-resume-file {
+  margin-top: 12px;
+}
+
+/* Dataset preview modal */
+.s3-preview-content {
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+  max-height: 70vh;
+  overflow-y: auto;
+}
+
+.s3-preview-status {
+  color: #4b5563;
+  margin: 0;
+}
+
+.s3-preview-error {
+  color: #ef4444;
+  margin: 0;
+}
+
+.s3-preview-meta {
+  margin: 0;
+  color: #374151;
+}
+
+.s3-preview-table-section {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.s3-preview-table-title {
+  margin: 0;
+  font-size: 1rem;
+  color: #111827;
+}
+
+.s3-preview-columns {
+  margin: 0;
+  font-size: 0.85rem;
+  color: #4b5563;
+}
+
+.s3-preview-table-wrap {
+  overflow-x: auto;
+  border: 1px solid #e5e7eb;
+  border-radius: 8px;
+}
+
+.s3-preview-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.85rem;
+}
+
+.s3-preview-table th,
+.s3-preview-table td {
+  padding: 8px 10px;
+  border-bottom: 1px solid #e5e7eb;
+  text-align: left;
+  white-space: nowrap;
+}
+
+.s3-preview-table th {
+  background-color: #f9fafb;
+  color: #374151;
+  font-weight: 600;
+}
+
+.s3-preview-empty {
+  text-align: center;
+  color: #6b7280;
+}

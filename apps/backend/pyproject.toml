@@ -13,6 +13,8 @@ dependencies = [
     "boto3==1.43.1",
     "botocore==1.43.1",
     "pydantic-settings>=2.14.1",
+    "pandas>=2.2.0",
+    "pyarrow>=18.0.0",
 ]
 
 [dependency-groups]

@@ -17,6 +17,7 @@ class KeycloakSettings:
     realm: str
     client_id: str
     required_roles: tuple[str, ...]
+    admin_role: str
 
     @property
     def issuer(self) -> str:
@@ -45,12 +46,14 @@ def get_keycloak_settings() -> KeycloakSettings:
     client_id = _required_env("KEYCLOAK_CLIENT_ID")
     required_roles_raw = os.getenv("KEYCLOAK_REQUIRED_ROLES", "")
     required_roles = tuple(role.strip() for role in required_roles_raw.split(",") if role.strip())
+    admin_role = os.getenv("KEYCLOAK_ADMIN_ROLE", "admin").strip() or "admin"
     return KeycloakSettings(
         server_url=server_url,
         issuer_url=issuer_url,
         realm=realm,
         client_id=client_id,
         required_roles=required_roles,
+        admin_role=admin_role,
     )
 
 
@@ -132,4 +135,12 @@ def require_auth(payload: dict[str, Any] = Depends(get_token_payload)) -> dict[s
         missing_roles = [role for role in settings.required_roles if role not in token_roles]
         if missing_roles:
             raise _forbidden("Insufficient permissions")
+    return payload
+
+
+def require_admin(payload: dict[str, Any] = Depends(require_auth)) -> dict[str, Any]:
+    settings = get_keycloak_settings()
+    token_roles = _extract_roles(payload, settings.client_id)
+    if settings.admin_role not in token_roles:
+        raise _forbidden("Admin role required to delete datasets")
     return payload

@@ -25,7 +25,20 @@
       "standardFlowEnabled": true,
       "implicitFlowEnabled": false,
       "serviceAccountsEnabled": false,
-      "fullScopeAllowed": false,
+      "fullScopeAllowed": true,
+      "defaultClientScopes": [
+        "web-origins",
+        "acr",
+        "roles",
+        "profile",
+        "email"
+      ],
+      "optionalClientScopes": [
+        "address",
+        "phone",
+        "offline_access",
+        "microprofile-jwt"
+      ],
       "redirectUris": [
         "http://localhost:5173/*",
         "http://localhost:5273/*",
@@ -59,6 +72,18 @@
       }
     }
   ],
+  "roles": {
+    "realm": [
+      {
+        "name": "admin",
+        "description": "Administrator — can delete datasets"
+      },
+      {
+        "name": "user",
+        "description": "Regular user — browse and upload datasets"
+      }
+    ]
+  },
   "users": [
     {
       "username": "admin",
@@ -75,9 +100,42 @@
         }
       ],
       "realmRoles": [
+        "admin",
         "offline_access",
         "uma_authorization"
-      ]
+      ],
+      "clientRoles": {
+        "account": [
+          "manage-account",
+          "view-profile"
+        ]
+      }
+    },
+    {
+      "username": "user",
+      "enabled": true,
+      "email": "user@genpm.local",
+      "firstName": "Regular",
+      "lastName": "User",
+      "emailVerified": true,
+      "credentials": [
+        {
+          "type": "password",
+          "value": "user123",
+          "temporary": false
+        }
+      ],
+      "realmRoles": [
+        "user",
+        "offline_access",
+        "uma_authorization"
+      ],
+      "clientRoles": {
+        "account": [
+          "manage-account",
+          "view-profile"
+        ]
+      }
     }
   ]
 }

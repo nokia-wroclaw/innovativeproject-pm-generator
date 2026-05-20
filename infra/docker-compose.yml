@@ -13,6 +13,7 @@ services:
       VITE_KEYCLOAK_URL: http://localhost:${KEYCLOAK_PORT:-8080}
       VITE_KEYCLOAK_REALM: ${KEYCLOAK_REALM}
       VITE_KEYCLOAK_CLIENT_ID: ${KEYCLOAK_CLIENT_ID}
+      VITE_KEYCLOAK_ADMIN_ROLE: ${KEYCLOAK_ADMIN_ROLE:-admin}
     command: sh -c "npm install && npm run dev -- --host 0.0.0.0 --port 5173"
     depends_on:
       - fastapi
@@ -64,6 +65,7 @@ services:
       KEYCLOAK_REALM: ${KEYCLOAK_REALM}
       KEYCLOAK_CLIENT_ID: ${KEYCLOAK_CLIENT_ID}
       KEYCLOAK_REQUIRED_ROLES: ${KEYCLOAK_REQUIRED_ROLES}
+      KEYCLOAK_ADMIN_ROLE: ${KEYCLOAK_ADMIN_ROLE:-admin}
       FRONTEND_ORIGIN: http://localhost:${FRONTEND_PORT:-5173}
       S3_URL: ${S3_URL}
       S3_EXTERNAL_URL: ${S3_EXTERNAL_URL}

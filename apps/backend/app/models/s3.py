@@ -55,3 +55,16 @@ class MultipartInitiateResponse(BaseModel):
 
 class PartUrlResponse(BaseModel):
     url: str
+
+
+class TablePreview(BaseModel):
+    name: str
+    columns: list[str]
+    rows: list[dict[str, object]]
+
+
+class DatasetPreviewResponse(BaseModel):
+    dataset_id: int
+    file_name: str
+    s3_key: str
+    tables: list[TablePreview]

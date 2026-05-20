@@ -13,7 +13,7 @@ const routes = [
     path: '/s3',
     name: 'S3 Storage',
     component: S3,
-    meta: { description: 'Manage your S3 buckets and files.' }
+    meta: { description: 'Upload, register, and manage datasets stored in S3.' }
   }
 ]
 
