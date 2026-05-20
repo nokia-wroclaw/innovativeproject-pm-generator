@@ -280,6 +280,9 @@ def raw_pm_preperation(pm_df_long: DataFrame) -> DataFrame:
     return pm_df_long
 
 
+# TODO: change this function, so it sees low coverage in time, not overall
+# (rolling window coverage?)
+# Add trimming of low coverage periods to certain kpis
 def drop_low_coverage(
     pm_df: DataFrame,
     cell_threshold: float = 0.5,
@@ -339,8 +342,7 @@ def drop_low_coverage(
     n_kpis = kpi_stats.count()
     n_bad_kpis = bad_kpis.count()
     print(
-        f"[coverage] KPIs   — dropped: {n_bad_kpis:>6} / {n_kpis}  "
-        f"(threshold={kpi_threshold:.0%})"
+        f"[coverage] KPIs   — dropped: {n_bad_kpis:>6} / {n_kpis}  (threshold={kpi_threshold:.0%})"
     )
     print("[coverage] Dropped KPIs:")
     (
