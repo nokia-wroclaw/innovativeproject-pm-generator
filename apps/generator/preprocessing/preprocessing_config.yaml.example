@@ -1,0 +1,4 @@
+preprocessing:
+
+  kpis:
+    #If we have any hardcoded kpis, here is the place to specify them
