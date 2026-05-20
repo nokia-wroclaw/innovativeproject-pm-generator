@@ -84,6 +84,7 @@
           :current-try-number="taskInstance.try_number || 1"
           :initial-try-number="taskInstance.try_number || 1"
           :available-tries="availableTries"
+          :task-status="taskInstance.status"
         />
         <EmptyState
           v-else

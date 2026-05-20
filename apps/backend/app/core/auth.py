@@ -143,6 +143,7 @@ def get_token_payload(
                 "verify_aud": False,
                 "verify_iss": False,
             },
+            # Small clock skew tolerance for local docker/browser setups.
             leeway=60,
         )
     except InvalidTokenError as exc:
@@ -169,6 +170,7 @@ def get_token_payload(
     user_id = payload.get("sub") or payload.get("clientId") or payload.get("client_id")
 
     if not user_id:
+        print("WARNING: Missing user identification claims. Payload:", payload)
         raise _unauthorized("Token payload is missing identification claims (sub/clientId)")
 
     session_id = payload.get("sid") or payload.get("session_state")
