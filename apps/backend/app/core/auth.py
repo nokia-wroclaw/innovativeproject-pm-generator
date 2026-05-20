@@ -118,7 +118,7 @@ def _allowed_issuers(settings: KeycloakSettings) -> set[str]:
 
 
 def get_token_payload(
-    credentials: HTTPAuthorizationCredentials | None = Depends(bearer_scheme),
+        credentials: HTTPAuthorizationCredentials | None = Depends(bearer_scheme),
 ) -> dict[str, Any]:
     if not credentials:
         raise _unauthorized("Missing bearer token")
@@ -158,7 +158,7 @@ def get_token_payload(
 
     token_aud = payload.get("aud")
     aud_matches = token_aud == settings.client_id or (
-        isinstance(token_aud, list) and settings.client_id in token_aud
+            isinstance(token_aud, list) and settings.client_id in token_aud
     )
 
     if (authorized_party := str(payload.get("azp", ""))) and authorized_party != settings.client_id:
@@ -166,6 +166,30 @@ def get_token_payload(
 
     if not aud_matches and authorized_party != settings.client_id:
         raise _unauthorized("Invalid token audience/client")
+
+    # ==========================================
+    # NOWE: Ekstrakcja zunifikowanych danych
+    # ==========================================
+
+    # 1. Wyciągamy identyfikator podmiotu (user/client):
+    # - 'sub' to standardowy identyfikator użytkownika
+    # - 'clientId' / 'client_id' pojawia się przy logowaniu Maszyna-Maszyna (brak fizycznego usera)
+    user_id = payload.get("sub") or payload.get("clientId") or payload.get("client_id")
+
+    if not user_id:
+        # Pomoże Ci to łatwo diagnozować dziwne tokeny w konsoli serwera
+        print("WARNING: Missing user identification claims. Payload:", payload)
+        raise _unauthorized("Token payload is missing identification claims (sub/clientId)")
+
+    # 2. Wyciągamy ID sesji (w logowaniu Maszyna-Maszyna może być puste)
+    session_id = payload.get("sid") or payload.get("session_state")
+
+    # 3. Dodajemy je pod stałymi, pewnymi kluczami
+    payload["user_id"] = str(user_id)
+
+    # session_id może być puste w niektórych typach tokenów (np. Service Account),
+    # więc dodajemy jako string lub null
+    payload["session_id"] = str(session_id) if session_id else None
 
     return payload
 

@@ -146,15 +146,16 @@ class AirflowClient:
         logical_date: str | None = None,
         note: str | None = None,
     ) -> dict[str, Any]:
-        body: dict[str, Any] = {}
+        # ``logical_date`` is "required nullable" in Airflow 3.x TriggerDAGRunPostBody —
+        # the field MUST be present in the body; passing ``null`` lets Airflow use "now".
+        # Omitting it triggers a Pydantic 422 (validation error) on the Airflow side.
+        body: dict[str, Any] = {"logical_date": logical_date}
         if conf is not None:
             body["conf"] = conf
-        if logical_date is not None:
-            body["logical_date"] = logical_date
         if note is not None:
             body["note"] = note
         return await self._request(
-            "POST", f"/dags/{dag_id}/dagRuns", json=body or None
+            "POST", f"/dags/{dag_id}/dagRuns", json=body
         )
 
     async def patch_dag_run_state(
@@ -270,6 +271,11 @@ class AirflowClient:
             raise AirflowUnavailable(
                 f"Network error talking to Airflow ({method} {path}): {exc}"
             ) from exc
+
+        logger.info(
+            "airflow %s %s -> %d (%d bytes)",
+            method, path, response.status_code, len(response.content or b""),
+        )
 
         if response.status_code == 401:
             # Token may be stale (rotated secret, clock skew). Invalidate and

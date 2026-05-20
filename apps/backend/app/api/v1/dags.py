@@ -218,6 +218,10 @@ async def stream_task_logs(
         seq = 0
         token: str | None = None
         last_heartbeat = started_at
+        logger.info(
+            "SSE log stream open: dag=%s run=%s task=%s try=%d",
+            dag_id, run_id, task_id, try_number,
+        )
 
         try:
             while True:
@@ -242,6 +246,10 @@ async def stream_task_logs(
                         seq=seq,
                     )
                 except AirflowIntegrationError as exc:
+                    logger.warning(
+                        "SSE log stream error: dag=%s task=%s seq=%d code=%s msg=%s",
+                        dag_id, task_id, seq, exc.code, exc.message,
+                    )
                     yield {
                         "event": "error",
                         "data": json.dumps(
@@ -251,6 +259,10 @@ async def stream_task_logs(
                     return
 
                 payload_has_lines = bool(chunk.lines)
+                logger.info(
+                    "SSE log chunk: dag=%s task=%s seq=%d lines=%d has_more=%s",
+                    dag_id, task_id, seq, len(chunk.lines), chunk.has_more,
+                )
                 if payload_has_lines:
                     yield {
                         "event": "chunk",

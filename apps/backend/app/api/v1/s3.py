@@ -87,11 +87,12 @@ async def complete_multipart(
 
 @router.post("/datasets/register", response_model=DatasetRead)
 async def register_s3_dataset(
-    request: DatasetRegisterRequest,
-    service: S3Service = Depends(get_s3_service),
-    token_payload: dict[str, typing.Any] = Depends(require_auth),
+        request: DatasetRegisterRequest,
+        service: S3Service = Depends(get_s3_service),
+        token_payload: dict[str, typing.Any] = Depends(require_auth),
 ) -> DatasetRead:
-    user_uuid = token_payload.get("sub")
+    # Używamy ujednoliconego klucza "user_id", który wygenerowała nasza zależność
+    user_uuid = token_payload["user_id"]
 
     s3_dataset = service.register_existing_dataset(
         user_uuid=user_uuid,

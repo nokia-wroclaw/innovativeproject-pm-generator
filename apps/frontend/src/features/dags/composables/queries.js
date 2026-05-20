@@ -109,7 +109,36 @@ export function useTaskTries(dagIdRef, runIdRef, taskIdRef) {
       Boolean(unref(dagIdRef) && unref(runIdRef) && unref(taskIdRef)),
     ),
     refetchInterval: FIFTEEN_SECONDS,
+    // Airflow's /tries is a *history* endpoint; right after a clear/retry it
+    // may return two rows with the same try_number — one for the finished
+    // attempt (state=success/failed) and one freshly created for the new
+    // attempt (state=null). We pick the newest row (= the one without an
+    // end_date, if any) so the dropdown shows a single, accurate entry.
+    select: (data) => _dedupeTriesByNumber(data ?? []),
   });
+}
+
+function _dedupeTriesByNumber(tries) {
+  const byNumber = new Map();
+  for (const t of tries) {
+    const existing = byNumber.get(t.try_number);
+    if (!existing) {
+      byNumber.set(t.try_number, t);
+      continue;
+    }
+    // Prefer the row that's still open (no end_date) — that's the live one.
+    // If both are closed, prefer the one that ended later.
+    const existingClosed = Boolean(existing.end_date);
+    const incomingClosed = Boolean(t.end_date);
+    if (existingClosed && !incomingClosed) {
+      byNumber.set(t.try_number, t);
+    } else if (existingClosed && incomingClosed) {
+      if (new Date(t.end_date) > new Date(existing.end_date)) {
+        byNumber.set(t.try_number, t);
+      }
+    }
+  }
+  return [...byNumber.values()].sort((a, b) => a.try_number - b.try_number);
 }
 
 // ─── Mutations ──────────────────────────────────────────────────────────────
@@ -122,6 +151,13 @@ function _invalidate(queryClient, { dagId, runId }) {
     if (runId) {
       queryClient.invalidateQueries({
         queryKey: queryKeys.taskInstances(dagId, runId),
+      });
+      // Nested keys: any task-level query under this run (single instance,
+      // tries history, etc.) — these must be invalidated too, otherwise the
+      // dropdown shows stale rows ("Try N · success") alongside the freshly
+      // created in-progress try ("Try N · null") after a retry/clear.
+      queryClient.invalidateQueries({
+        queryKey: ['dags', dagId, 'runs', runId],
       });
     }
   }

@@ -12,6 +12,8 @@ extensively and fall back to safe defaults.
 
 from __future__ import annotations
 
+import ast
+import json
 import logging
 import re
 from datetime import datetime, timezone
@@ -278,9 +280,32 @@ def map_task_instance(raw: dict[str, Any]) -> TaskInstance:
         operator=str(raw.get("operator") or "Operator"),
         pool=str(raw.get("pool") or "default_pool"),
         queue=str(raw.get("queue") or "default"),
-        executor_config=raw.get("executor_config") or {},
+        executor_config=_coerce_executor_config(raw.get("executor_config")),
         note=raw.get("note") or None,
     )
+
+
+def _coerce_executor_config(value: Any) -> dict[str, Any]:
+    """Airflow 3.x returns ``executor_config`` as a JSON-serialised string
+    (e.g. ``'{}'`` or ``"{'queue': 'kubernetes'}"`` — Python's ``repr``-style
+    quoting for legacy reasons). Older versions returned a real ``dict``.
+
+    We always normalise to a dict so the DTO stays typed.
+    """
+    if value is None or value == "":
+        return {}
+    if isinstance(value, dict):
+        return value
+    if isinstance(value, str):
+        try:
+            parsed = json.loads(value)
+        except (json.JSONDecodeError, ValueError):
+            try:
+                parsed = ast.literal_eval(value)
+            except (ValueError, SyntaxError):
+                return {"raw": value}
+        return parsed if isinstance(parsed, dict) else {"raw": value}
+    return {}
 
 
 def map_task_try(raw: dict[str, Any]) -> TaskTry:
@@ -317,31 +342,72 @@ def map_log_chunk(
 ) -> LogChunk:
     """Maps an Airflow ``/logs/{try}`` JSON response into a LogChunk.
 
-    Airflow returns various shapes depending on version & log handler:
-      * ``{"content": "string\nwith\nlines", "continuation_token": "..."}``
-      * ``{"content": [[["source", "line text"], ...]], "continuation_token": "..."}``
+    Airflow returns one of several shapes depending on version & log handler:
+
+    * Airflow 3.x (``StructuredLogMessage[]``)::
+
+        {"content": [
+            {"timestamp": "...", "event": "msg", "level": "INFO", "logger": "..."},
+            ...
+        ], "continuation_token": "..."}
+
+    * Airflow 3.x (string array)::
+
+        {"content": ["line1", "line2"], "continuation_token": "..."}
+
+    * Airflow 2.x (legacy nested arrays)::
+
+        {"content": [[["source", "line text"], ...]], ...}
+
+    * Plain string body (some log handlers / older versions)::
+
+        {"content": "string\\nwith\\nlines", ...}
     """
     continuation = raw.get("continuation_token") or None
     content = raw.get("content")
 
-    raw_lines: list[tuple[str | None, str]] = []
-    if isinstance(content, str):
-        for line in content.splitlines():
-            raw_lines.append((None, line))
-    elif isinstance(content, list):
-        for outer in content:
-            if not isinstance(outer, list):
-                continue
-            for entry in outer:
-                if isinstance(entry, list) and len(entry) >= 2:
-                    src, text = entry[0], entry[1]
-                    for line in str(text).splitlines():
-                        raw_lines.append((str(src) if src else None, line))
-                elif isinstance(entry, str):
-                    for line in entry.splitlines():
-                        raw_lines.append((None, line))
+    lines: list[LogLine] = []
 
-    lines = [_parse_log_line(src, text) for src, text in raw_lines if text.strip()]
+    if isinstance(content, str):
+        for text in content.splitlines():
+            if not text.strip():
+                continue
+            lines.append(_parse_log_line(None, text))
+
+    elif isinstance(content, list):
+        for entry in content:
+            try:
+                _consume_log_entry(entry, lines)
+            except Exception as exc:  # pragma: no cover - defensive
+                logger.warning("Skipping malformed log entry: %s (%r)", exc, entry)
+                continue
+
+    # Defensive: if Airflow returned content but mapping produced nothing
+    # (unknown shape), stringify it and dump as raw lines so the user at
+    # least sees *something* in the UI instead of an empty stream.
+    if not lines and content:
+        logger.warning(
+            "map_log_chunk: unknown content shape (type=%s); "
+            "emitting raw fallback. Sample=%s",
+            type(content).__name__,
+            repr(content[0])[:300] if isinstance(content, list) and content
+            else repr(content)[:300],
+        )
+        if isinstance(content, list):
+            for entry in content:
+                text = entry if isinstance(entry, str) else json.dumps(
+                    entry, default=str, ensure_ascii=False
+                )
+                for line in str(text).splitlines() or [str(text)]:
+                    if line.strip():
+                        lines.append(LogLine(message=line))
+
+    logger.info(
+        "map_log_chunk: content_type=%s len=%s -> %d lines",
+        type(content).__name__,
+        len(content) if hasattr(content, "__len__") else "n/a",
+        len(lines),
+    )
 
     return LogChunk(
         try_number=try_number,
@@ -350,6 +416,65 @@ def map_log_chunk(
         has_more=continuation is not None,
         continuation=continuation,
     )
+
+
+def _consume_log_entry(entry: Any, lines: list[LogLine]) -> None:
+    """Append zero-or-more LogLine objects parsed from a single Airflow entry."""
+    if isinstance(entry, dict):
+        # Airflow 3.x StructuredLogMessage.
+        event_text = str(entry.get("event") or "").rstrip("\n")
+        if not event_text.strip():
+            return
+        lines.append(
+            LogLine(
+                timestamp=_parse_dt(entry.get("timestamp")),
+                level=_normalize_log_level(entry.get("level")),
+                source=str(entry.get("logger") or entry.get("source") or "")
+                or None,
+                message=event_text,
+            )
+        )
+        return
+    if isinstance(entry, str):
+        # Airflow 3.x simple string array OR ndjson line.
+        for text in entry.splitlines():
+            if not text.strip():
+                continue
+            lines.append(_parse_log_line(None, text))
+        return
+    if isinstance(entry, list):
+        # Airflow 2.x legacy: [[source, text], ...] nested.
+        for nested in entry:
+            if isinstance(nested, list) and len(nested) >= 2:
+                src, text = nested[0], nested[1]
+                for text_line in str(text).splitlines():
+                    if not text_line.strip():
+                        continue
+                    lines.append(
+                        _parse_log_line(str(src) if src else None, text_line)
+                    )
+            elif isinstance(nested, str):
+                for text_line in nested.splitlines():
+                    if not text_line.strip():
+                        continue
+                    lines.append(_parse_log_line(None, text_line))
+
+
+_ALLOWED_LOG_LEVELS = frozenset({"DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"})
+
+
+def _normalize_log_level(value: Any) -> str | None:
+    if not value:
+        return None
+    candidate = str(value).upper().strip()
+    if candidate in _ALLOWED_LOG_LEVELS:
+        return candidate
+    # Airflow sometimes emits "WARN" / "FATAL"; map to nearest equivalent.
+    if candidate == "WARN":
+        return "WARNING"
+    if candidate == "FATAL":
+        return "CRITICAL"
+    return None
 
 
 def _parse_log_line(source: str | None, text: str) -> LogLine:
