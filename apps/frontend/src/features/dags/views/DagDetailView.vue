@@ -1,0 +1,325 @@
+<!--
+  DagDetailView — interactive graph view of a single DAG.
+
+  Layout (top → bottom):
+    1. Header bar       — display name, status of selected run, actions
+    2. Run selector     — dropdown with last 10 runs, current run highlighted
+    3. Graph canvas     — Vue Flow with auto-layout (dagre TB)
+    4. TaskDetailsSheet — slide-in, controlled by the parent
+-->
+<template>
+  <div class="flex h-[calc(100vh-180px)] flex-col">
+    <!-- ── Header / actions ─────────────────────────────────────────── -->
+    <header class="mb-4 flex flex-wrap items-start justify-between gap-3">
+      <div class="space-y-1">
+        <div class="flex items-center gap-3">
+          <button
+            type="button"
+            class="rounded-md p-1 text-fg-muted hover:bg-surface-muted hover:text-fg"
+            @click="$router.push('/')"
+            aria-label="Back to dashboard"
+          >
+            <ArrowLeft :size="16" />
+          </button>
+          <h2 class="text-lg font-semibold text-fg">
+            {{ dagSummary?.display_name ?? dagId }}
+          </h2>
+          <DagStatusBadge
+            v-if="selectedRun"
+            :status="selectedRun.status"
+            density="compact"
+          />
+          <span v-else class="text-xs text-fg-subtle">No runs yet</span>
+        </div>
+        <p class="ml-7 font-mono text-[11px] text-fg-subtle">{{ dagId }}</p>
+      </div>
+
+      <div class="flex flex-wrap items-center gap-2">
+        <select
+          v-if="recentRuns.length"
+          v-model="selectedRunId"
+          class="rounded-md border border-border-default bg-surface px-3 py-1.5 text-xs text-fg
+                 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand/40"
+        >
+          <option
+            v-for="run in recentRuns"
+            :key="run.run_id"
+            :value="run.run_id"
+          >
+            {{ formatRunLabel(run) }}
+          </option>
+        </select>
+
+        <Button
+          variant="secondary"
+          size="sm"
+          :disabled="!selectedRun || isStopping || !canStopRun"
+          @click="onStopRun"
+        >
+          <Square :size="14" />
+          Stop
+        </Button>
+        <Button
+          variant="secondary"
+          size="sm"
+          :disabled="!selectedRun || isClearingRun"
+          @click="onClearRun"
+        >
+          <RotateCw :size="14" />
+          Clear run
+        </Button>
+        <Button
+          variant="primary"
+          size="sm"
+          @click="triggerOpen = true"
+        >
+          <Play :size="14" />
+          Trigger DAG
+        </Button>
+      </div>
+    </header>
+
+    <!-- ── Error banner ─────────────────────────────────────────────── -->
+    <div
+      v-if="detailError"
+      class="mb-4 flex items-start gap-3 rounded-md border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-700"
+    >
+      <AlertCircle :size="16" class="mt-0.5 shrink-0" />
+      <div class="space-y-1">
+        <p class="font-semibold">Nie udało się wczytać DAG-a.</p>
+        <p class="text-xs">{{ detailError.message }}</p>
+      </div>
+    </div>
+
+    <!-- ── Graph canvas ─────────────────────────────────────────────── -->
+    <div class="relative min-h-0 flex-1 overflow-hidden rounded-xl border border-border-default bg-surface-muted">
+      <div
+        v-if="isLoadingDetails"
+        class="absolute inset-0 z-10 flex items-center justify-center text-sm text-fg-muted"
+      >
+        <Loader2 :size="20" class="mr-2 animate-spin" />
+        Loading DAG…
+      </div>
+
+      <div
+        v-else-if="!layoutNodes.length && !detailError"
+        class="flex h-full items-center justify-center p-6 text-center text-sm text-fg-muted"
+      >
+        Brak tasków w tym DAG-u.
+      </div>
+
+      <VueFlow
+        v-else
+        :nodes="layoutNodes"
+        :edges="layoutEdges"
+        :node-types="{ task: TaskNode }"
+        :nodes-draggable="false"
+        :nodes-connectable="false"
+        :elements-selectable="true"
+        :default-edge-options="defaultEdgeOptions"
+        :fit-view-on-init="true"
+        :max-zoom="1.5"
+        :min-zoom="0.25"
+        @node-click="onNodeClick"
+      >
+        <Background :gap="20" :size="1" />
+        <MiniMap
+          pannable zoomable
+          class="!bg-surface !border !border-border-default !rounded-lg"
+        />
+        <Controls
+          position="bottom-right"
+          class="!bg-surface !border !border-border-default !rounded-lg !shadow-sm"
+        />
+      </VueFlow>
+    </div>
+
+    <!-- ── Task details (slide-in) ──────────────────────────────────── -->
+    <TaskDetailsSheet
+      v-model:open="sheetOpen"
+      :task-instance="selectedTaskInstance"
+      :available-tries="tries"
+      :dag-id="dagId"
+      :run-id="selectedRunId"
+      @retry-task="onRetryTask"
+      @stop-run="onStopRun"
+    />
+
+    <!-- ── Trigger modal ────────────────────────────────────────────── -->
+    <TriggerDagDialog
+      v-model:open="triggerOpen"
+      :dag-id="dagId"
+      @triggered="onTriggered"
+    />
+  </div>
+</template>
+
+<script setup>
+import { computed, ref, watch } from 'vue';
+import { useRoute } from 'vue-router';
+import { VueFlow, MarkerType } from '@vue-flow/core';
+import { Background } from '@vue-flow/background';
+import { Controls } from '@vue-flow/controls';
+import { MiniMap } from '@vue-flow/minimap';
+import {
+  ArrowLeft, AlertCircle, Loader2, Play, RotateCw, Square,
+} from 'lucide-vue-next';
+
+import '@vue-flow/core/dist/style.css';
+import '@vue-flow/core/dist/theme-default.css';
+import '@vue-flow/controls/dist/style.css';
+import '@vue-flow/minimap/dist/style.css';
+
+import { Button } from '@/components/ui';
+import DagStatusBadge from '../components/DagStatusBadge.vue';
+import TaskNode from '../components/TaskNode.vue';
+import TaskDetailsSheet from '../components/TaskDetailsSheet.vue';
+import TriggerDagDialog from '../components/TriggerDagDialog.vue';
+import { useDagLayout } from '../composables/useDagLayout.js';
+import {
+  useDagDetails,
+  useTaskInstances,
+  useTaskTries,
+  useClearTaskInstance,
+  useClearDagRun,
+  useStopDagRun,
+} from '../composables/queries.js';
+
+const route = useRoute();
+const dagId = computed(() => String(route.params.dagId || ''));
+
+const defaultEdgeOptions = {
+  type: 'smoothstep',
+  style: { stroke: '#94a3b8', strokeWidth: 1.5 },
+  markerEnd: { type: MarkerType.ArrowClosed, color: '#94a3b8', width: 16, height: 16 },
+};
+
+// ─── Details (graph + recent runs) ──────────────────────────────────────────
+const dagIdRef = computed(() => dagId.value);
+const detailsQuery = useDagDetails(dagIdRef);
+
+const isLoadingDetails = computed(
+  () => detailsQuery.isLoading.value && !detailsQuery.data.value,
+);
+const detailError = computed(() => detailsQuery.error.value);
+
+const dagSummary = computed(() => detailsQuery.data.value?.summary ?? null);
+const graph = computed(() => detailsQuery.data.value?.graph ?? null);
+const recentRuns = computed(() => detailsQuery.data.value?.recent_runs ?? []);
+
+// ─── Run selection ──────────────────────────────────────────────────────────
+const selectedRunId = ref(null);
+
+watch(
+  recentRuns,
+  (runs) => {
+    if (!selectedRunId.value && runs.length) selectedRunId.value = runs[0].run_id;
+    if (selectedRunId.value && !runs.find((r) => r.run_id === selectedRunId.value)) {
+      selectedRunId.value = runs[0]?.run_id ?? null;
+    }
+  },
+  { immediate: true },
+);
+
+const selectedRun = computed(
+  () => recentRuns.value.find((r) => r.run_id === selectedRunId.value) ?? null,
+);
+
+const isRunning = computed(() => selectedRun.value?.status === 'running');
+const canStopRun = computed(
+  () => selectedRun.value && ['running', 'queued'].includes(selectedRun.value.status),
+);
+
+// ─── Task instances (overlay) ───────────────────────────────────────────────
+const taskInstancesQuery = useTaskInstances(dagIdRef, selectedRunId, isRunning);
+const taskInstances = computed(() => taskInstancesQuery.data.value ?? []);
+
+const statusByTask = computed(() => {
+  const map = {};
+  for (const ti of taskInstances.value) {
+    map[ti.task_id] = ti;
+  }
+  return map;
+});
+
+// ─── Layout (dagre) ─────────────────────────────────────────────────────────
+const { nodes: layoutNodes, edges: layoutEdges } = useDagLayout(
+  () => graph.value,
+  () => statusByTask.value,
+  { direction: 'TB' },
+);
+
+// ─── Sheet for task details ────────────────────────────────────────────────
+const sheetOpen = ref(false);
+const selectedTaskId = ref(null);
+
+const selectedTaskInstance = computed(() => {
+  if (!selectedTaskId.value) return null;
+  return statusByTask.value[selectedTaskId.value] ?? null;
+});
+
+const triesQuery = useTaskTries(dagIdRef, selectedRunId, selectedTaskId);
+const tries = computed(() => triesQuery.data.value ?? []);
+
+function onNodeClick({ node }) {
+  selectedTaskId.value = node.id;
+  sheetOpen.value = true;
+}
+
+// ─── Mutations ──────────────────────────────────────────────────────────────
+const clearTaskMutation = useClearTaskInstance();
+const clearRunMutation = useClearDagRun();
+const stopRunMutation = useStopDagRun();
+
+const isClearingRun = computed(() => clearRunMutation.isPending.value);
+const isStopping = computed(() => stopRunMutation.isPending.value);
+
+async function onRetryTask() {
+  if (!selectedTaskId.value || !selectedRunId.value) return;
+  await clearTaskMutation.mutateAsync({
+    dagId: dagId.value,
+    runId: selectedRunId.value,
+    taskId: selectedTaskId.value,
+    downstream: false,
+  });
+}
+
+async function onStopRun() {
+  if (!selectedRunId.value) return;
+  await stopRunMutation.mutateAsync({
+    dagId: dagId.value,
+    runId: selectedRunId.value,
+  });
+}
+
+async function onClearRun() {
+  if (!selectedRunId.value) return;
+  if (
+    !window.confirm(
+      `Clear DAG run ${selectedRunId.value}? All task instances will be re-run.`,
+    )
+  ) return;
+  await clearRunMutation.mutateAsync({
+    dagId: dagId.value,
+    runId: selectedRunId.value,
+  });
+}
+
+const triggerOpen = ref(false);
+
+function onTriggered(result) {
+  if (result?.run_id) selectedRunId.value = result.run_id;
+}
+
+// ─── Helpers ────────────────────────────────────────────────────────────────
+function formatRunLabel(run) {
+  const date = run.start_date || run.logical_date;
+  const formatted = date
+    ? new Date(date).toLocaleString(undefined, {
+        month: 'short', day: '2-digit',
+        hour: '2-digit', minute: '2-digit', second: '2-digit',
+      })
+    : run.run_id;
+  return `${formatted} · ${run.status}`;
+}
+</script>

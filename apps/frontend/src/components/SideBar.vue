@@ -7,8 +7,8 @@
 
     <nav class="menu">
       <router-link to="/" class="menu-item">
-        <LayoutDashboard class="icon" :size="20" />
-        <span v-if="!isCollapsed">Dashboard</span>
+        <GitBranch class="icon" :size="20" />
+        <span v-if="!isCollapsed">DAGs</span>
       </router-link>
 
       <router-link to="/s3" class="menu-item">
@@ -26,7 +26,7 @@
 
 <script setup>
 import { ref } from 'vue';
-import { LayoutDashboard, Database, Brain, Cpu, LineChart } from 'lucide-vue-next';
+import { GitBranch, Database, Brain } from 'lucide-vue-next';
 import SidebarToggleButton from './ToggleButton.vue';
 
 const isCollapsed = ref(false);
