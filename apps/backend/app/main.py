@@ -7,12 +7,11 @@ from fastapi import FastAPI, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 from starlette.middleware.base import RequestResponseEndpoint
 
-from app.api.v1 import airflow, dags, generation, s3
-from app.core.error_handlers import register_error_handlers
+from app.api.v1 import airflow, generation, s3
 from app.core.logging import setup_logging
 from app.db import schemas
 from app.db.database import db_manager
-from app.services.airflow.runtime import (
+from app.integrations.airflow.runtime import (
     start_airflow_runtime,
     stop_airflow_runtime,
 )
@@ -42,18 +41,14 @@ app.add_middleware(
     CORSMiddleware,
     allow_origins=allowed_origins,
     allow_credentials=False,
-    allow_methods=["GET", "POST", "PATCH", "OPTIONS", "DELETE"],
+    allow_methods=["GET", "POST", "OPTIONS", "DELETE"],
     allow_headers=["Authorization", "Content-Type"],
-    expose_headers=["ETag", "X-Request-ID"],
+    expose_headers=["ETag"],
 )
 
 
 @app.middleware("http")
-async def add_security_and_request_id(
-    request: Request, call_next: RequestResponseEndpoint
-) -> Response:
-    request_id = request.headers.get("X-Request-ID") or uuid.uuid4().hex
-    request.state.request_id = request_id
+async def add_security_headers(request: Request, call_next: RequestResponseEndpoint) -> Response:
     response = await call_next(request)
     response.headers["X-Content-Type-Options"] = "nosniff"
     response.headers["X-Frame-Options"] = "DENY"

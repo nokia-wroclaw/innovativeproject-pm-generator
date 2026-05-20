@@ -27,7 +27,7 @@
                  focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand/40"
         >
           <option v-for="t in availableTries" :key="t.try_number" :value="t.try_number">
-            Try {{ t.try_number }} · {{ tryLabel(t) }}
+            Try {{ t.try_number }} · {{ t.status }}
           </option>
           <option v-if="!availableTries.length" :value="initialTryNumber">
             Try {{ initialTryNumber }}
@@ -138,11 +138,6 @@ const props = defineProps({
   initialTryNumber: { type: Number, default: null },
   /** Array of TaskTry for the dropdown; may be empty until loaded. */
   availableTries: { type: Array, default: () => [] },
-  /**
-   * Current TaskStatus — drives whether we open an SSE follow-up after the
-   * initial REST fetch. Defaults to "none" (no SSE, REST is enough).
-   */
-  taskStatus: { type: String, default: 'none' },
 });
 
 const LEVELS = ['DEBUG', 'INFO', 'WARNING', 'ERROR', 'CRITICAL'];
@@ -226,24 +221,17 @@ async function startStream() {
   errorMessage.value = '';
 
   const isLatest = selectedTry.value === props.currentTryNumber;
-  const taskIsRunning = props.taskStatus === 'running' || props.taskStatus === 'queued';
 
-  // Step 1: ALWAYS fetch historical first. This is the most reliable path —
-  // the REST endpoint returns the full log buffer Airflow has on disk,
-  // regardless of whether the task is still running or has finished.
-  streamState.value = isLatest && taskIsRunning ? 'live' : 'idle';
-  try {
-    await fetchHistorical(selectedTry.value);
-  } catch (err) {
-    streamState.value = 'error';
-    errorMessage.value = err?.message ?? 'Fetch failed';
-    return;
-  }
-
-  // Step 2: if the task is still running and the user is looking at the
-  // current attempt, follow up with SSE for incremental tail.
-  if (!isLatest || !taskIsRunning) {
-    streamState.value = 'done';
+  if (!isLatest) {
+    // Historical — fetch (paginated) once.
+    streamState.value = 'idle';
+    try {
+      await fetchHistorical(selectedTry.value);
+      streamState.value = 'done';
+    } catch (err) {
+      streamState.value = 'error';
+      errorMessage.value = err?.message ?? 'Fetch failed';
+    }
     return;
   }
 
@@ -314,17 +302,6 @@ watch(
   { immediate: true },
 );
 
-// When a task finishes mid-view (running → success/failed), upgrade from SSE
-// to a final REST refresh so the user sees the closing log lines.
-watch(
-  () => props.taskStatus,
-  (newStatus, oldStatus) => {
-    if (oldStatus === 'running' && newStatus !== 'running') {
-      void startStream();
-    }
-  },
-);
-
 watch(
   () => props.currentTryNumber,
   (newTry) => {
@@ -335,22 +312,6 @@ watch(
 onBeforeUnmount(closeStream);
 
 // ─── Formatting / classes ───────────────────────────────────────────────────
-
-/**
- * Airflow 3.x returns ``state: null`` for the currently-running try in
- * ``/tries`` (the endpoint only fills state for finished attempts). For the
- * latest attempt we therefore fall back to the live ``taskStatus`` prop
- * instead of showing the literal "none".
- */
-function tryLabel(t) {
-  const isCurrent = t.try_number === props.currentTryNumber;
-  if (isCurrent && (t.status === 'none' || !t.status)) {
-    const live = props.taskStatus;
-    return live && live !== 'none' ? live : 'in progress';
-  }
-  return t.status || '—';
-}
-
 function formatTime(iso) {
   if (!iso) return '';
   const d = new Date(iso);

@@ -179,7 +179,6 @@ import { useDagLayout } from '../composables/useDagLayout.js';
 import {
   useDagDetails,
   useTaskInstances,
-  useTaskInstance,
   useTaskTries,
   useClearTaskInstance,
   useClearDagRun,
@@ -235,23 +234,11 @@ const canStopRun = computed(
 const taskInstancesQuery = useTaskInstances(dagIdRef, selectedRunId, isRunning);
 const taskInstances = computed(() => taskInstancesQuery.data.value ?? []);
 
-// ─── Sheet / selection ──────────────────────────────────────────────────────
-// Declared early so `statusByTask` below can overlay the singular query.
-const sheetOpen = ref(false);
-const selectedTaskId = ref(null);
-
-// Fresh task instance for the currently selected task (polls every 2s).
-const selectedTaskQuery = useTaskInstance(dagIdRef, selectedRunId, selectedTaskId);
-
 const statusByTask = computed(() => {
   const map = {};
   for (const ti of taskInstances.value) {
     map[ti.task_id] = ti;
   }
-  // Overlay the single-task query so the graph re-renders the cell for the
-  // currently-selected node even when the bulk poll is between refreshes.
-  const single = selectedTaskQuery.data.value;
-  if (single?.task_id) map[single.task_id] = single;
   return map;
 });
 
@@ -262,41 +249,13 @@ const { nodes: layoutNodes, edges: layoutEdges } = useDagLayout(
   { direction: 'TB' },
 );
 
-/**
- * Build a *synthetic* placeholder TaskInstance from the graph node, so that
- * users still see something the moment they click a node — even before
- * Airflow has materialised a task_instance row (e.g. just after triggering).
- */
-function _placeholderTI(taskId) {
-  const node = graph.value?.nodes?.find((n) => n.task_id === taskId);
-  if (!node) return null;
-  return {
-    task_id: taskId,
-    run_id: selectedRunId.value ?? '',
-    status: 'none',
-    raw_state: 'none',
-    try_number: 0,
-    max_tries: node.retries_max ?? 0,
-    start_date: null,
-    end_date: null,
-    duration_ms: null,
-    operator: node.operator ?? 'Operator',
-    pool: 'default_pool',
-    queue: 'default',
-    executor_config: {},
-    note: null,
-  };
-}
+// ─── Sheet for task details ────────────────────────────────────────────────
+const sheetOpen = ref(false);
+const selectedTaskId = ref(null);
 
 const selectedTaskInstance = computed(() => {
   if (!selectedTaskId.value) return null;
-  // 1. Freshest: dedicated /tasks/{task_id} query
-  if (selectedTaskQuery.data.value) return selectedTaskQuery.data.value;
-  // 2. From the bulk list polled for the whole run
-  const fromList = statusByTask.value[selectedTaskId.value];
-  if (fromList) return fromList;
-  // 3. Synthetic from the graph, so we always have *something* to render
-  return _placeholderTI(selectedTaskId.value);
+  return statusByTask.value[selectedTaskId.value] ?? null;
 });
 
 const triesQuery = useTaskTries(dagIdRef, selectedRunId, selectedTaskId);

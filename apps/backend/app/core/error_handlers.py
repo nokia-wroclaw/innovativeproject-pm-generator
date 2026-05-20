@@ -5,7 +5,7 @@ from fastapi import FastAPI, HTTPException, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 
-from app.services.airflow.errors import (
+from app.integrations.airflow.errors import (
     AirflowAuthFailed,
     AirflowConflict,
     AirflowIntegrationError,

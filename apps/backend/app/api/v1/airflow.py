@@ -1,11 +1,15 @@
+import os
+
+from __future__ import annotations
+
 from typing import Any
 
 from fastapi import APIRouter, Depends
 
 from app.core.auth import require_auth
-from app.services.airflow.errors import AirflowIntegrationError, AirflowUnavailable
-from app.services.airflow.runtime import get_airflow_client
-from app.services.airflow.client import AirflowClient
+from app.integrations.airflow.errors import AirflowIntegrationError, AirflowUnavailable
+from app.integrations.airflow.runtime import get_airflow_client
+from app.integrations.airflow.client import AirflowClient
 
 router = APIRouter(prefix="/airflow", tags=["airflow"])
 
@@ -23,6 +27,6 @@ async def airflow_health(
         body = await client.healthcheck()
     except AirflowIntegrationError:
         raise
-    except Exception as exc:
+    except Exception as exc:  # pragma: no cover - defensive
         raise AirflowUnavailable(f"Healthcheck failed: {exc}") from exc
     return {"status": "ok", "airflow": body}

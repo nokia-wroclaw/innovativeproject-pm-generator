@@ -4,6 +4,7 @@
   Three tabs (contract §4):
     1. Overview — task instance metadata + actions (Retry task, Stop run).
     2. Logs     — placeholder; live LogViewer will land in Faza 3.
+    3. XCom     — placeholder.
 
   This component is *presentation only* in Faza 2b: it accepts a
   `taskInstance` prop (may be null) and emits events for action buttons.
@@ -27,6 +28,7 @@
       :items="[
         { value: 'overview', label: 'Overview' },
         { value: 'logs', label: 'Logs' },
+        { value: 'xcom', label: 'XCom' },
       ]"
     >
       <!-- ── Overview ─────────────────────────────────────────────── -->
@@ -82,7 +84,6 @@
           :current-try-number="taskInstance.try_number || 1"
           :initial-try-number="taskInstance.try_number || 1"
           :available-tries="availableTries"
-          :task-status="taskInstance.status"
         />
         <EmptyState
           v-else
@@ -91,6 +92,14 @@
         />
       </template>
 
+      <!-- ── XCom (placeholder for Faza 3) ────────────────────────── -->
+      <template #xcom>
+        <EmptyState
+          icon-name="boxes"
+          title="XCom inspector not wired yet"
+          message="Will list XCom keys/values pushed by this task in Faza 3."
+        />
+      </template>
     </Tabs>
 
     <template #footer>
