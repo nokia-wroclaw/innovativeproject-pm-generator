@@ -30,7 +30,7 @@ const activeUploads = ref([]);
 
 const uploadMode = ref('upload');
 
-const formData = ref({ file_name: '', s3_key: '', file: null });
+const formData = ref({ s3_key: '', file: null });
 
 const pendingResumeState = ref(null);
 const isResumeModalOpen = ref(false);
@@ -38,11 +38,10 @@ const resumeFile = ref(null);
 const resumeError = ref('');
 
 const tableColumns = [
-  { key: 'id', label: 'ID' },
   { key: 'file_name', label: 'Name' },
   { key: 's3_key', label: 'Path' },
   { key: 'status', label: 'Status' },
-  { key: 'actions', label: 'Actions' }
+  { key: 'actions', label: 'Actions', class: 'text-right' }
 ];
 
 const rowActions = [
@@ -75,7 +74,7 @@ onBeforeUnmount(() => {
 const openModal = () => { isModalOpen.value = true; };
 const closeModal = () => {
   isModalOpen.value = false;
-  formData.value = { file_name: '', s3_key: '', file: null };
+  formData.value = { s3_key: '', file: null };
   uploadMode.value = 'upload';
 };
 
@@ -89,8 +88,14 @@ const handleFileChange = (event) => {
   const selectedFile = event.target.files[0];
   if (selectedFile) {
     formData.value.file = selectedFile;
-    if (!formData.value.file_name) formData.value.file_name = selectedFile.name;
   }
+};
+
+const extractFileName = (path) => {
+  if (!path) return '';
+  const segments = path.split('/');
+  const lastSegment = segments.pop() || segments.pop();
+  return lastSegment || 'unnamed_dataset';
 };
 
 const uploadChunk = async (url, chunkData) => {
@@ -147,7 +152,7 @@ const processUploadLoop = async (file, uploadState, uploadTask) => {
 };
 
 const submitDataset = async () => {
-  const { file_name, s3_key, file } = formData.value;
+  const { s3_key, file } = formData.value;
 
   if (!s3_key) return;
 
@@ -155,19 +160,22 @@ const submitDataset = async () => {
 
   try {
     if (uploadMode.value === 'register') {
-      await registerExistingS3Dataset({ file_name, s3_key });
+      const computedFileName = extractFileName(s3_key);
+      await registerExistingS3Dataset({ file_name: computedFileName, s3_key });
       closeModal();
       if (tableRef.value) tableRef.value.refresh();
       isPreparing.value = false;
       return;
     }
 
-    if (!file_name || !file) {
+    if (!file) {
       isPreparing.value = false;
       return;
     }
 
-    const dataset = await createS3Dataset({ file_name, s3_key });
+    const computedFileName = file.name;
+
+    const dataset = await createS3Dataset({ file_name: computedFileName, s3_key });
     const initResponse = await initiateMultipartUpload(dataset.id);
 
     const uploadState = {
@@ -184,7 +192,7 @@ const submitDataset = async () => {
     const tempId = 'upload_' + Date.now();
     const uploadTask = reactive({
       id: tempId,
-      file_name,
+      file_name: computedFileName,
       s3_key: initResponse.s3_key,
       status: DatasetStatus.UPLOADING,
       progress: 0
@@ -294,13 +302,15 @@ const tableProviderWrapper = async (params) => {
       </template>
 
       <template #cell-actions="{ row }">
-        <DynamicActions
-          v-if="row.status !== DatasetStatus.UPLOADING"
-          :row="row"
-          :actions="rowActions"
-          @action="handleRowAction"
-        />
-        <span v-else class="status-waiting">Uploading...</span>
+        <div class="actions-wrapper">
+          <DynamicActions
+            v-if="row.status !== DatasetStatus.UPLOADING"
+            :row="row"
+            :actions="rowActions"
+            @action="handleRowAction"
+          />
+          <span v-else class="status-waiting">Uploading...</span>
+        </div>
       </template>
     </DataTable>
 
@@ -322,18 +332,6 @@ const tableProviderWrapper = async (params) => {
         </div>
 
         <div class="form-group">
-          <label for="fileName">File name <span v-if="uploadMode === 'register'">(Optional)</span>:</label>
-          <input
-            id="fileName"
-            v-model="formData.file_name"
-            type="text"
-            :required="uploadMode === 'upload'"
-            class="form-input"
-            :disabled="isPreparing"
-            :placeholder="uploadMode === 'register' ? 'Leave empty to use S3 key name' : ''"
-          />
-        </div>
-        <div class="form-group">
           <label for="s3Key">Path (S3 Key):</label>
           <input id="s3Key" v-model="formData.s3_key" type="text" required class="form-input" :disabled="isPreparing" placeholder="e.g. data/my-file.csv" />
         </div>
@@ -350,7 +348,7 @@ const tableProviderWrapper = async (params) => {
           type="button"
           class="primary-button"
           @click="submitDataset"
-          :disabled="isPreparing || !formData.s3_key || (uploadMode === 'upload' && (!formData.file_name || !formData.file))"
+          :disabled="isPreparing || !formData.s3_key || (uploadMode === 'upload' && !formData.file)"
         >
           <span v-if="isPreparing">Processing...</span>
           <span v-else-if="uploadMode === 'register'">Register File</span>
@@ -393,17 +391,56 @@ const tableProviderWrapper = async (params) => {
 .s3-page-container { padding: 20px; }
 .page-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 24px; }
 .page-header h2 { margin: 0; color: #111827; font-size: 1.5rem; }
-.dataset-form { display: flex; flex-direction: column; gap: 16px; }
-.form-group { display: flex; flex-direction: column; gap: 4px; }
+.dataset-form { display: flex; flex-direction: column; gap: 6px; }
+.form-group { display: flex; flex-direction: column; gap: 2px; }
 .form-group label { font-size: 0.875rem; font-weight: 500; color: #374151; }
 .form-input { padding: 10px 12px; border: 1px solid #d1d5db; border-radius: 6px; font-size: 0.95rem; outline: none; transition: border-color 0.2s; }
 .form-input:focus { border-color: #3b82f6; }
-.file-upload-section { margin-top: 10px; }
+.file-upload-section { margin-top: 2px; }
 
-.radio-group { display: flex; gap: 16px; align-items: center; padding: 6px 0; }
+.radio-group { display: flex; gap: 16px; align-items: center; padding: 2px 0; }
 .radio-label { display: flex; align-items: center; gap: 8px; font-size: 0.9rem; cursor: pointer; color: #4b5563; font-weight: normal !important; }
 .radio-label input[type="radio"] { cursor: pointer; }
 
+/* Kluczowe poprawki dla wyświetlania dropdownu na wierzchu tabeli
+*/
+
+/* Wyciągamy wrapper najwyżej w hierarchii z-index */
+.actions-wrapper {
+  display: flex;
+  justify-content: flex-end;
+  align-items: center;
+  gap: 12px;
+  position: relative;
+  z-index: 999;
+}
+
+/* Wymuszenie na dropdownie absolutnym najwyższego priorytetu */
+.actions-wrapper > * {
+  z-index: 9999 !important;
+}
+
+/* Rozwiązanie problemu ze scrollbarem:
+  Kasujemy odcinanie overflow wewnątrz struktury tabeli komponentu DataTable
+*/
+:deep(.data-table-container table),
+:deep(.data-table-container tbody),
+:deep(.data-table-container tr),
+:deep(.data-table-container td) {
+  overflow: visible !important;
+  contain: none !important; /* Blokuje odcinanie w nowoczesnych przeglądarkach */
+}
+
+/* Wyłączenie tworzenia nowego kontekstu nakładania warstw przez wiersze */
+:deep(.data-table-container tr) {
+  position: static !important;
+}
+
+:deep(.text-right) {
+  text-align: right;
+}
+
+/* Pozostałe style (bez zmian) */
 .table-upload-cell { display: flex; align-items: center; gap: 10px; min-width: 140px; }
 .table-progress-bar { flex-grow: 1; height: 8px; background-color: #e5e7eb; border-radius: 10px; overflow: hidden; }
 .table-progress-fill { height: 100%; background-color: #3b82f6; transition: width 0.3s ease; }
