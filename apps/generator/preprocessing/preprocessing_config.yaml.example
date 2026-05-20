@@ -1,4 +1,4 @@
 preprocessing:
 
-  merge_kpi_versions:
-    #TODO: chosen kpis to coalesce
+  kpis:
+    #If we have any hardcoded kpis, here is the place to specify them
