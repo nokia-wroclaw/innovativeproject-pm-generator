@@ -99,10 +99,12 @@ class AirflowService:
         self, dag_id: str, run_id: str
     ) -> list[TaskInstance]:
         raw = await self._client.list_task_instances(dag_id, run_id)
-        return [
-            map_task_instance(ti)
-            for ti in (raw.get("task_instances", []) or [])
-        ]
+        items = raw.get("task_instances", []) or []
+        logger.info(
+            "list_task_instances dag=%s run=%s -> %d items (keys=%s)",
+            dag_id, run_id, len(items), list(raw.keys()),
+        )
+        return [map_task_instance(ti) for ti in items]
 
     async def get_task_instance(
         self, dag_id: str, run_id: str, task_id: str
@@ -194,12 +196,16 @@ class AirflowService:
         downstream: bool = False,
         triggered_by: str | None,
     ) -> ActionResponse:
+        # ``reset_dag_runs=True`` is required so Airflow's scheduler picks the
+        # task back up. Without it the task is just zeroed (state="none") and
+        # if the parent DAG run is already in a terminal state, nothing ever
+        # re-runs the task.
         await self._client.clear_task_instances(
             dag_id,
             run_id,
             task_ids=[task_id],
             include_downstream=downstream,
-            reset_dag_runs=False,
+            reset_dag_runs=True,
         )
         self._invalidate_dag_list_cache()
         _ = triggered_by
