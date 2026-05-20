@@ -2,12 +2,51 @@ import { getAccessToken } from '../auth/keycloak';
 
 const apiBaseUrl = (import.meta.env.VITE_API_BASE_URL ?? 'http://localhost:8000').replace(/\/$/, '');
 
-const authorizedRequest = async (path, init = {}) => {
+async function extractApiErrorDetail(response) {
+  const fallback = `API request failed with status ${response.status}`;
+  const rawBody = await response.text();
+  if (!rawBody) {
+    return fallback;
+  }
+
+  try {
+    const errorBody = JSON.parse(rawBody);
+    const { detail } = errorBody ?? {};
+
+    if (typeof detail === 'string') {
+      return detail;
+    }
+    if (Array.isArray(detail)) {
+      const messages = detail.map((item) => {
+        if (typeof item === 'string') return item;
+        if (item && typeof item === 'object' && 'msg' in item) return item.msg;
+        return JSON.stringify(item);
+      });
+      if (messages.length > 0) {
+        return messages.join('; ');
+      }
+    }
+    if (detail != null) {
+      return String(detail);
+    }
+    if (typeof errorBody?.message === 'string') {
+      return errorBody.message;
+    }
+  } catch {
+    return rawBody;
+  }
+
+  return fallback;
+}
+
+export const authorizedRequest = async (path, init = {}) => {
   const token = await getAccessToken();
 
   const headers = {
+    Accept: 'application/json',
     ...(init.headers ?? {}),
     Authorization: `Bearer ${token}`,
+    'Content-Type': 'application/json',
   };
 
   const response = await fetch(`${apiBaseUrl}${path}`, {
@@ -16,7 +55,8 @@ const authorizedRequest = async (path, init = {}) => {
   });
 
   if (!response.ok) {
-    throw new Error(`API request failed with status ${response.status}`);
+    const detail = await extractApiErrorDetail(response);
+    throw new Error(detail);
   }
 
   return response.json();

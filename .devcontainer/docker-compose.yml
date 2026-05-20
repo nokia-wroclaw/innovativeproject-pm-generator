@@ -19,6 +19,8 @@ services:
         reservations:
           cpus: '0.18'
           memory: '20G'
+    networks:
+      - shared-network
     command: sleep infinity
   # spark-jupyter:
   #   # Uncomment if you want to override the service's Dockerfile to one in the .devcontainer
@@ -45,3 +47,8 @@ services:
 
   #   # Overrides default command so things don't shut down after the process ends.
   #   command: sleep infinity
+
+
+networks:
+  shared-network:
+    external: true

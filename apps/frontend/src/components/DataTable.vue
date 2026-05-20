@@ -114,6 +114,9 @@ const refresh = () => {
     currentPage.value = 1;
   }
 };
+defineExpose({
+  refresh
+});
 
 onMounted(() => {
   loadData();

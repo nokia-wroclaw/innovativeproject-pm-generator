@@ -2,6 +2,7 @@
 
 set -e
 
+CREATE_BUCKET=false
 BUILD_MODE="auto"
 
 while [[ "$#" -gt 0 ]]; do
@@ -9,6 +10,7 @@ while [[ "$#" -gt 0 ]]; do
     -q | --quiet) echo "milczenie jest zlotem ;)" ;;
     -b | --build) BUILD_MODE="build" ;;
     -n | --no-build) BUILD_MODE="no-build" ;;
+    -cb | --create-bucket) CREATE_BUCKET=true ;;
     *) echo "unknown flag: $1" >&2 ; exit 1;
   esac
   shift
@@ -84,8 +86,8 @@ export SPARK_MASTER_PORT=$((18080 + PORT_OFFSET))
 export FASTAPI_PORT=$((8000 + PORT_OFFSET))
 export FRONTEND_PORT=$((5173 + PORT_OFFSET))
 export POSTGRES_PORT=$((5432 + PORT_OFFSET))
-export MINIO_API_PORT=$((9000 + PORT_OFFSET))
-export MINIO_WEBCONSOLE_PORT=$((9001 + PORT_OFFSET))
+export S3_API_PORT=$((9000 + PORT_OFFSET))
+export S3_WEBCONSOLE_PORT=$((9001 + PORT_OFFSET))
 export KEYCLOAK_PORT=$((8080 + PORT_OFFSET))
 export DEVCONTAINER_SSH_PORT=$((2222 + PORT_OFFSET))
 export FRONTEND_ORIGIN="http://localhost:${FRONTEND_PORT}"
@@ -97,7 +99,7 @@ grep -q "^export USER_UID=" ~/.bashrc            || echo 'export USER_UID=$(id -
 grep -q "^export USER_GID=" ~/.bashrc            || echo 'export USER_GID=$(id -g)' >> ~/.bashrc
 grep -q "^export USER=" ~/.bashrc                || echo "export USER=$USER" >> ~/.bashrc
 
-echo "Starting environment for $USER-$USER_UID on ports: Frontend=$FRONTEND_PORT, Jupyter=$JUPYTER_PORT, SparkUI=$SPARK_UI_PORT, SparkMaster=$SPARK_MASTER_PORT, MinIO_API=$MINIO_API_PORT, MinIO_UI=$MINIO_WEBCONSOLE_PORT, FastAPI=$FASTAPI_PORT, Keycloak=$KEYCLOAK_PORT, Postgres=$POSTGRES_PORT"
+echo "Starting environment for $USER-$USER_UID on ports: Frontend=$FRONTEND_PORT, Jupyter=$JUPYTER_PORT, SparkUI=$SPARK_UI_PORT, SparkMaster=$SPARK_MASTER_PORT, MinIO_API=$S3_API_PORT, MinIO_UI=$MINIO_WEBCONSOLE_PORT, FastAPI=$FASTAPI_PORT, Keycloak=$KEYCLOAK_PORT, Postgres=$POSTGRES_PORT"
 
 uv sync --quiet
 
@@ -119,10 +121,27 @@ else
   docker compose -p "${USER}_project" -f infra/docker-compose.yml up -d
 fi
 
+if [ "$CREATE_BUCKET" = true ]; then
+  docker compose -p "${USER}_project" -f infra/docker-compose.yml exec -T minio mc alias set myminio http://localhost:9000 ${AWS_ACCESS_KEY_ID} ${AWS_SECRET_ACCESS_KEY}
+  docker compose -p "${USER}_project" -f infra/docker-compose.yml exec -T minio mc mb myminio/${S3_BUCKET} --ignore-existing
+  docker compose -p "${USER}_project" -f infra/docker-compose.yml exec -T minio mc anonymous set public myminio/${S3_BUCKET}
+
+fi
+
 
 echo "======================================================================"
 echo "Use this locally to route docker ports through OUR port on vm"
 echo ""
-echo "ssh -L 9005:localhost:9005 -L $FRONTEND_PORT:localhost:$FRONTEND_PORT -L $JUPYTER_PORT:localhost:$JUPYTER_PORT -L $SPARK_MASTER_PORT:localhost:$SPARK_MASTER_PORT -L $SPARK_UI_PORT:localhost:$SPARK_UI_PORT -L $MINIO_API_PORT:localhost:$MINIO_API_PORT -L $MINIO_WEBCONSOLE_PORT:localhost:$MINIO_WEBCONSOLE_PORT -L $FASTAPI_PORT:localhost:$FASTAPI_PORT -L $KEYCLOAK_PORT:localhost:$KEYCLOAK_PORT -p $VM_SSH_PORT $USER@$VM_PUBLIC_IP"
+echo "ssh -L 9005:localhost:9005 -L $FRONTEND_PORT:localhost:$FRONTEND_PORT -L $JUPYTER_PORT:localhost:$JUPYTER_PORT -L $SPARK_MASTER_PORT:localhost:$SPARK_MASTER_PORT -L $SPARK_UI_PORT:localhost:$SPARK_UI_PORT -L $S3_API_PORT:localhost:$S3_API_PORT -L $S3_WEBCONSOLE_PORT:localhost:$S3_WEBCONSOLE_PORT -L $FASTAPI_PORT:localhost:$FASTAPI_PORT -L $KEYCLOAK_PORT:localhost:$KEYCLOAK_PORT -p $VM_SSH_PORT $USER@$VM_PUBLIC_IP"
 echo ""
+echo "Port Mapping:"
+echo "9005 - Airflow"
+echo "$FRONTEND_PORT - Frontend"
+echo "$JUPYTER_PORT - Jupyter Notebook"
+echo "$SPARK_MASTER_PORT - Spark Master"
+echo "$SPARK_UI_PORT - Spark UI"
+echo "$S3_API_PORT - S3 API (MinIO)"
+echo "$S3_WEBCONSOLE_PORT - S3 Console (MinIO)"
+echo "$FASTAPI_PORT - FastAPI Backend"
+echo "$KEYCLOAK_PORT - Keycloak"
 echo "======================================================================"
