@@ -13,6 +13,8 @@ dependencies = [
     "pyspark>=4.1.1",
     "jupyter",
     "plotly>=6.7.0",
+    "matplotlib>=3.10.9",
+    "scipy>=1.17.1",
 ]
 
 
