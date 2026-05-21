@@ -5,11 +5,9 @@
     <Tabs v-model="activeTab" :items="[
       { value: 'overview', label: 'Overview' },
       { value: 'logs', label: 'Logs' },
-      { value: 'xcom', label: 'XCom' },
     ]">
       <template #overview>...</template>
       <template #logs>...</template>
-      <template #xcom>...</template>
     </Tabs>
 -->
 <template>
