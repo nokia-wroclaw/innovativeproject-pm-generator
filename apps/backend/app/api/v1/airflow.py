@@ -23,6 +23,6 @@ async def airflow_health(
         body = await client.healthcheck()
     except AirflowIntegrationError:
         raise
-    except Exception as exc:  # pragma: no cover - defensive
+    except Exception as exc:
         raise AirflowUnavailable(f"Healthcheck failed: {exc}") from exc
     return {"status": "ok", "airflow": body}

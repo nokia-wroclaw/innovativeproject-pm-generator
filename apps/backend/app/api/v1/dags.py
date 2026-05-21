@@ -40,7 +40,6 @@ def _identity(payload: dict[str, Any]) -> str | None:
     )
 
 
-# ─── Reads ────────────────────────────────────────────────────────────────────
 @router.get("", response_model=list[DagSummary])
 async def list_dags(
     _user: dict[str, Any] = Depends(require_auth),
