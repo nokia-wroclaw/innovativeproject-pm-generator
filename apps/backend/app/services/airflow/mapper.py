@@ -90,6 +90,7 @@ def _duration_ms(start: datetime | None, end: datetime | None, raw: Any = None) 
 
 
 def _schedule_str(value: Any) -> str | None:
+    """Airflow returns schedule either as a string or a typed object."""
     if value is None:
         return None
     if isinstance(value, str):
@@ -123,10 +124,10 @@ def _tags(value: Any) -> list[str]:
 def map_dag_run(raw: dict[str, Any]) -> DagRunSummary:
     start = _parse_dt(raw.get("start_date"))
     end = _parse_dt(raw.get("end_date"))
-    logical = _parse_dt(raw.get("logical_date"))
+    logical = _parse_dt(raw.get("logical_date") or raw.get("execution_date"))
     state = raw.get("state")
     return DagRunSummary(
-        run_id=str(raw.get("dag_run_id") or ""),
+        run_id=str(raw.get("dag_run_id") or raw.get("run_id") or ""),
         logical_date=logical or start or datetime.now(tz=timezone.utc),
         start_date=start,
         end_date=end,
@@ -164,14 +165,20 @@ def map_dag_summary(
         tags=_tags(raw.get("tags")),
         is_paused=bool(raw.get("is_paused", False)),
         is_active=bool(raw.get("is_active", True)),
-        schedule=_schedule_str(raw.get("timetable_summary")),
-        next_run_at=_parse_dt(raw.get("next_dagrun_run_after")),
+        schedule=_schedule_str(
+            raw.get("schedule_interval") or raw.get("timetable_summary")
+        ),
+        next_run_at=_parse_dt(raw.get("next_dagrun") or raw.get("next_dagrun_run_after")),
         last_run=last_run,
         stats_24h=stats or DagStats(),
     )
 
 
 def map_dag_graph(raw: dict[str, Any]) -> DagGraph:
+    """Builds a graph from ``GET /api/v2/dags/{id}/tasks``.
+
+    Each task carries ``downstream_task_ids`` which we use to materialise edges.
+    """
     nodes: list[TaskNode] = []
     edges: list[TaskEdge] = []
 
@@ -220,7 +227,7 @@ def map_task_instance(raw: dict[str, Any]) -> TaskInstance:
     state = raw.get("state")
     return TaskInstance(
         task_id=str(raw.get("task_id") or ""),
-        run_id=str(raw.get("dag_run_id") or ""),
+        run_id=str(raw.get("dag_run_id") or raw.get("run_id") or ""),
         status=normalize_task_status(state),
         raw_state=str(state or "none"),
         try_number=int(raw.get("try_number") or 0),
@@ -237,6 +244,12 @@ def map_task_instance(raw: dict[str, Any]) -> TaskInstance:
 
 
 def _coerce_executor_config(value: Any) -> dict[str, Any]:
+    """Airflow 3.x returns ``executor_config`` as a JSON-serialised string
+    (e.g. ``'{}'`` or ``"{'queue': 'kubernetes'}"`` — Python's ``repr``-style
+    quoting for legacy reasons). Older versions returned a real ``dict``.
+
+    We always normalise to a dict so the DTO stays typed.
+    """
     if value is None or value == "":
         return {}
     if isinstance(value, dict):
@@ -279,6 +292,29 @@ def map_log_chunk(
     try_number: int,
     seq: int,
 ) -> LogChunk:
+    """Maps an Airflow ``/logs/{try}`` JSON response into a LogChunk.
+
+    Airflow returns one of several shapes depending on version & log handler:
+
+    * Airflow 3.x (``StructuredLogMessage[]``)::
+
+        {"content": [
+            {"timestamp": "...", "event": "msg", "level": "INFO", "logger": "..."},
+            ...
+        ], "continuation_token": "..."}
+
+    * Airflow 3.x (string array)::
+
+        {"content": ["line1", "line2"], "continuation_token": "..."}
+
+    * Airflow 2.x (legacy nested arrays)::
+
+        {"content": [[["source", "line text"], ...]], ...}
+
+    * Plain string body (some log handlers / older versions)::
+
+        {"content": "string\\nwith\\nlines", ...}
+    """
     continuation = raw.get("continuation_token") or None
     content = raw.get("content")
 
@@ -294,7 +330,7 @@ def map_log_chunk(
         for entry in content:
             try:
                 _consume_log_entry(entry, lines)
-            except Exception as exc:
+            except Exception as exc:  # pragma: no cover - defensive
                 logger.warning("Skipping malformed log entry: %s (%r)", exc, entry)
                 continue
 
@@ -332,7 +368,9 @@ def map_log_chunk(
 
 
 def _consume_log_entry(entry: Any, lines: list[LogLine]) -> None:
+    """Append zero-or-more LogLine objects parsed from a single Airflow entry."""
     if isinstance(entry, dict):
+        # Airflow 3.x StructuredLogMessage.
         event_text = str(entry.get("event") or "").rstrip("\n")
         if not event_text.strip():
             return
@@ -347,11 +385,28 @@ def _consume_log_entry(entry: Any, lines: list[LogLine]) -> None:
         )
         return
     if isinstance(entry, str):
+        # Airflow 3.x simple string array OR ndjson line.
         for text in entry.splitlines():
             if not text.strip():
                 continue
             lines.append(_parse_log_line(None, text))
         return
+    if isinstance(entry, list):
+        # Airflow 2.x legacy: [[source, text], ...] nested.
+        for nested in entry:
+            if isinstance(nested, list) and len(nested) >= 2:
+                src, text = nested[0], nested[1]
+                for text_line in str(text).splitlines():
+                    if not text_line.strip():
+                        continue
+                    lines.append(
+                        _parse_log_line(str(src) if src else None, text_line)
+                    )
+            elif isinstance(nested, str):
+                for text_line in nested.splitlines():
+                    if not text_line.strip():
+                        continue
+                    lines.append(_parse_log_line(None, text_line))
 
 
 _ALLOWED_LOG_LEVELS = frozenset({"DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"})
@@ -376,7 +431,7 @@ def _parse_log_line(source: str | None, text: str) -> LogLine:
         return LogLine(timestamp=None, level=None, source=source, message=text)
     return LogLine(
         timestamp=_parse_dt(match.group("ts")),
-        level=match.group("level"),
+        level=match.group("level"),  # type: ignore[arg-type]
         source=match.group("source") or source,
         message=match.group("msg"),
     )

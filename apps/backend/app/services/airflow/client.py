@@ -224,7 +224,7 @@ class AirflowClient:
                     )
                 return self._handle_response(method, path, response)
 
-        raise AirflowUnavailable(
+        raise AirflowUnavailable(  # pragma: no cover - tenacity reraises before this
             f"Exhausted retries for {method} {path}"
         )
 

@@ -143,7 +143,6 @@ def get_token_payload(
                 "verify_aud": False,
                 "verify_iss": False,
             },
-            # Small clock skew tolerance for local docker/browser setups.
             leeway=60,
         )
     except InvalidTokenError as exc:

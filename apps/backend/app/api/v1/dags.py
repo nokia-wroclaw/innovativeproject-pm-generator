@@ -8,9 +8,9 @@ from fastapi import APIRouter, Depends, Query, Request
 from sse_starlette.sse import EventSourceResponse
 
 from app.core.auth import require_admin, require_auth
-from app.integrations.airflow.config import get_airflow_settings
-from app.integrations.airflow.errors import AirflowIntegrationError
-from app.integrations.airflow.runtime import get_airflow_service
+from app.services.airflow.config import get_airflow_settings
+from app.services.airflow.errors import AirflowIntegrationError
+from app.services.airflow.runtime import get_airflow_service
 from app.models.dags import (
     ActionResponse,
     DagDetails,
@@ -21,7 +21,7 @@ from app.models.dags import (
     TaskTry,
     TriggerRequest,
 )
-from app.services.airflow import AirflowService
+from app.services.airflow.service import AirflowService
 
 logger = logging.getLogger(__name__)
 
