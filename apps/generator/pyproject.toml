@@ -13,7 +13,8 @@ dependencies = [
     "pyspark>=4.1.1",
     "jupyter",
     "plotly>=6.7.0",
-    "holidays>=0.96"
+    "holidays>=0.96",
+    "python-dotenv>=1.0.0"
 ]
 
 
