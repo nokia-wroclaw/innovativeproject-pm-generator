@@ -33,8 +33,6 @@ logger = logging.getLogger(__name__)
 
 
 class AirflowService:
-    """Domain operations for DAGs."""
-
     def __init__(self, *, client: AirflowClient, settings: AirflowSettings) -> None:
         self._client = client
         self._settings = settings
