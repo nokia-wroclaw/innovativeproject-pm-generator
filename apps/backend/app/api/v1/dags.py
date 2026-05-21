@@ -1,16 +1,3 @@
-"""REST endpoints for DAG management.
-
-Surface defined in ``docs/architecture/dag-management.md`` §4. The router
-delegates all domain work to :class:`AirflowService` and stays thin: parse
-request → call service → return DTO.
-
-Auth:
-  * read endpoints depend on ``require_auth`` (viewer + admin),
-  * mutating endpoints depend on ``require_admin``.
-"""
-
-from __future__ import annotations
-
 import asyncio
 import json
 import logging
@@ -21,9 +8,9 @@ from fastapi import APIRouter, Depends, Query, Request
 from sse_starlette.sse import EventSourceResponse
 
 from app.core.auth import require_admin, require_auth
-from app.integrations.airflow.config import get_airflow_settings
-from app.integrations.airflow.errors import AirflowIntegrationError
-from app.integrations.airflow.runtime import get_airflow_service
+from app.services.airflow.config import get_airflow_settings
+from app.services.airflow.errors import AirflowIntegrationError
+from app.services.airflow.runtime import get_airflow_service
 from app.models.dags import (
     ActionResponse,
     DagDetails,
@@ -34,7 +21,7 @@ from app.models.dags import (
     TaskTry,
     TriggerRequest,
 )
-from app.services.airflow import AirflowService
+from app.services.airflow.service import AirflowService
 
 logger = logging.getLogger(__name__)
 
@@ -138,7 +125,6 @@ async def get_task_logs(
     )
 
 
-# ─── Mutations ────────────────────────────────────────────────────────────────
 @router.post("/{dag_id}/runs", response_model=ActionResponse)
 async def trigger_dag(
     dag_id: str,
@@ -198,7 +184,6 @@ async def clear_task_instance(
     )
 
 
-# ─── SSE: live task logs ──────────────────────────────────────────────────────
 @router.get("/{dag_id}/runs/{run_id}/tasks/{task_id}/logs/stream")
 async def stream_task_logs(
     request: Request,
@@ -272,8 +257,6 @@ async def stream_task_logs(
 
                 token = chunk.continuation
 
-                # When we caught up (no continuation, no new lines), check task
-                # state; if the task is in a terminal state, end the stream.
                 if token is None:
                     try:
                         task_instance = await service.get_task_instance(
@@ -302,8 +285,6 @@ async def stream_task_logs(
 
                     await asyncio.sleep(2)
                 else:
-                    # More pages still to fetch immediately — small breath
-                    # to avoid pegging the API.
                     await asyncio.sleep(0.1)
         except asyncio.CancelledError:
             yield {

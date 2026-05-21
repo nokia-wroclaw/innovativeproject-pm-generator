@@ -1,14 +1,3 @@
-"""Airflow integration configuration.
-
-All settings come from environment variables. We keep this file deliberately
-small and side-effect free; ``get_airflow_settings()`` is cached with ``lru_cache``
-so the values are read once per process.
-
-The defaults align with the values used in ``infra/airflow-docker-compose.yml``
-(see ``_AIRFLOW_WWW_USER_USERNAME`` / ``_AIRFLOW_WWW_USER_PASSWORD`` for the
-service-account credentials we exchange for a JWT at ``POST /auth/token``).
-"""
-
 from dataclasses import dataclass
 from functools import lru_cache
 import os

@@ -1,13 +1,3 @@
-"""Global FastAPI error handlers.
-
-Maps internal exceptions into the uniform ``ApiError`` envelope defined in
-``docs/architecture/dag-management.md`` §6. Every error response carries the
-request id (set by ``main.py``'s middleware), making cross-layer debugging
-straightforward.
-"""
-
-from __future__ import annotations
-
 import logging
 from typing import Any
 
@@ -15,7 +5,7 @@ from fastapi import FastAPI, HTTPException, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 
-from app.integrations.airflow.errors import (
+from app.services.airflow.errors import (
     AirflowAuthFailed,
     AirflowConflict,
     AirflowIntegrationError,
@@ -136,7 +126,6 @@ def register_error_handlers(app: FastAPI) -> None:
             status_code=500,
         )
 
-    # Silence unused-name warnings (handlers are registered via decorators).
     _ = (
         _airflow_unavailable, _airflow_auth, _airflow_notfound,
         _airflow_conflict, _airflow_integration, _validation,

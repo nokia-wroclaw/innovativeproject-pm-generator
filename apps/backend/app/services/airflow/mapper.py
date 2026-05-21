@@ -1,17 +1,3 @@
-"""Translates Airflow API v2 payloads into our Pydantic DTOs.
-
-Pure functions, no side effects. Keeping the mapping isolated here means
-the rest of the codebase never sees raw Airflow JSON. The functions accept
-the *raw* dicts returned by ``AirflowClient`` and return Pydantic models
-defined in :mod:`app.models.dags`.
-
-Defensive: Airflow's API is occasionally inconsistent across versions
-(field names sometimes change between minor releases). We use ``.get()``
-extensively and fall back to safe defaults.
-"""
-
-from __future__ import annotations
-
 import ast
 import json
 import logging
@@ -36,10 +22,6 @@ from app.models.dags import (
 )
 
 logger = logging.getLogger(__name__)
-
-# ─────────────────────────────────────────────────────────────────────────────
-# Status normalisation (contract §2)
-# ─────────────────────────────────────────────────────────────────────────────
 
 _TASK_STATUS_MAP: dict[str, TaskStatus] = {
     "success": TaskStatus.SUCCESS,
@@ -76,10 +58,6 @@ def normalize_dag_run_status(raw_state: str | None) -> DagRunStatus:
         return DagRunStatus.QUEUED
     return _DAG_RUN_STATUS_MAP.get(raw_state.lower(), DagRunStatus.QUEUED)
 
-
-# ─────────────────────────────────────────────────────────────────────────────
-# Helpers
-# ─────────────────────────────────────────────────────────────────────────────
 
 def _parse_dt(value: Any) -> datetime | None:
     if value is None:
@@ -143,10 +121,6 @@ def _tags(value: Any) -> list[str]:
     return out
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# DAG run
-# ─────────────────────────────────────────────────────────────────────────────
-
 def map_dag_run(raw: dict[str, Any]) -> DagRunSummary:
     start = _parse_dt(raw.get("start_date"))
     end = _parse_dt(raw.get("end_date"))
@@ -175,10 +149,6 @@ def _triggered_by_from_note(note: Any) -> str | None:
     return match.group(1) if match else None
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# DAG summary
-# ─────────────────────────────────────────────────────────────────────────────
-
 def map_dag_summary(
     raw: dict[str, Any],
     *,
@@ -203,10 +173,6 @@ def map_dag_summary(
         stats_24h=stats or DagStats(),
     )
 
-
-# ─────────────────────────────────────────────────────────────────────────────
-# Graph (tasks + edges)
-# ─────────────────────────────────────────────────────────────────────────────
 
 def map_dag_graph(raw: dict[str, Any]) -> DagGraph:
     """Builds a graph from ``GET /api/v2/dags/{id}/tasks``.
@@ -249,19 +215,11 @@ def _operator_from_class_ref(class_ref: Any) -> str | None:
     return None
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# DAG details
-# ─────────────────────────────────────────────────────────────────────────────
-
 def map_dag_details(
     *, summary: DagSummary, graph: DagGraph, recent_runs: list[DagRunSummary]
 ) -> DagDetails:
     return DagDetails(summary=summary, graph=graph, recent_runs=recent_runs)
 
-
-# ─────────────────────────────────────────────────────────────────────────────
-# Task instance / tries
-# ─────────────────────────────────────────────────────────────────────────────
 
 def map_task_instance(raw: dict[str, Any]) -> TaskInstance:
     start = _parse_dt(raw.get("start_date"))
@@ -320,12 +278,6 @@ def map_task_try(raw: dict[str, Any]) -> TaskTry:
     )
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Logs
-# ─────────────────────────────────────────────────────────────────────────────
-
-# Best-effort parser for the common Airflow log prefix:
-#   [2026-05-20T15:00:18.345+0000] {operator.py:174} INFO - message text
 _LOG_PREFIX_RE = re.compile(
     r"^\[(?P<ts>[^\]]+)\]\s*"
     r"(?:\{(?P<source>[^}]+)\}\s*)?"
@@ -382,9 +334,6 @@ def map_log_chunk(
                 logger.warning("Skipping malformed log entry: %s (%r)", exc, entry)
                 continue
 
-    # Defensive: if Airflow returned content but mapping produced nothing
-    # (unknown shape), stringify it and dump as raw lines so the user at
-    # least sees *something* in the UI instead of an empty stream.
     if not lines and content:
         logger.warning(
             "map_log_chunk: unknown content shape (type=%s); "
@@ -469,7 +418,6 @@ def _normalize_log_level(value: Any) -> str | None:
     candidate = str(value).upper().strip()
     if candidate in _ALLOWED_LOG_LEVELS:
         return candidate
-    # Airflow sometimes emits "WARN" / "FATAL"; map to nearest equivalent.
     if candidate == "WARN":
         return "WARNING"
     if candidate == "FATAL":

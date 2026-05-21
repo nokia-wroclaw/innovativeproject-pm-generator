@@ -1,27 +1,3 @@
-"""Airflow JWT acquisition via the FAB ``/auth/token`` endpoint.
-
-Why credentials exchange (not self-signed JWT)?
-    Airflow 3.x with the FAB auth manager validates the *content* of the JWT —
-    not just signature & issuer. The token must encode a real, persisted user
-    plus that user's role bindings. Self-signing a token with the shared secret
-    passes signature verification but fails authorisation (HTTP 403) because
-    Airflow can't map the ``sub`` claim back to a user with permissions.
-
-    Therefore we treat Airflow as an OAuth-ish identity provider: we hold
-    a service account's username/password and exchange them at
-    ``POST /auth/token`` for a real JWT, which we cache in process memory.
-
-Token lifecycle:
-    * First request → blocking exchange under an ``asyncio.Lock``.
-    * Subsequent requests → return cached token until it nears expiry.
-    * 401 from Airflow → caller invokes :py:meth:`invalidate` and we re-exchange.
-    * The expiry is read from the JWT's ``exp`` claim (no verification — we
-      already trust this token because *we* just received it over HTTPS-equivalent
-      from Airflow); we refresh ~60 s before that timestamp.
-"""
-
-from __future__ import annotations
-
 import asyncio
 import logging
 import time
@@ -49,8 +25,6 @@ class _CachedToken:
 
 
 class AirflowAuth:
-    """Acquires and caches an Airflow API JWT via the FAB ``/auth/token`` endpoint."""
-
     def __init__(self, settings: AirflowSettings) -> None:
         self._settings = settings
         self._cached: _CachedToken | None = None
@@ -75,9 +49,6 @@ class AirflowAuth:
         async with self._lock:
             self._cached = None
 
-    # ─────────────────────────────────────────────────────────────────────
-    # Internals
-    # ─────────────────────────────────────────────────────────────────────
     async def _exchange_credentials(self) -> tuple[str, float]:
         url = f"{self._settings.base_url.rstrip('/')}{self._settings.auth_token_path}"
         payload = {

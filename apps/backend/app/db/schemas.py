@@ -1,10 +1,10 @@
 import uuid
+from typing import Literal
 
 from sqlalchemy import Integer, String, Uuid
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.db.database import Base
-
 
 import enum
 
@@ -40,3 +40,24 @@ class Dataset(Base):
     file_name: Mapped[str] = mapped_column(String, nullable=False)
 
     status: Mapped[DatasetStatus] = mapped_column(default=DatasetStatus.PENDING)
+
+
+class TaskStatus(str, enum.Enum):
+    SUCCESS = "success"
+    RUNNING = "running"
+    FAILED = "failed"
+    UP_FOR_RETRY = "up_for_retry"
+    QUEUED = "queued"
+    SKIPPED = "skipped"
+    NONE = "none"
+
+
+class DagRunStatus(str, enum.Enum):
+    SUCCESS = "success"
+    RUNNING = "running"
+    FAILED = "failed"
+    QUEUED = "queued"
+
+
+RunType = Literal["manual", "scheduled", "backfill", "asset_triggered"]
+LogLevel = Literal["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"]

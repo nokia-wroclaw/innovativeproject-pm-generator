@@ -1,15 +1,3 @@
-"""Async HTTP client for the Airflow REST API v2.
-
-This module owns the raw HTTP layer: connection pooling, timeouts, retries,
-and authentication header injection. It returns *raw* JSON payloads — domain
-mapping into our DTOs lives in :mod:`app.integrations.airflow.mapper`.
-
-The client is created once at app startup and disposed in lifespan teardown
-(see ``app/main.py``).
-"""
-
-from __future__ import annotations
-
 import logging
 from typing import Any
 
@@ -37,14 +25,11 @@ _RETRYABLE_STATUSES = frozenset({502, 503, 504})
 
 
 class AirflowClient:
-    """Thin wrapper around ``httpx.AsyncClient`` for Airflow API v2."""
-
     def __init__(self, settings: AirflowSettings, auth: AirflowAuth) -> None:
         self._settings = settings
         self._auth = auth
         self._client: httpx.AsyncClient | None = None
 
-    # ─── Lifecycle ────────────────────────────────────────────────────────
     async def start(self) -> None:
         if self._client is not None:
             return
@@ -61,7 +46,6 @@ class AirflowClient:
             await self._client.aclose()
             self._client = None
 
-    # ─── Public methods (one per contract endpoint) ───────────────────────
     async def list_dags(
         self, *, limit: int = 200, offset: int = 0, only_active: bool = True
     ) -> dict[str, Any]:
@@ -146,9 +130,6 @@ class AirflowClient:
         logical_date: str | None = None,
         note: str | None = None,
     ) -> dict[str, Any]:
-        # ``logical_date`` is "required nullable" in Airflow 3.x TriggerDAGRunPostBody —
-        # the field MUST be present in the body; passing ``null`` lets Airflow use "now".
-        # Omitting it triggers a Pydantic 422 (validation error) on the Airflow side.
         body: dict[str, Any] = {"logical_date": logical_date}
         if conf is not None:
             body["conf"] = conf
@@ -197,7 +178,6 @@ class AirflowClient:
         )
 
     async def healthcheck(self) -> dict[str, Any]:
-        """Hits Airflow's monitor health endpoint (no auth required)."""
         if self._client is None:
             raise AirflowUnavailable("Airflow client not started")
         try:
@@ -212,7 +192,6 @@ class AirflowClient:
             )
         return response.json()
 
-    # ─── Internals ────────────────────────────────────────────────────────
     async def _request(
         self,
         method: str,
@@ -278,8 +257,6 @@ class AirflowClient:
         )
 
         if response.status_code == 401:
-            # Token may be stale (rotated secret, clock skew). Invalidate and
-            # let tenacity retry — second attempt mints a fresh JWT.
             await self._auth.invalidate()
             raise AirflowAuthFailed(
                 "Airflow rejected our service-account JWT (will retry once)"

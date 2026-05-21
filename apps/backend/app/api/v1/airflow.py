@@ -1,19 +1,11 @@
-"""Healthcheck proxy for Airflow.
-
-Wraps Airflow's ``/api/v2/monitor/health`` so the frontend can probe the
-upstream from a single origin (no CORS gymnastics, our request id is honored).
-"""
-
-from __future__ import annotations
-
 from typing import Any
 
 from fastapi import APIRouter, Depends
 
 from app.core.auth import require_auth
-from app.integrations.airflow.errors import AirflowIntegrationError, AirflowUnavailable
-from app.integrations.airflow.runtime import get_airflow_client
-from app.integrations.airflow.client import AirflowClient
+from app.services.airflow.errors import AirflowIntegrationError, AirflowUnavailable
+from app.services.airflow.runtime import get_airflow_client
+from app.services.airflow.client import AirflowClient
 
 router = APIRouter(prefix="/airflow", tags=["airflow"])
 

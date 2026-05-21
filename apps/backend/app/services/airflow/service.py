@@ -1,28 +1,13 @@
-"""Domain service for the DAG management feature.
-
-Sits between the API router (``app/api/v1/dags.py``) and the raw Airflow
-HTTP layer (``app/integrations/airflow/client.py``). Responsibilities:
-
-  * orchestrate multi-call workflows (e.g. list DAGs + each DAG's last run +
-    each DAG's 24h stats — all in one response);
-  * normalise raw Airflow payloads into our DTOs via the mapper;
-  * cache expensive aggregates (DAG list with stats, contract §8).
-
-Stateless w.r.t. the request — the only state is the in-process TTL cache.
-"""
-
-from __future__ import annotations
-
 import asyncio
 import logging
 import time
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
-from app.integrations.airflow.client import AirflowClient
-from app.integrations.airflow.config import AirflowSettings
-from app.integrations.airflow.errors import AirflowNotFound
-from app.integrations.airflow.mapper import (
+from app.services.airflow.client import AirflowClient
+from app.services.airflow.config import AirflowSettings
+from app.services.airflow.errors import AirflowNotFound
+from app.services.airflow.mapper import (
     map_dag_details,
     map_dag_graph,
     map_dag_run,
@@ -56,7 +41,6 @@ class AirflowService:
         self._dag_list_cache: tuple[float, list[DagSummary]] | None = None
         self._dag_list_lock = asyncio.Lock()
 
-    # ─── Queries ──────────────────────────────────────────────────────────
     async def list_dags(self) -> list[DagSummary]:
         now = time.monotonic()
         cache_ttl = self._settings.dag_list_cache_seconds
@@ -74,7 +58,6 @@ class AirflowService:
             return summaries
 
     async def get_dag_details(self, dag_id: str) -> DagDetails:
-        # Run the three fetches in parallel — graph, recent runs, DAG metadata.
         dag_raw, tasks_raw, runs_raw = await asyncio.gather(
             self._client.get_dag(dag_id),
             self._client.list_dag_tasks(dag_id),
@@ -136,7 +119,6 @@ class AirflowService:
         )
         return map_log_chunk(raw, try_number=try_number, seq=seq)
 
-    # ─── Mutations ────────────────────────────────────────────────────────
     async def trigger_dag(
         self,
         dag_id: str,
@@ -180,7 +162,7 @@ class AirflowService:
             dag_id, run_id, task_ids=None, reset_dag_runs=True
         )
         self._invalidate_dag_list_cache()
-        _ = triggered_by  # noted in Airflow audit log by service-account name
+        _ = triggered_by
         return ActionResponse(
             run_id=run_id,
             message=f"Cleared all tasks in run '{run_id}'",
@@ -196,10 +178,6 @@ class AirflowService:
         downstream: bool = False,
         triggered_by: str | None,
     ) -> ActionResponse:
-        # ``reset_dag_runs=True`` is required so Airflow's scheduler picks the
-        # task back up. Without it the task is just zeroed (state="none") and
-        # if the parent DAG run is already in a terminal state, nothing ever
-        # re-runs the task.
         await self._client.clear_task_instances(
             dag_id,
             run_id,
@@ -215,7 +193,6 @@ class AirflowService:
             airflow_status=200,
         )
 
-    # ─── Internals ────────────────────────────────────────────────────────
     def _invalidate_dag_list_cache(self) -> None:
         self._dag_list_cache = None
 
@@ -274,10 +251,6 @@ class AirflowService:
         return last_run, stats
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Free functions
-# ─────────────────────────────────────────────────────────────────────────────
-
 def _aggregate_stats_from_runs(runs: list[DagRunSummary]) -> DagStats:
     success = sum(1 for r in runs if r.status == DagRunStatus.SUCCESS)
     failed = sum(1 for r in runs if r.status == DagRunStatus.FAILED)
@@ -286,7 +259,6 @@ def _aggregate_stats_from_runs(runs: list[DagRunSummary]) -> DagStats:
 
 
 def _compose_note(note: str | None, triggered_by: str | None) -> str | None:
-    """Embeds the calling user's identifier in the Airflow note for audit."""
     parts: list[str] = []
     if note:
         parts.append(note.strip())

@@ -1,15 +1,7 @@
-"""Exceptions raised by the Airflow integration layer.
-
-The API router maps these to ``ApiError`` payloads (see
-``docs/architecture/dag-management.md`` §6).
-"""
-
 from typing import Any
 
 
 class AirflowIntegrationError(Exception):
-    """Base class for all Airflow integration failures."""
-
     code: str = "INTERNAL_ERROR"
     http_status: int = 500
 

@@ -12,7 +12,7 @@ from app.core.error_handlers import register_error_handlers
 from app.core.logging import setup_logging
 from app.db import schemas
 from app.db.database import db_manager
-from app.integrations.airflow.runtime import (
+from app.services.airflow.runtime import (
     start_airflow_runtime,
     stop_airflow_runtime,
 )

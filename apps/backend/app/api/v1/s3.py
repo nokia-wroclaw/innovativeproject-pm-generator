@@ -5,7 +5,7 @@ from sqlalchemy.orm import Session
 
 from app.core.auth import require_admin, require_auth
 from app.db.database import db_manager
-from app.services.s3 import S3Service
+from app.services.s3.service import S3Service
 
 from app.models.s3 import (
     DatasetRead,
@@ -91,7 +91,6 @@ async def register_s3_dataset(
         service: S3Service = Depends(get_s3_service),
         token_payload: dict[str, typing.Any] = Depends(require_auth),
 ) -> DatasetRead:
-    # Używamy ujednoliconego klucza "user_id", który wygenerowała nasza zależność
     user_uuid = token_payload["user_id"]
 
     s3_dataset = service.register_existing_dataset(

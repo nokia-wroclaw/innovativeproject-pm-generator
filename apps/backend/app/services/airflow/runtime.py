@@ -1,20 +1,6 @@
-"""Process-wide AirflowAuth + AirflowClient lifecycle.
-
-The client is created once at startup and closed at shutdown. We expose
-``start()``/``close()`` helpers that the FastAPI lifespan invokes, plus a
-``get_airflow_client()`` / ``get_airflow_service()`` getter pair used as
-dependency-injection factories in the API router.
-
-Why a module-level singleton? Because ``httpx.AsyncClient`` has expensive
-connection-pool state that we want to share across requests; spinning up
-a fresh client per request would be wasteful.
-"""
-
-from __future__ import annotations
-
 from typing import Optional
 
-from app.services.airflow import AirflowService
+from app.services.airflow.service import AirflowService
 
 from .auth import AirflowAuth
 from .client import AirflowClient
