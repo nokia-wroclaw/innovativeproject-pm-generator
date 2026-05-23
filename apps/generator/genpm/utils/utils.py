@@ -9,8 +9,11 @@ from pyspark.sql import Column, DataFrame, SparkSession
 from pyspark.sql import functions as f
 
 from .consts import SPARK_CHECKPOINT_PATH
+from .logger import get_logger
 
 load_dotenv()
+
+logger = get_logger()
 
 
 class SparkDataManager:
@@ -18,7 +21,7 @@ class SparkDataManager:
         SPARK_CORE_NUMBER = os.getenv("SPARK_CORE_NUMBER") or "8"
         SPARK_EXECUTOR_MEMORY = os.getenv("SPARK_EXECUTOR_MEMORY") or "10g"
         SPARK_DRIVER_MEMORY = os.getenv("SPARK_DRIVER_MEMORY") or "6g"
-        print("\tSPARK DATA MANAGER")
+        logger.info("\tSPARK DATA MANAGER")
         PARALLELISM_COUNT = "8"
 
         # spark session builder
@@ -52,11 +55,11 @@ class SparkDataManager:
 
     def read_parquet(self, path: Path | str, **options) -> DataFrame:
         # TODO: S3 compatability will be introduced here
-        print(f"Reading Dataframe from {str(path)} ...")
+        logger.info(f"Reading Dataframe from {str(path)} ...")
         return self.spark.read.parquet(str(path), **options)
 
     def write_parquet(self, df: DataFrame, path: Path | str, mode: str = "error", **kwargs):
-        print(f"Writing DataFrame to {str(path)} ...")
+        logger.info(f"Writing DataFrame to {str(path)} ...")
         df.write.parquet(path=str(path), mode=mode, **kwargs)
 
     def hard_checkpoint_to_parquet(self, df: DataFrame, path: Path | str) -> DataFrame:
