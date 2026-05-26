@@ -132,6 +132,7 @@ class TriggerRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     conf: dict[str, Any] | None = None
+    dag_run_id: str | None = None
     logical_date: datetime | None = None
     note: str | None = None
 

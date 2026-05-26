@@ -76,6 +76,10 @@ class AirflowService:
         raw = await self._client.list_dag_runs(dag_id, limit=limit, offset=offset)
         return [map_dag_run(r) for r in raw.get("dag_runs", []) or []]
 
+    async def get_dag_run(self, dag_id: str, run_id: str) -> DagRunSummary:
+        raw = await self._client.get_dag_run(dag_id, run_id)
+        return map_dag_run(raw)
+
     async def list_task_instances(
         self, dag_id: str, run_id: str
     ) -> list[TaskInstance]:
@@ -128,6 +132,7 @@ class AirflowService:
         raw = await self._client.trigger_dag(
             dag_id,
             conf=body.conf,
+            dag_run_id=body.dag_run_id,
             logical_date=body.logical_date.isoformat() if body.logical_date else None,
             note=note,
         )

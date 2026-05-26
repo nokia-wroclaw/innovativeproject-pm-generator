@@ -17,6 +17,8 @@
 
       <router-view />
     </main>
+
+    <GlobalModelingNotifications />
   </div>
 </template>
 
@@ -25,6 +27,7 @@
 import {computed, onMounted, ref} from "vue";
 import {getAuthProfile, logout} from "./auth/keycloak";
 import SideBar from "./components/SideBar.vue";
+import GlobalModelingNotifications from "./features/modeling/components/GlobalModelingNotifications.vue";
 import { useRoute } from "vue-router";
 
 

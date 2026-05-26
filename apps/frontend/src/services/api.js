@@ -1,6 +1,7 @@
 import { getAccessToken } from '../auth/keycloak';
 
 const apiBaseUrl = (import.meta.env.VITE_API_BASE_URL ?? 'http://localhost:8000').replace(/\/$/, '');
+const DEFAULT_TIMEOUT_MS = 30_000;
 
 /**
  * Error thrown for any non-2xx response from our backend. Carries the stable
@@ -17,6 +18,14 @@ export class ApiError extends Error {
     this.requestId = requestId || null;
     this.details = details || null;
   }
+}
+
+function createTimeoutError(timeoutMs) {
+  return new ApiError({
+    code: 'REQUEST_TIMEOUT',
+    status: 0,
+    message: `Request timed out after ${Math.round(timeoutMs / 1000)}s`,
+  });
 }
 
 async function parseErrorBody(response) {
@@ -66,32 +75,69 @@ async function parseErrorBody(response) {
  * @throws {ApiError}
  */
 export const authorizedRequest = async (path, init = {}) => {
-  const token = await getAccessToken();
+  const {
+    timeoutMs = DEFAULT_TIMEOUT_MS,
+    signal: externalSignal,
+    ...fetchInit
+  } = init;
+  const controller = new AbortController();
+  let timeoutId = null;
 
-  const headers = {
-    Accept: 'application/json',
-    ...(init.headers ?? {}),
-    Authorization: `Bearer ${token}`,
+  if (externalSignal) {
+    if (externalSignal.aborted) {
+      controller.abort();
+    } else {
+      externalSignal.addEventListener('abort', () => controller.abort(), { once: true });
+    }
+  }
+
+  const request = async () => {
+    const token = await getAccessToken();
+
+    const headers = {
+      Accept: 'application/json',
+      ...(fetchInit.headers ?? {}),
+      Authorization: `Bearer ${token}`,
+    };
+    if (fetchInit.body != null && !(fetchInit.body instanceof FormData) && !headers['Content-Type']) {
+      headers['Content-Type'] = 'application/json';
+    }
+
+    const response = await fetch(`${apiBaseUrl}${path}`, {
+      ...fetchInit,
+      headers,
+      signal: controller.signal,
+    });
+
+    if (!response.ok) {
+      throw await parseErrorBody(response);
+    }
+
+    if (response.status === 204) return null;
+    const contentType = response.headers.get('Content-Type') ?? '';
+    if (!contentType.includes('application/json')) {
+      return response.text();
+    }
+    return response.json();
   };
-  if (init.body != null && !(init.body instanceof FormData) && !headers['Content-Type']) {
-    headers['Content-Type'] = 'application/json';
-  }
 
-  const response = await fetch(`${apiBaseUrl}${path}`, {
-    ...init,
-    headers,
-  });
+  const timeout =
+    timeoutMs > 0
+      ? new Promise((_, reject) => {
+        timeoutId = window.setTimeout(() => {
+          controller.abort();
+          reject(createTimeoutError(timeoutMs));
+        }, timeoutMs);
+      })
+      : null;
 
-  if (!response.ok) {
-    throw await parseErrorBody(response);
+  try {
+    return await (timeout ? Promise.race([request(), timeout]) : request());
+  } finally {
+    if (timeoutId !== null) {
+      window.clearTimeout(timeoutId);
+    }
   }
-
-  if (response.status === 204) return null;
-  const contentType = response.headers.get('Content-Type') ?? '';
-  if (!contentType.includes('application/json')) {
-    return response.text();
-  }
-  return response.json();
 };
 
 /** Builds the absolute URL for an SSE EventSource (token must be in query). */

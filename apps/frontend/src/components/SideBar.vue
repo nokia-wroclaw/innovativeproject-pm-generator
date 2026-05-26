@@ -16,10 +16,10 @@
         <span v-if="!isCollapsed">S3</span>
       </router-link>
 
-      <div class="menu-item">
+      <router-link to="/modeling" class="menu-item">
         <Brain class="icon" :size="20" />
-        <span v-if="!isCollapsed">Train</span>
-      </div>
+        <span v-if="!isCollapsed">Modelowanie</span>
+      </router-link>
     </nav>
   </aside>
 </template>

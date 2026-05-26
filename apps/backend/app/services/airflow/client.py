@@ -127,10 +127,13 @@ class AirflowClient:
         dag_id: str,
         *,
         conf: dict[str, Any] | None = None,
+        dag_run_id: str | None = None,
         logical_date: str | None = None,
         note: str | None = None,
     ) -> dict[str, Any]:
         body: dict[str, Any] = {"logical_date": logical_date}
+        if dag_run_id is not None:
+            body["dag_run_id"] = dag_run_id
         if conf is not None:
             body["conf"] = conf
         if note is not None:

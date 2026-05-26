@@ -74,16 +74,27 @@
 
       <!-- ── Logs ─────────────────────────────────────────────────── -->
       <template #logs>
-        <LogViewer
-          v-if="taskInstance && dagId && runId"
-          :dag-id="dagId"
-          :run-id="runId"
-          :task-id="taskInstance.task_id"
-          :current-try-number="taskInstance.try_number || 1"
-          :initial-try-number="taskInstance.try_number || 1"
-          :available-tries="availableTries"
-          :task-status="taskInstance.status"
-        />
+        <div v-if="taskInstance && dagId && runId" class="space-y-3">
+          <div class="rounded-md border border-border-default bg-surface-muted px-3 py-2 text-xs text-fg-muted">
+            <p>
+              Run:
+              <span class="font-mono text-fg">{{ runId }}</span>
+            </p>
+            <p class="mt-1">
+              Try oznacza retry tego taska w tym samym runie. Kolejne odpalenia z Modelowania
+              pojawiają się jako kolejne wartości w selectorze Run u góry widoku DAG-a.
+            </p>
+          </div>
+          <LogViewer
+            :dag-id="dagId"
+            :run-id="runId"
+            :task-id="taskInstance.task_id"
+            :current-try-number="taskInstance.try_number || 1"
+            :initial-try-number="taskInstance.try_number || 1"
+            :available-tries="availableTries"
+            :task-status="taskInstance.status"
+          />
+        </div>
         <EmptyState
           v-else
           icon-name="terminal"
