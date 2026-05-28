@@ -20,6 +20,8 @@ eggs/
 .eggs/
 lib/
 lib64/
+!apps/frontend/src/lib/
+!apps/frontend/src/lib/cn.js
 parts/
 sdist/
 var/
@@ -224,7 +226,6 @@ data/
 
 # Frontend
 node_modules/
-
 
 # other
 preprocessing_config.yaml
