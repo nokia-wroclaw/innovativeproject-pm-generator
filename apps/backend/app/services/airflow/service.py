@@ -65,9 +65,10 @@ class AirflowService:
         graph = map_dag_graph(tasks_raw)
         recent_runs = [map_dag_run(r) for r in runs_raw.get("dag_runs", []) or []]
         last_run = recent_runs[0] if recent_runs else None
-        stats = _aggregate_stats_from_runs(recent_runs)
-        summary = map_dag_summary(dag_raw, last_run=last_run, stats=stats)
 
+        start_date_gte = (datetime.now(tz=timezone.utc) - timedelta(hours=24)).isoformat()
+        _, stats = await self._fetch_dag_recent_window(dag_id, start_date_gte)
+        summary = map_dag_summary(dag_raw, last_run=last_run, stats=stats)
         return map_dag_details(summary=summary, graph=graph, recent_runs=recent_runs)
 
     async def list_dag_runs(
