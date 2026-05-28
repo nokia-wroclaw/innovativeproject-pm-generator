@@ -208,10 +208,12 @@ async def stream_task_logs(
         )
 
         try:
-            while True:
                 if await request.is_disconnected():
+                    yield {
+                        "event": "end",
+                        "data": json.dumps({"reason": "user_disconnect"}),
+                    }
                     return
-
                 now = time.monotonic()
                 if now - started_at > max_duration:
                     yield {
