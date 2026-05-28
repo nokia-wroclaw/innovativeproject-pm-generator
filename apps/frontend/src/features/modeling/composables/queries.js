@@ -51,6 +51,7 @@ export function useModelingRunStatus(processTypeRef, runIdRef) {
     queryKey: computed(() => modelingQueryKeys.runStatus(processTypeRef, runIdRef)),
     queryFn: () => Api.getModelingRunStatus(unref(processTypeRef), unref(runIdRef)),
     enabled: computed(() => Boolean(unref(processTypeRef) && unref(runIdRef))),
+    retry: 0,
     refetchInterval: THREE_SECONDS,
     refetchIntervalInBackground: false,
   });

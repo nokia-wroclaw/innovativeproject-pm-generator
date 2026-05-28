@@ -6,6 +6,11 @@ const TERMINAL_STATUSES = new Set(['success', 'failed']);
 const POLL_INTERVAL_MS = 3_000;
 const TOAST_TTL_MS = 6_000;
 const STORAGE_KEY = 'genpm_modeling_runs';
+const AUTH_ERROR_CODES = new Set([
+  'UNAUTHENTICATED',
+  'FORBIDDEN',
+  'AIRFLOW_AUTH_FAILED',
+]);
 
 const timers = new Map();
 
@@ -66,16 +71,25 @@ async function pollRun(key) {
         run.notified = true;
         pushToast({
           variant: statusData.status === 'success' ? 'success' : 'failed',
-          title: statusData.status === 'success'
-            ? 'Proces zakończony'
-            : 'Proces zakończony błędem',
-          message: `${run.title}: Airflow zwrócił ${statusData.raw_state}.`,
+          title: statusData.status === 'success' ? 'Process completed' : 'Process failed',
+          message: `${run.title}: Airflow returned ${statusData.raw_state}.`,
         });
         persistRuns();
       }
     }
   } catch (error) {
-    run.error = error?.message ?? 'Nie udało się odczytać statusu procesu.';
+    run.error = error?.message ?? 'Failed to read process status.';
+    if (isAuthError(error)) {
+      clearRunTimer(key);
+      if (!run.notified) {
+        run.notified = true;
+        pushToast({
+          variant: 'failed',
+          title: 'Authorization error',
+          message: `${run.title}: session expired or credentials are invalid.`,
+        });
+      }
+    }
     persistRuns();
   }
 }
@@ -103,19 +117,27 @@ function runKey(processType, runId) {
   return `${processType}:${runId}`;
 }
 
+function isAuthError(error) {
+  const status = Number(error?.status);
+  const code = typeof error?.code === 'string' ? error.code.toUpperCase() : '';
+  return status === 401 || status === 403 || AUTH_ERROR_CODES.has(code);
+}
+
 function persistRuns() {
   localStorage.setItem(
     STORAGE_KEY,
-    JSON.stringify(modelingRunMonitorState.runs.map((run) => ({
-      key: run.key,
-      processType: run.processType,
-      runId: run.runId,
-      title: run.title,
-      status: run.status,
-      statusData: run.statusData ?? null,
-      notified: run.notified,
-      error: run.error ?? null,
-    }))),
+    JSON.stringify(
+      modelingRunMonitorState.runs.map((run) => ({
+        key: run.key,
+        processType: run.processType,
+        runId: run.runId,
+        title: run.title,
+        status: run.status,
+        statusData: run.statusData ?? null,
+        notified: run.notified,
+        error: run.error ?? null,
+      })),
+    ),
   );
 }
 

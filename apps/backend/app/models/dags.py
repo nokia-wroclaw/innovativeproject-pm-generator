@@ -16,7 +16,6 @@ class DagStats(BaseModel):
 
 
 class DagRunSummary(BaseModel):
-
     model_config = ConfigDict(extra="forbid")
 
     run_id: str

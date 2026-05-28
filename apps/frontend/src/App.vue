@@ -15,7 +15,7 @@
         </div>
       </header>
 
-      <router-view />
+      <router-view :key="route.fullPath" />
     </main>
 
     <GlobalModelingNotifications />

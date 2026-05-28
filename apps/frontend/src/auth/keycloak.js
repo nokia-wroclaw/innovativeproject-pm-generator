@@ -20,6 +20,7 @@ const keycloak = new Keycloak({
 });
 
 let refreshIntervalId = null;
+let authFailureHandled = false;
 
 export const authRoles = ref(new Set());
 
@@ -44,8 +45,15 @@ const refreshToken = async () => {
   try {
     await keycloak.updateToken(30);
     syncAuthRoles();
+    authFailureHandled = false;
   } catch (_error) {
-    await keycloak.login();
+    if (!authFailureHandled) {
+      authFailureHandled = true;
+      stopTokenRefresh();
+      keycloak.clearToken();
+      syncAuthRoles();
+    }
+    throw new Error('Session expired. Please sign in again.');
   }
 };
 

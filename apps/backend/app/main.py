@@ -1,3 +1,4 @@
+import logging
 import os
 import uuid
 from collections.abc import AsyncIterator
@@ -7,7 +8,7 @@ from fastapi import FastAPI, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 from starlette.middleware.base import RequestResponseEndpoint
 
-from app.api.v1 import airflow, dags, generation, modeling, s3
+from app.api.v1 import airflow, dags, generation, modeling, pipeline, s3
 from app.core.error_handlers import register_error_handlers
 from app.core.logging import setup_logging
 from app.db import schemas
@@ -17,12 +18,20 @@ from app.services.airflow.runtime import (
     stop_airflow_runtime,
 )
 
+logger = logging.getLogger(__name__)
+
 
 @asynccontextmanager
 async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
     schemas.Base.metadata.create_all(bind=db_manager.engine)
     setup_logging()
-    await start_airflow_runtime()
+    try:
+        await start_airflow_runtime()
+    except Exception:
+        logger.exception(
+            "Airflow runtime failed to start — DAG endpoints will be unavailable "
+            "until AIRFLOW_URL / AIRFLOW_USERNAME / AIRFLOW_PASSWORD are configured."
+        )
     try:
         yield
     finally:
@@ -36,7 +45,8 @@ app = FastAPI(
     openapi_url=None,
 )
 
-allowed_origins = [os.getenv("FRONTEND_ORIGIN", "http://localhost:5173")]
+_frontend_origin = os.getenv("FRONTEND_ORIGIN", "http://localhost:5173")
+allowed_origins = [_frontend_origin]
 
 app.add_middleware(
     CORSMiddleware,
@@ -71,5 +81,6 @@ register_error_handlers(app)
 app.include_router(generation.router, prefix="/api/v1")
 app.include_router(airflow.router, prefix="/api/v1")
 app.include_router(dags.router, prefix="/api/v1")
-app.include_router(modeling.router, prefix="/api/v1")
 app.include_router(s3.router, prefix="/api/v1")
+app.include_router(pipeline.router, prefix="/api/v1")
+app.include_router(modeling.router, prefix="/api/v1")

@@ -2,16 +2,11 @@ from dataclasses import dataclass
 from functools import lru_cache
 import os
 
-from fastapi import HTTPException, status
-
 
 def _required_env(name: str) -> str:
     if value := os.getenv(name):
         return value
-    raise HTTPException(
-        status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-        detail=f"Missing required Airflow configuration: {name}",
-    )
+    raise RuntimeError(f"Missing required Airflow configuration: {name}")
 
 
 @dataclass(frozen=True)

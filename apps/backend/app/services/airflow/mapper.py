@@ -46,6 +46,9 @@ _DAG_RUN_STATUS_MAP: dict[str, DagRunStatus] = {
     "running": DagRunStatus.RUNNING,
     "failed": DagRunStatus.FAILED,
     "queued": DagRunStatus.QUEUED,
+    "scheduled": DagRunStatus.QUEUED,
+    "up_for_retry": DagRunStatus.RUNNING,
+    "restarting": DagRunStatus.RUNNING,
 }
 
 

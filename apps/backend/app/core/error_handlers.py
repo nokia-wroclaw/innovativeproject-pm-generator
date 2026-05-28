@@ -99,6 +99,25 @@ def register_error_handlers(app: FastAPI) -> None:
             status_code=422,
         )
 
+    @app.exception_handler(RuntimeError)
+    async def _runtime(request: Request, exc: RuntimeError) -> JSONResponse:
+        message = str(exc)
+        if "Airflow runtime not started" in message or "Airflow configuration" in message:
+            return _envelope(
+                code="AIRFLOW_UNAVAILABLE",
+                message=message,
+                details=None,
+                request=request,
+                status_code=503,
+            )
+        return _envelope(
+            code="INTERNAL_ERROR",
+            message=message,
+            details=None,
+            request=request,
+            status_code=500,
+        )
+
     @app.exception_handler(HTTPException)
     async def _http_exception(request: Request, exc: HTTPException) -> JSONResponse:
         if exc.status_code == 401:
@@ -129,5 +148,5 @@ def register_error_handlers(app: FastAPI) -> None:
     _ = (
         _airflow_unavailable, _airflow_auth, _airflow_notfound,
         _airflow_conflict, _airflow_integration, _validation,
-        _http_exception, _fallback,
+        _runtime, _http_exception, _fallback,
     )

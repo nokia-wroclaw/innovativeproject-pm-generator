@@ -1,13 +1,13 @@
 <!--
   TaskDetailsSheet — slide-in panel triggered by clicking a node on the graph.
 
-  Three tabs (contract §4):
+  Two tabs (contract §4):
     1. Overview — task instance metadata + actions (Retry task, Stop run).
-    2. Logs     — placeholder; live LogViewer will land in Faza 3.
+    2. Logs     - placeholder; live LogViewer will land in Phase 3.
 
-  This component is *presentation only* in Faza 2b: it accepts a
+  This component is *presentation only* in Phase 2b: it accepts a
   `taskInstance` prop (may be null) and emits events for action buttons.
-  Data fetching and SSE hookup live one level above (Faza 3).
+  Data fetching and SSE hookup live one level above (Phase 3).
 -->
 <template>
   <Sheet :open="open" side="right" @update:open="$emit('update:open', $event)">
@@ -81,8 +81,8 @@
               <span class="font-mono text-fg">{{ runId }}</span>
             </p>
             <p class="mt-1">
-              Try oznacza retry tego taska w tym samym runie. Kolejne odpalenia z Modelowania
-              pojawiają się jako kolejne wartości w selectorze Run u góry widoku DAG-a.
+              Try means a retry of this task within the same run. New runs from Modeling
+              appear as additional entries in the Run selector at the top of the DAG view.
             </p>
           </div>
           <LogViewer

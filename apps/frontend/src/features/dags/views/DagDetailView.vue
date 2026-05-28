@@ -16,7 +16,7 @@
           <button
             type="button"
             class="rounded-md p-1 text-fg-muted hover:bg-surface-muted hover:text-fg"
-            @click="$router.push('/')"
+            @click="$router.push('/dags')"
             aria-label="Back to dashboard"
           >
             <ArrowLeft :size="16" />
@@ -86,7 +86,7 @@
     >
       <AlertCircle :size="16" class="mt-0.5 shrink-0" />
       <div class="space-y-1">
-        <p class="font-semibold">Nie udało się wczytać DAG-a.</p>
+        <p class="font-semibold">Failed to load DAG.</p>
         <p class="text-xs">{{ detailError.message }}</p>
       </div>
     </div>
@@ -105,7 +105,7 @@
         v-else-if="!layoutNodes.length && !detailError"
         class="flex h-full items-center justify-center p-6 text-center text-sm text-fg-muted"
       >
-        Brak tasków w tym DAG-u.
+        No tasks in this DAG.
       </div>
 
       <VueFlow
@@ -187,7 +187,15 @@ import {
 } from '../composables/queries.js';
 
 const route = useRoute();
-const dagId = computed(() => String(route.params.dagId || ''));
+const dagId = computed(() => {
+  const raw = route.params.dagId;
+  const id = Array.isArray(raw) ? raw[0] : raw;
+  try {
+    return decodeURIComponent(String(id ?? ''));
+  } catch {
+    return String(id ?? '');
+  }
+});
 
 const defaultEdgeOptions = {
   type: 'smoothstep',

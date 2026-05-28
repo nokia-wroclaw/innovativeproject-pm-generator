@@ -26,11 +26,7 @@ x-airflow-common:
     - ${AIRFLOW_PROJ_DIR:-.}/plugins:/opt/airflow/plugins
 
     # Development volumes
-    - /home/macsko6154/innovativeproject-pm-generator/apps/airflow/dags:/opt/airflow/dags/macsko6154
-    - /home/grzwia6937/innovativeproject-pm-generator/apps/airflow/dags:/opt/airflow/dags/grzwia6937
-    - /home/miklep2163/innovativeproject-pm-generator/apps/airflow/dags:/opt/airflow/dags/miklep2163
-    - /home/paojar7185/innovativeproject-pm-generator/apps/airflow/dags:/opt/airflow/dags/paojar7185
-    - /home/filant8886/innovativeproject-pm-generator/apps/airflow/dags:/opt/airflow/dags/filant8886
+    - /home/administraotr/innovativeproject-pm-generator/apps/airflow/dags:/opt/airflow/dags/administrator
   user: "${AIRFLOW_UID:-50000}:0"
   depends_on:
     &airflow-common-depends-on

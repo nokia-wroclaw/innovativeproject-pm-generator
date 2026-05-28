@@ -17,9 +17,7 @@ import { cn } from '@/lib/cn';
 defineOptions({ inheritAttrs: false });
 
 const props = defineProps({
-  /** @type {'primary' | 'secondary' | 'ghost' | 'danger'} */
   variant: { type: String, default: 'primary' },
-  /** @type {'sm' | 'md' | 'icon'} */
   size: { type: String, default: 'md' },
   type: { type: String, default: 'button' },
   disabled: { type: Boolean, default: false },
@@ -36,8 +34,7 @@ const buttonVariants = cva(
     variants: {
       variant: {
         primary: 'bg-brand text-white hover:bg-brand-strong',
-        secondary:
-          'bg-surface text-fg border border-border-default hover:bg-surface-muted',
+        secondary: 'bg-surface text-fg border border-border-default hover:bg-surface-muted',
         ghost: 'bg-transparent text-fg-muted hover:bg-surface-muted',
         danger: 'bg-rose-500 text-white hover:bg-rose-600',
       },

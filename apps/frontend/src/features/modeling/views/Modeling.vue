@@ -3,15 +3,15 @@
     <section class="rounded-xl border border-border-default bg-surface p-5 shadow-sm">
       <div class="flex flex-wrap items-start justify-between gap-4">
         <div>
-          <h2 class="text-lg font-semibold text-fg">Procesy modelowania</h2>
+          <h2 class="text-lg font-semibold text-fg">Modeling processes</h2>
           <p class="mt-1 text-sm text-fg-muted">
-            Każdy proces otwiera własny formularz zbudowany ze schematu DAG-a.
-            Statusy są trzymane globalnie i wracają po przejściu między zakładkami.
+            Each process opens its own dedicated DAG configuration form.
+            Statuses are tracked globally and remain available after switching tabs.
           </p>
         </div>
         <Button variant="secondary" size="sm" :disabled="isDatasetsFetching" @click="datasetsQuery.refetch()">
           <RefreshCw :size="14" :class="isDatasetsFetching && 'animate-spin'" />
-          Odśwież datasety
+          Refresh datasets
         </Button>
       </div>
 
@@ -21,7 +21,7 @@
       >
         <AlertCircle :size="16" class="mt-0.5 shrink-0" />
         <div>
-          <p class="font-semibold">Nie udało się pobrać datasetów.</p>
+          <p class="font-semibold">Failed to fetch datasets.</p>
           <p class="text-xs">{{ datasetsError.message }}</p>
         </div>
       </div>
@@ -41,16 +41,23 @@
               DAG: <span class="font-mono text-fg">{{ process.dagId }}</span>
             </p>
           </div>
-          <Button @click="openProcessModal(process.processType)">
-            <Play :size="14" />
-            Konfiguruj i uruchom
-          </Button>
+          <div class="flex flex-wrap items-center justify-end gap-2">
+            <RouterLink :to="`/dags/${process.dagId}`" class="inline-flex">
+              <Button variant="secondary">
+                DAG details
+              </Button>
+            </RouterLink>
+            <Button @click="openProcessModal(process.processType)">
+              <Play :size="14" />
+              Configure and run
+            </Button>
+          </div>
         </div>
 
         <div class="mt-5 rounded-lg border border-border-default bg-surface-muted p-4">
           <div class="flex flex-wrap items-center justify-between gap-3">
             <div>
-              <p class="text-xs uppercase tracking-wide text-fg-subtle">Status runa</p>
+              <p class="text-xs uppercase tracking-wide text-fg-subtle">Run status</p>
               <p v-if="process.runId" class="mt-2 break-all font-mono text-xs text-fg">
                 {{ process.runId }}
               </p>
@@ -80,7 +87,7 @@
             @click="refreshProcess(process)"
           >
             <RefreshCw :size="14" />
-            Odśwież
+            Refresh
           </Button>
         </div>
 
@@ -90,86 +97,73 @@
         >
           <AlertCircle :size="16" class="mt-0.5 shrink-0" />
           <div>
-            <p class="font-semibold">Nie udało się odczytać statusu runa.</p>
+            <p class="font-semibold">Failed to read run status.</p>
             <p class="text-xs">{{ process.error }}</p>
           </div>
         </div>
 
-        <div class="mt-5 grid gap-4 lg:grid-cols-2">
+        <div class="mt-5 space-y-4">
           <div class="rounded-lg border border-border-default">
             <div class="border-b border-border-default px-4 py-3">
-              <h3 class="text-sm font-semibold text-fg">Logi procesu</h3>
+              <h3 class="text-sm font-semibold text-fg">Artifacts</h3>
             </div>
-            <ol v-if="visibleLogs(process).length" class="space-y-2 p-4">
-              <li
-                v-for="(line, index) in visibleLogs(process)"
-                :key="`${process.processType}-${index}-${line}`"
-                class="flex gap-3 text-sm text-fg-muted"
+            <div v-if="artifactsFor(process).length" class="divide-y divide-border-default">
+              <div
+                v-for="artifact in artifactsFor(process)"
+                :key="artifact.kind"
+                class="flex items-start gap-3 px-4 py-3"
               >
-                <CheckCircle2 :size="15" class="mt-0.5 shrink-0 text-emerald-500" />
-                <span>{{ line }}</span>
-              </li>
-            </ol>
+                <FileCheck2
+                  :size="16"
+                  :class="artifact.status === 'saved' ? 'text-emerald-500' : 'text-fg-subtle'"
+                  class="mt-0.5 shrink-0"
+                />
+                <div class="min-w-0">
+                  <p class="text-sm font-medium text-fg">{{ formatArtifactKind(artifact.kind) }}</p>
+                  <p class="break-all font-mono text-[11px] text-fg-muted">{{ artifact.path }}</p>
+                </div>
+              </div>
+            </div>
             <div v-else class="flex items-center gap-2 p-4 text-sm text-fg-muted">
-              <Activity :size="16" class="text-fg-subtle" />
-              Uruchom proces, aby zobaczyć logi.
+              <XCircle :size="16" class="text-fg-subtle" />
+              Artifacts will appear after the run starts.
             </div>
           </div>
 
-          <div class="space-y-4">
-            <div class="rounded-lg border border-border-default">
-              <div class="border-b border-border-default px-4 py-3">
-                <h3 class="text-sm font-semibold text-fg">Artefakty</h3>
-              </div>
-              <div v-if="artifactsFor(process).length" class="divide-y divide-border-default">
-                <div
-                  v-for="artifact in artifactsFor(process)"
-                  :key="artifact.kind"
-                  class="flex items-start gap-3 px-4 py-3"
-                >
-                  <FileCheck2
-                    :size="16"
-                    :class="artifact.status === 'saved' ? 'text-emerald-500' : 'text-fg-subtle'"
-                    class="mt-0.5 shrink-0"
-                  />
-                  <div class="min-w-0">
-                    <p class="text-sm font-medium text-fg">{{ formatArtifactKind(artifact.kind) }}</p>
-                    <p class="break-all font-mono text-[11px] text-fg-muted">{{ artifact.path }}</p>
-                  </div>
-                </div>
-              </div>
-              <div v-else class="flex items-center gap-2 p-4 text-sm text-fg-muted">
-                <XCircle :size="16" class="text-fg-subtle" />
-                Artefakty pojawią się po rozpoczęciu runa.
+          <div class="rounded-lg border border-border-default">
+            <div class="border-b border-border-default px-4 py-3">
+              <h3 class="text-sm font-semibold text-fg">Summary</h3>
+            </div>
+            <div v-if="process.statusData?.metrics" class="grid grid-cols-2 gap-3 p-4">
+              <div
+                v-for="(value, key) in process.statusData.metrics"
+                :key="key"
+                class="rounded-md bg-surface-muted p-3"
+              >
+                <p class="text-xs uppercase tracking-wide text-fg-subtle">{{ key }}</p>
+                <p class="mt-1 text-lg font-semibold text-fg">{{ value }}</p>
               </div>
             </div>
-
-            <div class="rounded-lg border border-border-default">
-              <div class="border-b border-border-default px-4 py-3">
-                <h3 class="text-sm font-semibold text-fg">Podsumowanie</h3>
-              </div>
-              <div v-if="process.statusData?.metrics" class="grid grid-cols-2 gap-3 p-4">
-                <div
-                  v-for="(value, key) in process.statusData.metrics"
-                  :key="key"
-                  class="rounded-md bg-surface-muted p-3"
-                >
-                  <p class="text-xs uppercase tracking-wide text-fg-subtle">{{ key }}</p>
-                  <p class="mt-1 text-lg font-semibold text-fg">{{ value }}</p>
-                </div>
-              </div>
-              <div v-else class="flex items-center gap-2 p-4 text-sm text-fg-muted">
-                <XCircle :size="16" class="text-fg-subtle" />
-                Podsumowanie pojawi się po statusie Success.
-              </div>
+            <div v-else class="flex items-center gap-2 p-4 text-sm text-fg-muted">
+              <XCircle :size="16" class="text-fg-subtle" />
+              Summary will appear after the status is Success.
             </div>
           </div>
         </div>
       </article>
     </section>
 
-    <ModelingProcessModal
-      v-if="activeProcess"
+    <PreprocessingProcessModal
+      v-if="activeProcess && activeProcessType === PREPROCESSING_PROCESS"
+      :show="Boolean(activeProcess)"
+      :process="activeProcess"
+      :datasets="datasets"
+      @close="activeProcessType = null"
+      @started="onProcessStarted"
+    />
+
+    <TrainingDatasetProcessModal
+      v-if="activeProcess && activeProcessType === TRAINING_DATASET_PROCESS"
       :show="Boolean(activeProcess)"
       :process="activeProcess"
       :datasets="datasets"
@@ -182,9 +176,7 @@
 <script setup>
 import { computed, ref } from 'vue';
 import {
-  Activity,
   AlertCircle,
-  CheckCircle2,
   FileCheck2,
   Loader2,
   Play,
@@ -194,10 +186,9 @@ import {
 
 import { Button } from '@/components/ui';
 import DagStatusBadge from '@/features/dags/components/DagStatusBadge.vue';
-import {
-  useModelingDatasets,
-} from '../composables/queries.js';
-import ModelingProcessModal from '../components/ModelingProcessModal.vue';
+import { useModelingDatasets } from '../composables/queries.js';
+import PreprocessingProcessModal from '../components/PreprocessingProcessModal.vue';
+import TrainingDatasetProcessModal from '../components/TrainingDatasetProcessModal.vue';
 import {
   modelingRunMonitorState,
   refreshTrackedModelingRun,
@@ -213,15 +204,15 @@ const processDefinitions = {
     processType: PREPROCESSING_PROCESS,
     title: 'Preprocessing + Feature Engineering',
     dagId: 'moj_pierwszy_dag',
-    description: 'Uruchamia preprocessing i feature engineering w jednym asynchronicznym DAG-u.',
-    emptyText: 'Ten proces zapisze preprocessed dataset oraz featured dataset.',
+    description: 'Runs preprocessing and feature engineering in one asynchronous DAG.',
+    emptyText: 'This process saves a preprocessed dataset and a featured dataset.',
   },
   [TRAINING_DATASET_PROCESS]: {
     processType: TRAINING_DATASET_PROCESS,
-    title: 'Tworzenie datasetu treningowego',
+    title: 'Training dataset creation',
     dagId: 'moj_pierwszy_dag',
-    description: 'Buduje finalny dataset treningowy na bazie formularza DAG-a.',
-    emptyText: 'Ten proces zapisze training_dataset.parquet.',
+    description: 'Builds the final training dataset from the DAG form inputs.',
+    emptyText: 'This process saves training_dataset.parquet.',
   },
 };
 
@@ -257,7 +248,7 @@ function onProcessStarted(response) {
   trackModelingRun({
     processType: response.process_type,
     runId: response.run_id,
-    title: processDefinitions[response.process_type].title,
+    title: processDefinitions[response.process_type]?.title ?? response.process_type,
   });
 }
 
@@ -269,12 +260,6 @@ function latestRunFor(processType) {
   return [...modelingRunMonitorState.runs]
     .filter((run) => run.processType === processType)
     .sort((a, b) => String(b.key).localeCompare(String(a.key)))[0] ?? null;
-}
-
-function visibleLogs(process) {
-  if (process.statusData?.logs?.length) return process.statusData.logs;
-  if (process.runId) return ['Run zakolejkowany w Airflow. Oczekiwanie na pierwszy status...'];
-  return [];
 }
 
 function artifactsFor(process) {

@@ -108,7 +108,7 @@ def wypisz_powitanie():
 
 
 default_args = {
-    "owner": "macsko6154",
+    "owner": "macsko6154s",
     "depends_on_past": False,
     "email_on_failure": False,
     "email_on_retry": False,

@@ -4,6 +4,8 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from app.db.schemas import DagRunStatus, DatasetStatus
 
+ModelingProcessType = Literal["preprocessing_feature_engineering", "training_dataset"]
+
 
 class ModelingDatasetOption(BaseModel):
     model_config = ConfigDict(extra="forbid", from_attributes=True)
@@ -12,9 +14,6 @@ class ModelingDatasetOption(BaseModel):
     file_name: str
     s3_key: str
     status: DatasetStatus
-
-
-ModelingProcessType = Literal["preprocessing_feature_engineering", "training_dataset"]
 
 
 class ModelingFormOption(BaseModel):
@@ -51,11 +50,7 @@ class ModelingRunRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     dataset_id: int = Field(gt=0)
-    dataset_type: Literal["working_days", "weekends"]
-    epochs: int = Field(default=10, ge=1, le=10_000)
-    batch_size: Literal[16, 32, 64, 128] = 32
-    learning_rate: float = Field(default=0.001, gt=0, le=1)
-    target_s3_key: str | None = None
+    dataset_type: Literal["working_days", "weekends"] = "working_days"
     dag_args: dict[str, Any] = Field(default_factory=dict)
 
 

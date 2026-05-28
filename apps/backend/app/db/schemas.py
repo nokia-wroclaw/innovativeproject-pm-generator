@@ -1,12 +1,12 @@
+import datetime
+import enum
 import uuid
 from typing import Literal
 
-from sqlalchemy import Integer, String, Uuid
+from sqlalchemy import DateTime, ForeignKey, Integer, String, Uuid
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.db.database import Base
-
-import enum
 
 
 class DatasetStatus(enum.Enum):
@@ -14,6 +14,40 @@ class DatasetStatus(enum.Enum):
     UPLOADING = "UPLOADING"
     COMPLETED = "COMPLETED"
     FAILED = "FAILED"
+
+
+class PipelineType(enum.Enum):
+    PREPROCESSING = "PREPROCESSING"
+    FEATURE_ENGINEERING = "FEATURE_ENGINEERING"
+    TRAINING = "TRAINING"
+
+
+class PipelineRunStatus(enum.Enum):
+    PENDING = "PENDING"
+    RUNNING = "RUNNING"
+    COMPLETED = "COMPLETED"
+    FAILED = "FAILED"
+
+
+class TaskStatus(str, enum.Enum):
+    SUCCESS = "success"
+    RUNNING = "running"
+    FAILED = "failed"
+    UP_FOR_RETRY = "up_for_retry"
+    QUEUED = "queued"
+    SKIPPED = "skipped"
+    NONE = "none"
+
+
+class DagRunStatus(str, enum.Enum):
+    SUCCESS = "success"
+    RUNNING = "running"
+    FAILED = "failed"
+    QUEUED = "queued"
+
+
+RunType = Literal["manual", "scheduled", "backfill", "asset_triggered"]
+LogLevel = Literal["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"]
 
 
 class Scenario(Base):
@@ -42,22 +76,16 @@ class Dataset(Base):
     status: Mapped[DatasetStatus] = mapped_column(default=DatasetStatus.PENDING)
 
 
-class TaskStatus(str, enum.Enum):
-    SUCCESS = "success"
-    RUNNING = "running"
-    FAILED = "failed"
-    UP_FOR_RETRY = "up_for_retry"
-    QUEUED = "queued"
-    SKIPPED = "skipped"
-    NONE = "none"
+class PipelineRun(Base):
+    __tablename__ = "pipeline_runs"
 
-
-class DagRunStatus(str, enum.Enum):
-    SUCCESS = "success"
-    RUNNING = "running"
-    FAILED = "failed"
-    QUEUED = "queued"
-
-
-RunType = Literal["manual", "scheduled", "backfill", "asset_triggered"]
-LogLevel = Literal["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"]
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    dataset_id: Mapped[int] = mapped_column(
+        Integer, ForeignKey("datasets.id", ondelete="CASCADE")
+    )
+    pipeline_type: Mapped[PipelineType] = mapped_column(default=PipelineType.PREPROCESSING)
+    status: Mapped[PipelineRunStatus] = mapped_column(default=PipelineRunStatus.PENDING)
+    airflow_run_id: Mapped[str | None] = mapped_column(String, nullable=True)
+    created_at: Mapped[datetime.datetime] = mapped_column(
+        DateTime, default=datetime.datetime.utcnow
+    )

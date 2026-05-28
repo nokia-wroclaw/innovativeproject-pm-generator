@@ -1,13 +1,13 @@
 <!--
-  DagMocksView — designerska strona-piaskownica.
+  DagMocksView - design sandbox page.
 
-  Route: /_dev/dag-mocks (rejestrowane tylko w `import.meta.env.DEV`).
+  Route: /_dev/dag-mocks (registered only in `import.meta.env.DEV`).
 
-  Pokazuje wszystkie warianty komponentów DAG management na mockowych
-  danych. Pozwala oceniać czytelność statusów, animacje, panel boczny
-  i layout grafu *zanim* wpieprzymy się w integrację z Airflow API.
+  Shows all DAG management component variants using mock data.
+  Lets us evaluate status readability, animations, side panel behavior,
+  and graph layout *before* integrating with the Airflow API.
 
-  Jeśli ten widok wygląda dobrze — gotowe komponenty są gotowe na Fazę 3.
+  If this view looks good, the components are ready for Phase 3.
 -->
 <template>
   <div class="mx-auto max-w-6xl space-y-12 pb-20">
@@ -15,10 +15,10 @@
       <p class="text-xs font-semibold uppercase tracking-wider text-fg-subtle">
         Dev preview
       </p>
-      <h1 class="text-2xl font-semibold text-fg">DAG management — komponenty</h1>
+      <h1 class="text-2xl font-semibold text-fg">DAG management - components</h1>
       <p class="max-w-2xl text-sm text-fg-muted">
-        Strona piaskownica dla Fazy 2b. Mockowe dane. Po akceptacji wizualnej
-        wpinamy komponenty w prawdziwy widok DAG-a (Faza 3).
+        Sandbox page for Phase 2b with mock data. After visual approval,
+        we wire these components into the real DAG view (Phase 3).
       </p>
     </header>
 
@@ -30,7 +30,7 @@
 
       <div class="grid grid-cols-1 gap-8 lg:grid-cols-2">
         <div class="space-y-3">
-          <p class="text-xs font-medium text-fg-muted">TaskStatusBadge — 7 stanów</p>
+          <p class="text-xs font-medium text-fg-muted">TaskStatusBadge - 7 states</p>
           <div class="flex flex-wrap items-center gap-2 rounded-lg border border-border-default bg-surface p-4">
             <TaskStatusBadge v-for="s in taskStatuses" :key="s" :status="s" />
           </div>
@@ -43,7 +43,7 @@
         </div>
 
         <div class="space-y-3">
-          <p class="text-xs font-medium text-fg-muted">DagStatusBadge — 4 stany</p>
+          <p class="text-xs font-medium text-fg-muted">DagStatusBadge - 4 states</p>
           <div class="flex flex-wrap items-center gap-2 rounded-lg border border-border-default bg-surface p-4">
             <DagStatusBadge v-for="s in dagStatuses" :key="s" :status="s" />
           </div>
@@ -84,9 +84,8 @@
         DAG graph + details panel
       </h2>
       <p class="text-sm text-fg-muted">
-        Kliknij dowolny węzeł — wysunie się panel boczny ze szczegółami taska.
-        Pozycje węzłów są tutaj zakodowane ręcznie; w prawdziwym widoku użyjemy
-        auto-layoutu dagre.
+        Click any node to open the side panel with task details.
+        Node positions are hardcoded here; the real view uses dagre auto-layout.
       </p>
 
       <div class="h-[520px] overflow-hidden rounded-xl border border-border-default bg-surface-muted">

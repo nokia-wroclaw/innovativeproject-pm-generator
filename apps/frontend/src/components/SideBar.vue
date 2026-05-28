@@ -6,7 +6,11 @@
     </div>
 
     <nav class="menu">
-      <router-link to="/" class="menu-item">
+      <router-link
+        to="/dags"
+        class="menu-item"
+        :class="{ 'router-link-active': isDagsSection }"
+      >
         <GitBranch class="icon" :size="20" />
         <span v-if="!isCollapsed">DAGs</span>
       </router-link>
@@ -25,9 +29,13 @@
 </template>
 
 <script setup>
-import { ref } from 'vue';
+import { computed, ref } from 'vue';
+import { useRoute } from 'vue-router';
 import { GitBranch, Database, Brain } from 'lucide-vue-next';
 import SidebarToggleButton from './ToggleButton.vue';
+
+const route = useRoute();
+const isDagsSection = computed(() => route.path.startsWith('/dags'));
 
 const isCollapsed = ref(false);
 const toggleSidebar = () => {
@@ -95,7 +103,8 @@ const toggleSidebar = () => {
   border-left: 3px solid transparent;
 }
 
-.menu-item:hover {
+.menu-item:hover,
+.menu-item.router-link-active {
   background-color: #f4f8ff;
   color: #005AFF;
   border-left: 3px solid #005AFF;
