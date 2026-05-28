@@ -264,7 +264,7 @@ async def stream_task_logs(
                     except AirflowIntegrationError:
                         await asyncio.sleep(2)
                         continue
-                    if task_instance.status in {
+                    if task_instance.status.value in {
                         "success", "failed", "skipped",
                     }:
                         yield {
