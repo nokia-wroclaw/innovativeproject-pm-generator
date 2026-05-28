@@ -17,12 +17,12 @@
 
       <router-link to="/s3" class="menu-item">
         <Database class="icon" :size="20" />
-        <span v-if="!isCollapsed">S3</span>
+        <span v-if="!isCollapsed">Storage</span>
       </router-link>
 
       <router-link to="/modeling" class="menu-item">
         <Brain class="icon" :size="20" />
-        <span v-if="!isCollapsed">Modelowanie</span>
+        <span v-if="!isCollapsed">Modeling</span>
       </router-link>
     </nav>
   </aside>

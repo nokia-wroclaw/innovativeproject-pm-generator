@@ -6,7 +6,7 @@ from typing import Any
 
 from app.services.airflow.client import AirflowClient
 from app.services.airflow.config import AirflowSettings
-from app.services.airflow.errors import AirflowNotFound
+from app.services.airflow.errors import AirflowIntegrationError, AirflowNotFound
 from app.services.airflow.mapper import (
     map_dag_details,
     map_dag_graph,
@@ -77,7 +77,11 @@ class AirflowService:
         return [map_dag_run(r) for r in raw.get("dag_runs", []) or []]
 
     async def get_dag_run(self, dag_id: str, run_id: str) -> DagRunSummary:
-        raw = await self._client.get_dag_run(dag_id, run_id)
+        raw = await self._fetch_dag_run_raw(
+            dag_id,
+            run_id,
+            genpm_run_id=run_id if run_id.startswith("genpm_") else None,
+        )
         return map_dag_run(raw)
 
     async def list_task_instances(
@@ -128,21 +132,89 @@ class AirflowService:
         body: TriggerRequest,
         triggered_by: str | None,
     ) -> ActionResponse:
+        await self._ensure_dag_unpaused(dag_id)
         note = _compose_note(body.note, triggered_by)
+        logical_date = (
+            body.logical_date.isoformat() if body.logical_date else None
+        )
         raw = await self._client.trigger_dag(
             dag_id,
             conf=body.conf,
             dag_run_id=body.dag_run_id,
-            logical_date=body.logical_date.isoformat() if body.logical_date else None,
+            logical_date=logical_date,
             note=note,
         )
         self._invalidate_dag_list_cache()
-        run_id = str(raw.get("dag_run_id") or "")
+        requested_id = str(body.dag_run_id or "")
+        resolved_raw = await self._fetch_dag_run_raw(
+            dag_id,
+            _dag_run_id_from_payload(raw) or requested_id,
+            genpm_run_id=requested_id or None,
+        )
+        run_id = _dag_run_id_from_payload(resolved_raw)
+        if not run_id:
+            raise AirflowIntegrationError(
+                f"Airflow triggered '{dag_id}' but returned no dag_run_id.",
+            )
         return ActionResponse(
-            run_id=run_id or None,
-            message=f"Triggered DAG '{dag_id}'" + (f" (run {run_id})" if run_id else ""),
+            run_id=run_id,
+            message=f"Triggered DAG '{dag_id}' (run {run_id})",
             airflow_status=200,
         )
+
+    async def _fetch_dag_run_raw(
+        self,
+        dag_id: str,
+        run_id: str,
+        *,
+        genpm_run_id: str | None = None,
+    ) -> dict[str, Any]:
+        if not run_id and not genpm_run_id:
+            raise AirflowNotFound(
+                f"No run id provided for DAG '{dag_id}'",
+                details={"dag_id": dag_id},
+            )
+
+        lookup_ids = {value for value in (run_id, genpm_run_id) if value}
+        if run_id:
+            try:
+                return await self._client.get_dag_run(dag_id, run_id)
+            except AirflowNotFound:
+                logger.info(
+                    "GET dag run missing for %s/%s; scanning recent runs",
+                    dag_id,
+                    run_id,
+                )
+
+        raw_list = await self._client.list_dag_runs(dag_id, limit=100)
+        for item in raw_list.get("dag_runs", []) or []:
+            item_id = _dag_run_id_from_payload(item)
+            if item_id and item_id in lookup_ids:
+                return item
+            item_conf = item.get("conf")
+            if not isinstance(item_conf, dict):
+                continue
+            conf_run_id = item_conf.get("genpm_run_id")
+            if isinstance(conf_run_id, str) and conf_run_id in lookup_ids:
+                return item
+
+        raise AirflowNotFound(
+            f"Dag run '{run_id or genpm_run_id}' not found for DAG '{dag_id}'",
+            details={"dag_id": dag_id, "run_id": run_id, "genpm_run_id": genpm_run_id},
+        )
+
+    async def _ensure_dag_unpaused(self, dag_id: str) -> None:
+        dag = await self._client.get_dag(dag_id)
+        if not dag.get("is_paused"):
+            return
+        logger.info("Unpausing DAG %s before manual trigger", dag_id)
+        await self._client.patch_dag(dag_id, is_paused=False)
+        self._invalidate_dag_list_cache()
+        dag = await self._client.get_dag(dag_id)
+        if dag.get("is_paused"):
+            raise AirflowIntegrationError(
+                f"DAG '{dag_id}' is paused in Airflow and could not be unpaused.",
+            )
 
     async def stop_dag_run(
         self, dag_id: str, run_id: str, *, triggered_by: str | None
@@ -259,6 +331,14 @@ def _aggregate_stats_from_runs(runs: list[DagRunSummary]) -> DagStats:
     failed = sum(1 for r in runs if r.status == DagRunStatus.FAILED)
     running = sum(1 for r in runs if r.status == DagRunStatus.RUNNING)
     return DagStats(success=success, failed=failed, running=running, total=len(runs))
+
+
+def _dag_run_id_from_payload(raw: dict[str, Any]) -> str:
+    for key in ("dag_run_id", "run_id"):
+        value = raw.get(key)
+        if isinstance(value, str) and value:
+            return value
+    return ""
 
 
 def _compose_note(note: str | None, triggered_by: str | None) -> str | None:

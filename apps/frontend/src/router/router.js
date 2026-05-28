@@ -23,13 +23,13 @@ const routes = [
   },
   {
     path: '/s3',
-    name: 'S3 Storage',
+    name: 'Storage',
     component: S3,
     meta: { description: 'Upload, register, and manage datasets stored in S3.' },
   },
   {
     path: '/modeling',
-    name: 'Modelowanie',
+    name: 'Modeling',
     component: () => import('../features/modeling/views/Modeling.vue'),
     meta: { description: 'Configure preprocessing, feature engineering and model training.' },
   },

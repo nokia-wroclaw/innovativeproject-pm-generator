@@ -190,7 +190,7 @@ import { useModelingDatasets } from '../composables/queries.js';
 import PreprocessingProcessModal from '../components/PreprocessingProcessModal.vue';
 import TrainingDatasetProcessModal from '../components/TrainingDatasetProcessModal.vue';
 import {
-  modelingRunMonitorState,
+  getLatestRunForProcess,
   refreshTrackedModelingRun,
   trackModelingRun,
 } from '../services/modelingRunMonitor.js';
@@ -257,9 +257,7 @@ function refreshProcess(process) {
 }
 
 function latestRunFor(processType) {
-  return [...modelingRunMonitorState.runs]
-    .filter((run) => run.processType === processType)
-    .sort((a, b) => String(b.key).localeCompare(String(a.key)))[0] ?? null;
+  return getLatestRunForProcess(processType);
 }
 
 function artifactsFor(process) {

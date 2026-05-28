@@ -3,7 +3,7 @@
     :show="show"
     :title="process.title"
     width="680px"
-    @close="close"
+    @close="onClose"
   >
     <div class="space-y-4">
       <p class="text-sm text-fg-muted">
@@ -11,7 +11,20 @@
         <span class="font-mono text-fg">training_dataset</span>.
       </p>
 
-      <form class="space-y-4" @submit.prevent="submit">
+      <ModelingRunStatusPanel
+        v-if="phase !== 'form'"
+        :submitting="phase === 'submitting'"
+        :polling="isPolling"
+        :run-id="startedRun?.run_id ?? null"
+        :status-data="statusData"
+        :status-error="statusQuery.error.value?.message ?? ''"
+      />
+
+      <form
+        class="space-y-4"
+        :class="phase !== 'form' && phase !== 'error' ? 'pointer-events-none opacity-60' : ''"
+        @submit.prevent="submit"
+      >
         <ModelingFormSelect
           v-model="form.dataset_id"
           label="Input dataset"
@@ -83,27 +96,34 @@
     </div>
 
     <template #footer>
-      <Button variant="secondary" @click="close">Cancel</Button>
-      <Button :disabled="isSubmitting || isSubmitDisabled" @click="submit">
+      <Button variant="secondary" :disabled="isSubmitting" @click="onClose">
+        {{ phase === 'running' ? 'Close' : 'Cancel' }}
+      </Button>
+      <Button
+        v-if="phase === 'form' || phase === 'error'"
+        :disabled="isSubmitting || isSubmitDisabled"
+        @click="submit"
+      >
         <Loader2 v-if="isSubmitting" :size="14" class="animate-spin" />
-        Run DAG
+        {{ isSubmitting ? 'Triggering…' : 'Run DAG' }}
       </Button>
     </template>
   </BaseModal>
 </template>
 
 <script setup>
-import { computed, reactive, ref, watch } from 'vue';
+import { computed, reactive, watch } from 'vue';
 import { Loader2 } from 'lucide-vue-next';
 
 import BaseModal from '@/components/BaseModal.vue';
 import { Button } from '@/components/ui';
-import { useTriggerModelingRun } from '../composables/queries.js';
+import { useModelingProcessRun } from '../composables/useModelingProcessRun.js';
 import ModelingFormCalendar from './form-fields/ModelingFormCalendar.vue';
 import ModelingFormCheckbox from './form-fields/ModelingFormCheckbox.vue';
 import ModelingFormInput from './form-fields/ModelingFormInput.vue';
 import ModelingFormRadioGroup from './form-fields/ModelingFormRadioGroup.vue';
 import ModelingFormSelect from './form-fields/ModelingFormSelect.vue';
+import ModelingRunStatusPanel from './ModelingRunStatusPanel.vue';
 
 const props = defineProps({
   show: { type: Boolean, required: true },
@@ -112,9 +132,19 @@ const props = defineProps({
 });
 
 const emit = defineEmits(['close', 'started']);
-const triggerMutation = useTriggerModelingRun();
-const isSubmitting = computed(() => triggerMutation.isPending.value);
-const formError = ref('');
+
+const {
+  phase,
+  formError,
+  startedRun,
+  statusData,
+  statusQuery,
+  isSubmitting,
+  isPolling,
+  triggerRun,
+  reset,
+} = useModelingProcessRun(props.process.processType, props.process.title);
+
 const datasetTypeOptions = [
   { value: 'working_days', label: 'Working days' },
   { value: 'weekends', label: 'Weekends' },
@@ -142,7 +172,10 @@ const datasetOptions = computed(() =>
 watch(
   () => props.show,
   (isOpen) => {
-    if (!isOpen) return;
+    if (!isOpen) {
+      reset();
+      return;
+    }
     formError.value = '';
     form.dataset_id = props.datasets[0]?.id ?? '';
     form.dataset_type = 'working_days';
@@ -157,36 +190,31 @@ watch(
 );
 
 async function submit() {
-  formError.value = '';
-  try {
-    const targetColumn = form.target_column.trim();
-    if (!targetColumn) {
-      throw new Error('The "Target column name" field is required.');
-    }
-
-    const response = await triggerMutation.mutateAsync({
-      processType: props.process.processType,
-      body: {
-        dataset_id: Number(form.dataset_id),
-        dataset_type: form.dataset_type,
-        dag_args: {
-          target_column: targetColumn,
-          test_size: form.test_size,
-          random_seed: form.random_seed,
-          split_date: form.split_date || null,
-          shuffle: form.shuffle,
-          stratify: form.stratify,
-        },
-      },
-    });
-    emit('started', response);
-    close();
-  } catch (error) {
-    formError.value = error?.message ?? 'Failed to trigger DAG.';
+  const targetColumn = form.target_column.trim();
+  if (!targetColumn) {
+    formError.value = 'The "Target column name" field is required.';
+    phase.value = 'error';
+    return;
   }
+
+  await triggerRun(
+    {
+      dataset_id: Number(form.dataset_id),
+      dataset_type: form.dataset_type,
+      dag_args: {
+        target_column: targetColumn,
+        test_size: form.test_size,
+        random_seed: form.random_seed,
+        split_date: form.split_date || null,
+        shuffle: form.shuffle,
+        stratify: form.stratify,
+      },
+    },
+    emit,
+  );
 }
 
-function close() {
+function onClose() {
   emit('close');
 }
 </script>

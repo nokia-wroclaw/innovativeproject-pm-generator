@@ -21,13 +21,34 @@ export const modelingRunMonitorState = reactive({
 
 resumeStoredRuns();
 
+export function getLatestRunForProcess(processType) {
+  return (
+    [...modelingRunMonitorState.runs]
+      .filter((run) => run.processType === processType)
+      .sort((a, b) => (b.startedAt ?? 0) - (a.startedAt ?? 0))[0] ?? null
+  );
+}
+
 export function trackModelingRun({ processType, runId, title }) {
   if (!processType || !runId) return;
 
   const key = runKey(processType, runId);
+  const now = Date.now();
+
+  for (const run of modelingRunMonitorState.runs) {
+    if (run.processType === processType && run.key !== key) {
+      clearRunTimer(run.key);
+    }
+  }
+
   const existing = modelingRunMonitorState.runs.find((run) => run.key === key);
   if (existing) {
     existing.title = title;
+    existing.startedAt = now;
+    existing.status = 'queued';
+    existing.statusData = null;
+    existing.error = null;
+    existing.notified = false;
   } else {
     modelingRunMonitorState.runs.push({
       key,
@@ -35,15 +56,16 @@ export function trackModelingRun({ processType, runId, title }) {
       runId,
       title,
       status: 'queued',
+      statusData: null,
       notified: false,
+      startedAt: now,
     });
   }
   persistRuns();
 
-  if (!timers.has(key)) {
-    pollRun(key);
-    timers.set(key, window.setInterval(() => pollRun(key), POLL_INTERVAL_MS));
-  }
+  clearRunTimer(key);
+  pollRun(key);
+  timers.set(key, window.setInterval(() => pollRun(key), POLL_INTERVAL_MS));
 }
 
 export function refreshTrackedModelingRun(processType, runId) {
@@ -78,6 +100,19 @@ async function pollRun(key) {
       }
     }
   } catch (error) {
+    if (Number(error?.status) === 404) {
+      clearRunTimer(key);
+      removeTrackedRun(key);
+      if (!run.notified) {
+        run.notified = true;
+        pushToast({
+          variant: 'failed',
+          title: 'Process run not found',
+          message: `${run.title}: run is missing in Airflow (stale or reset). Start the process again.`,
+        });
+      }
+      return;
+    }
     run.error = error?.message ?? 'Failed to read process status.';
     if (isAuthError(error)) {
       clearRunTimer(key);
@@ -113,6 +148,14 @@ function clearRunTimer(key) {
   }
 }
 
+function removeTrackedRun(key) {
+  const index = modelingRunMonitorState.runs.findIndex((item) => item.key === key);
+  if (index !== -1) {
+    modelingRunMonitorState.runs.splice(index, 1);
+  }
+  persistRuns();
+}
+
 function runKey(processType, runId) {
   return `${processType}:${runId}`;
 }
@@ -136,6 +179,7 @@ function persistRuns() {
         statusData: run.statusData ?? null,
         notified: run.notified,
         error: run.error ?? null,
+        startedAt: run.startedAt ?? 0,
       })),
     ),
   );
@@ -144,7 +188,11 @@ function persistRuns() {
 function loadStoredRuns() {
   try {
     const parsed = JSON.parse(localStorage.getItem(STORAGE_KEY) || '[]');
-    return Array.isArray(parsed) ? parsed : [];
+    if (!Array.isArray(parsed)) return [];
+    return parsed.map((run) => ({
+      ...run,
+      startedAt: run.startedAt ?? 0,
+    }));
   } catch {
     return [];
   }

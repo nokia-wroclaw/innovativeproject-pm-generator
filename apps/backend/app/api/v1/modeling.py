@@ -31,6 +31,12 @@ DAG_ID_MAP: dict[ModelingProcessType, str] = {
     "training_dataset": "moj_pierwszy_dag",
 }
 
+# Short dag_run_id prefix — long ids (with full process_type) are harder for Airflow to accept.
+_RUN_ID_PREFIX: dict[ModelingProcessType, str] = {
+    "preprocessing_feature_engineering": "pe",
+    "training_dataset": "td",
+}
+
 _BASE_FIELDS: list[ModelingFormField] = [
     ModelingFormField(
         name="dataset_id",
@@ -182,8 +188,9 @@ async def trigger_modeling_run(
         )
 
     dag_id = DAG_ID_MAP[process_type]
-    run_id = f"genpm_{process_type}_{uuid.uuid4().hex[:10]}"
+    run_id = f"genpm_{_RUN_ID_PREFIX[process_type]}_{uuid.uuid4().hex[:12]}"
     conf = {
+        "genpm_run_id": run_id,
         "dataset_id": dataset.id,
         "dataset_name": dataset.file_name,
         "s3_key": dataset.s3_key,
@@ -202,6 +209,14 @@ async def trigger_modeling_run(
             ),
             triggered_by=_identity(user),
         )
+    except AirflowNotFound as exc:
+        raise HTTPException(
+            status_code=404,
+            detail=(
+                f"DAG '{dag_id}' is not registered in Airflow. "
+                "Ensure apps/airflow/dags is mounted and the scheduler has parsed the DAG."
+            ),
+        ) from exc
     except AirflowIntegrationError as exc:
         raise HTTPException(status_code=exc.http_status, detail=exc.message) from exc
 
@@ -232,9 +247,25 @@ async def get_modeling_run_status(
     try:
         run = await airflow.get_dag_run(dag_id, run_id)
     except AirflowNotFound as exc:
+        dag_missing = False
+        try:
+            await airflow.get_dag_details(dag_id)
+        except AirflowNotFound:
+            dag_missing = True
+        if dag_missing:
+            raise HTTPException(
+                status_code=404,
+                detail=(
+                    f"DAG '{dag_id}' is not registered in Airflow. "
+                    "Ensure apps/airflow/dags is mounted and the scheduler has parsed the DAG."
+                ),
+            ) from exc
         raise HTTPException(
             status_code=404,
-            detail=f"Run '{run_id}' not found in Airflow for DAG '{dag_id}'",
+            detail=(
+                f"Run '{run_id}' not found in Airflow for DAG '{dag_id}'. "
+                "It may have expired after an Airflow reset — start a new process run."
+            ),
         ) from exc
     except AirflowIntegrationError as exc:
         raise HTTPException(status_code=exc.http_status, detail=exc.message) from exc
