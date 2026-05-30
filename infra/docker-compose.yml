@@ -46,6 +46,10 @@ services:
         reservations:
           cpus: '0.18'
           memory: '20G'
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
 
   fastapi:
     image: genpm/fastapi:latest

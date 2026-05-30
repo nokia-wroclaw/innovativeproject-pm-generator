@@ -1,13 +1,18 @@
-FROM python:3.11-slim-bookworm
+FROM nvidia/cuda:12.2.2-runtime-ubuntu22.04
 
+ENV RAPIDS_VERSION=24.08.0
 ENV JAVA_VERSION=17
-ENV SPARK_VERSION=3.5.2
+ENV SPARK_VERSION=3.5.1
 ENV HADOOP_VERSION=3
 ENV SPARK_HOME=/home/spark
 
 ARG DEVCONTAINER
 
 RUN apt-get update && apt-get install -y \
+    python3 \
+    python3-pip \
+    python3-venv \
+    python-is-python3 \
     openjdk-${JAVA_VERSION}-jre-headless \
     curl \
     wget \
@@ -20,7 +25,6 @@ RUN apt-get update && apt-get install -y \
     && rm -rf /var/lib/apt/lists/*
 
 ENV PYTHONPATH="${SPARK_HOME}/python:${SPARK_HOME}/python/lib/py4j-0.10.9.7-src.zip:${PYTHONPATH}"
-
 ENV PATH="${SPARK_HOME}/bin:${SPARK_HOME}/python:${PATH}"
 
 RUN SPARK_DOWNLOAD_URL="https://archive.apache.org/dist/spark/spark-${SPARK_VERSION}/spark-${SPARK_VERSION}-bin-hadoop${HADOOP_VERSION}.tgz" \
@@ -30,6 +34,8 @@ RUN SPARK_DOWNLOAD_URL="https://archive.apache.org/dist/spark/spark-${SPARK_VERS
     && tar -xf apache-spark.tgz -C /home/spark --strip-components=1 \
     && rm apache-spark.tgz
 
+RUN wget --verbose -O ${SPARK_HOME}/jars/rapids-4-spark_2.12-${RAPIDS_VERSION}.jar \
+    "https://repo1.maven.org/maven2/com/nvidia/rapids-4-spark_2.12/${RAPIDS_VERSION}/rapids-4-spark_2.12-${RAPIDS_VERSION}.jar"
 
 ARG USERNAME=hostuser
 ARG USER_UID=1000
@@ -48,7 +54,9 @@ RUN chown -R $USERNAME:$USERNAME ${SPARK_HOME} \
 
 RUN echo "spark.eventLog.enabled true" >> $SPARK_HOME/conf/spark-defaults.conf \
     && echo "spark.eventLog.dir file://${SPARK_HOME}/event_logs" >> $SPARK_HOME/conf/spark-defaults.conf \
-    && echo "spark.history.fs.logDirectory file://${SPARK_HOME}/event_logs" >> $SPARK_HOME/conf/spark-defaults.conf
+    && echo "spark.history.fs.logDirectory file://${SPARK_HOME}/event_logs" >> $SPARK_HOME/conf/spark-defaults.conf \
+    && echo "spark.plugins com.nvidia.spark.SQLPlugin" >> $SPARK_HOME/conf/spark-defaults.conf \
+    && echo "spark.sql.execution.arrow.pyspark.enabled true" >> $SPARK_HOME/conf/spark-defaults.conf
 
 COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /bin/
 
@@ -59,7 +67,6 @@ USER $USERNAME
 WORKDIR $APP_HOME
 
 COPY --chown=$USERNAME:$USERNAME pyproject.toml uv.lock ./
-
 COPY --chown=$USERNAME:$USERNAME apps/generator/ ./apps/generator/
 COPY --chown=$USERNAME:$USERNAME apps/backend/pyproject.toml ./apps/backend/pyproject.toml
 
