@@ -328,9 +328,9 @@ def analyze_kpi(
         fontweight="bold",
         y=0.965,
     )
-    plt.show()
 
     return dict(
+        figure=fig,
         timeseries=pdf,
         normality=norm_tests,
         best_fits=best_fits,
