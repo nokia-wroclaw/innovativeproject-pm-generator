@@ -1,9 +1,21 @@
-from group_kpis_based_on_agg_character import classify_kpis
 from pyspark.sql import DataFrame, SparkSession
 from pyspark.sql import functions as f
 from pyspark.sql.window import Window
 
-from utils.consts import SHARED_DIR_PATH, SPARK_CONFIGS
+from utils.consts import (
+    AVG_KEYWORDS,
+    MAX_IMPUTABLE_GAP,
+    MAX_KEYWORDS,
+    MEAN_LIKE_KEYWORDS,
+    MEAN_LIKE_UNITS,
+    MIN_KEYWORDS,
+    RATIO_KEYWORDS,
+    SHARED_DIR_PATH,
+    SPARK_CONFIGS,
+    VOLUME_KEYWORDS,
+    VOLUME_UNITS,
+)
+from utils.utils import classify_kpis, when_chained
 
 cfg = SPARK_CONFIGS["WINDOW_HEAVY"]
 
@@ -29,8 +41,6 @@ pm_df_long = spark.read.parquet(str(long_path))
 
 kpi_defs = spark.read.parquet(str(pm_metadata / "kpis_definitions"))
 
-MAX_IMPUTABLE_GAP = 6
-
 
 def prepare_data_for_imputing(df: DataFrame) -> DataFrame:
     # clean kpi_ids after versioning
@@ -48,7 +58,17 @@ def prepare_data_for_imputing(df: DataFrame) -> DataFrame:
     # join to have table ready for kpi agg character classification
     pm_df_with_defs = kpi_stats.join(kpi_defs_clean, on="kpi_id", how="left")
 
-    pm_classfied = classify_kpis(pm_df_with_defs)
+    pm_classfied = classify_kpis(
+        pm_df_with_defs,
+        MEAN_LIKE_UNITS,
+        VOLUME_UNITS,
+        MIN_KEYWORDS,
+        MAX_KEYWORDS,
+        AVG_KEYWORDS,
+        RATIO_KEYWORDS,
+        MEAN_LIKE_KEYWORDS,
+        VOLUME_KEYWORDS,
+    )
 
     pm_df = pm_df_long.join(pm_classfied.select("kpi_id", "agg_method"), on="kpi_id", how="left")
 
@@ -56,10 +76,7 @@ def prepare_data_for_imputing(df: DataFrame) -> DataFrame:
 
 
 def detect_gap_runs(
-    df: DataFrame,
-    group_cols: list[str],
-    order_col: str,
-    value_col: str,
+    df: DataFrame, group_cols: list[str], order_col: str, value_col: str, max_imputable_gap: int = 6
 ) -> DataFrame:
     w = Window.partitionBy(*group_cols).orderBy(order_col)
 
@@ -90,7 +107,7 @@ def detect_gap_runs(
     output_df = (
         base.join(gap_runs, on=group_cols + ["gap_id"], how="left")
         .withColumn("gap_len", f.coalesce(f.col("gap_len"), f.lit(0)))
-        .withColumn("is_imputable", f.col("gap_len") <= MAX_IMPUTABLE_GAP)
+        .withColumn("is_imputable", f.col("gap_len") <= max_imputable_gap)
     )
     return output_df
 
@@ -108,9 +125,16 @@ def build_series_stats(
 
 
 def impute(
-    df: DataFrame, group_cols: list[str], order_col: str, value_col: str, agg_method_col: str
+    df: DataFrame,
+    group_cols: list[str],
+    order_col: str,
+    value_col: str,
+    agg_method_col: str,
+    max_imputable_gap: int = 6,
 ) -> DataFrame:
-    tagged_df = detect_gap_runs(df, group_cols, order_col, value_col).drop(agg_method_col)
+    tagged_df = detect_gap_runs(df, group_cols, order_col, value_col, max_imputable_gap).drop(
+        agg_method_col
+    )
     stats = build_series_stats(df, group_cols, value_col, agg_method_col)
     x = tagged_df.join(f.broadcast(stats), on=group_cols, how="left")
 
@@ -142,28 +166,33 @@ def impute(
         .withColumn("_local_max", f.max(value_col).over(w_local))
         .withColumn("_local_min", f.min(value_col).over(w_local))
     )
-
+    # linear interpolation
     interp = ((f.col("_ts") - f.col("_prev_ts")) / (f.col("_next_ts") - f.col("_prev_ts"))) * (
         f.col("_next_val") - f.col("_prev_val")
     ) + f.col("_prev_val")
 
-    imputed_expr = (
-        f.when(f.col(value_col).isNotNull(), f.col(value_col))
-        .when(~f.col("is_imputable"), f.col(value_col))
-        .when(
-            f.col("agg_method") == "avg",
-            f.when(
-                f.col("_prev_val").isNotNull()
-                & f.col("_next_val").isNotNull()
-                & (f.col("_next_ts") > f.col("_prev_ts")),
-                interp,
-            ).otherwise(f.col(value_col)),
-        )
-        .when((f.col("agg_method") == "sum") & (f.col("gap_len") <= 2), f.col("_prev_val"))
-        .when((f.col("agg_method") == "sum") & (f.col("gap_len") > 2), f.col("median_value"))
-        .when(f.col("agg_method") == "max", f.col("_local_max"))
-        .when(f.col("agg_method") == "min", f.col("_local_min"))
-        .otherwise(f.col(value_col))
+    interp_or_null = f.when(
+        f.col("_prev_val").isNotNull()
+        & f.col("_next_val").isNotNull()
+        & (f.col("_next_ts") > f.col("_prev_ts")),
+        interp,
+    ).otherwise(f.col(value_col))
+
+    # too many statements in imputed_expr. chained f.when can easily stackup and are costly.
+    # A better approach would be to create a fact dataframe, calculate some values,
+    # and then f.broadcast join the 2 tables with some rules in join
+    # e.g. df1.join(df2, how=inner, on=[f.col("val_calc") < f.lit(2)
+    imputed_expr = when_chained(
+        [
+            (f.col(value_col).isNotNull(), f.col(value_col)),
+            (~f.col("is_imputable"), f.col(value_col)),
+            (f.col("agg_method") == "avg", interp_or_null),
+            ((f.col("agg_method") == "sum") & (f.col("gap_len") <= 2), f.col("_prev_val")),
+            ((f.col("agg_method") == "sum") & (f.col("gap_len") > 2), f.col("median_value")),
+            (f.col("agg_method") == "max", f.col("_local_max")),
+            (f.col("agg_method") == "min", f.col("_local_min")),
+        ],
+        otherwise=f.col(value_col),
     )
 
     df_imputed = (
@@ -200,7 +229,7 @@ def impute(
 prepared_df = prepare_data_for_imputing(pm_df_long)
 
 # hope it will help with calculations later
-prepared_df.repartition("kpi_id", "bts_id", "distname").sortWithinPartitions(
+prepared_df = prepared_df.repartition("kpi_id", "bts_id", "distname").sortWithinPartitions(
     "kpi_id", "bts_id", "distname", "start_time"
 )
 
@@ -209,4 +238,5 @@ imputed_df = impute(
     group_cols=["kpi_id", "bts_id", "distname"],
     order_col="start_time",
     value_col="kpi_value",
+    max_imputable_gap=MAX_IMPUTABLE_GAP,
 )
