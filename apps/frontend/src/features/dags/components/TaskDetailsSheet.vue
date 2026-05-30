@@ -1,13 +1,13 @@
 <!--
   TaskDetailsSheet — slide-in panel triggered by clicking a node on the graph.
 
-  Three tabs (contract §4):
+  Two tabs (contract §4):
     1. Overview — task instance metadata + actions (Retry task, Stop run).
-    2. Logs     — placeholder; live LogViewer will land in Faza 3.
+    2. Logs     - placeholder; live LogViewer will land in Phase 3.
 
-  This component is *presentation only* in Faza 2b: it accepts a
+  This component is *presentation only* in Phase 2b: it accepts a
   `taskInstance` prop (may be null) and emits events for action buttons.
-  Data fetching and SSE hookup live one level above (Faza 3).
+  Data fetching and SSE hookup live one level above (Phase 3).
 -->
 <template>
   <Sheet :open="open" side="right" @update:open="$emit('update:open', $event)">
@@ -74,16 +74,27 @@
 
       <!-- ── Logs ─────────────────────────────────────────────────── -->
       <template #logs>
-        <LogViewer
-          v-if="taskInstance && dagId && runId"
-          :dag-id="dagId"
-          :run-id="runId"
-          :task-id="taskInstance.task_id"
-          :current-try-number="taskInstance.try_number || 1"
-          :initial-try-number="taskInstance.try_number || 1"
-          :available-tries="availableTries"
-          :task-status="taskInstance.status"
-        />
+        <div v-if="taskInstance && dagId && runId" class="space-y-3">
+          <div class="rounded-md border border-border-default bg-surface-muted px-3 py-2 text-xs text-fg-muted">
+            <p>
+              Run:
+              <span class="font-mono text-fg">{{ runId }}</span>
+            </p>
+            <p class="mt-1">
+              Try means a retry of this task within the same run. New runs from Modeling
+              appear as additional entries in the Run selector at the top of the DAG view.
+            </p>
+          </div>
+          <LogViewer
+            :dag-id="dagId"
+            :run-id="runId"
+            :task-id="taskInstance.task_id"
+            :current-try-number="taskInstance.try_number || 1"
+            :initial-try-number="taskInstance.try_number || 1"
+            :available-tries="availableTries"
+            :task-status="taskInstance.status"
+          />
+        </div>
         <EmptyState
           v-else
           icon-name="terminal"

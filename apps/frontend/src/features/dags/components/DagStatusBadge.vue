@@ -1,9 +1,3 @@
-<!--
-  DagStatusBadge — visual for DAG-run-level status (4 variants).
-
-  Sibling of TaskStatusBadge, but constrained to the 4 statuses Airflow
-  exposes at the DAG-run level (contract §2.2). Same density modes.
--->
 <template>
   <span :class="cn(badgeVariants({ status, density }), $attrs.class)">
     <component
@@ -25,11 +19,7 @@ import { cn } from '@/lib/cn';
 defineOptions({ inheritAttrs: false });
 
 const props = defineProps({
-  /**
-   * @type {import('@/features/dags/types.js').DagRunStatus}
-   */
   status: { type: String, required: true },
-  /** @type {'default' | 'compact' | 'icon-only'} */
   density: { type: String, default: 'default' },
 });
 

@@ -57,6 +57,8 @@ services:
       - "${FASTAPI_PORT}:8000"
     volumes:
       - ../apps/backend/app:/app/app
+    env_file:
+      - ../.env
     environment:
       DATABASE_URL: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
       AIRFLOW_URL: ${AIRFLOW_URL}

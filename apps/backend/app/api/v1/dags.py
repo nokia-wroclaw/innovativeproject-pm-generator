@@ -208,12 +208,10 @@ async def stream_task_logs(
         )
 
         try:
+            while True:
                 if await request.is_disconnected():
-                    yield {
-                        "event": "end",
-                        "data": json.dumps({"reason": "user_disconnect"}),
-                    }
                     return
+
                 now = time.monotonic()
                 if now - started_at > max_duration:
                     yield {
@@ -265,8 +263,8 @@ async def stream_task_logs(
                         )
                     except AirflowIntegrationError:
                         await asyncio.sleep(2)
-
-                    if task_instance.status.value in {
+                        continue
+                    if task_instance.status in {
                         "success", "failed", "skipped",
                     }:
                         yield {

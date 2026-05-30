@@ -9,4 +9,5 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" >/dev/null 2>&1 && pwd)"
 
 export AIRFLOW_PROJ_DIR=../apps/airflow/
 export ENV_FILE_PATH=../.env
+export AIRFLOW_UID=50000
 docker compose --file "$SCRIPT_DIR/../../infra/airflow-docker-compose.yml" up -d --build

@@ -1,11 +1,18 @@
 <!--
-  DagListView — dashboard DAG-ów.
+  DagListView - DAG dashboard.
 
-  Tabela z czytelnymi kolumnami i kolorowymi badge'ami statusu.
-  Polling co 5s (Vue Query). Klik w wiersz → przejście do widoku detali.
+  Table with clear columns and color status badges.
+  Polling every 5s (Vue Query). Row click -> navigate to detail view.
 -->
 <template>
   <div class="space-y-6">
+    <section class="rounded-xl border border-border-default bg-surface p-5 shadow-sm">
+      <h2 class="text-lg font-semibold text-fg">DAG list</h2>
+      <p class="mt-1 text-sm text-fg-muted">
+        All DAGs from Airflow. Click a row to view the graph, trigger runs, and inspect logs.
+      </p>
+    </section>
+
     <!-- ── Toolbar / filter row ─────────────────────────────────────── -->
     <div class="flex flex-wrap items-center justify-between gap-3">
       <div class="relative flex flex-1 items-center">
@@ -13,7 +20,7 @@
         <input
           v-model="search"
           type="search"
-          placeholder="Filtruj po nazwie, tagu lub właścicielu…"
+          placeholder="Filter by name, tag, or owner..."
           class="w-full max-w-md rounded-md border border-border-default bg-surface py-2 pl-8 pr-3 text-sm text-fg
                  placeholder:text-fg-subtle
                  focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand/40"
@@ -21,7 +28,7 @@
       </div>
       <div class="flex items-center gap-2">
         <span class="text-xs text-fg-subtle">
-          {{ visibleDags.length }} / {{ dags.length }} DAG-ów
+          {{ visibleDags.length }} / {{ dags.length }} DAGs
         </span>
         <Button variant="secondary" size="sm" :disabled="isFetching" @click="onRefresh">
           <RefreshCw :size="14" :class="isFetching && 'animate-spin'" />
@@ -37,7 +44,7 @@
     >
       <AlertCircle :size="16" class="mt-0.5 shrink-0" />
       <div class="space-y-1">
-        <p class="font-semibold">Nie udało się pobrać listy DAG-ów.</p>
+        <p class="font-semibold">Failed to fetch DAG list.</p>
         <p class="text-xs text-rose-600">{{ error?.message }}</p>
       </div>
     </div>
@@ -52,7 +59,8 @@
             <th class="w-[18%] px-4 py-3">Last run</th>
             <th class="w-[14%] px-4 py-3">Duration</th>
             <th class="w-[12%] px-4 py-3">24h success</th>
-            <th class="w-[12%] px-4 py-3 text-right">Schedule</th>
+            <th class="w-[10%] px-4 py-3 text-right">Schedule</th>
+            <th class="w-[10%] px-4 py-3 text-right">Actions</th>
           </tr>
         </thead>
         <tbody>
@@ -68,14 +76,15 @@
             <td class="px-4 py-4"><div class="h-3 w-1/2 rounded bg-slate-100" /></td>
             <td class="px-4 py-4"><div class="h-3 w-1/3 rounded bg-slate-100" /></td>
             <td class="px-4 py-4 text-right"><div class="ml-auto h-3 w-1/2 rounded bg-slate-100" /></td>
+            <td class="px-4 py-4 text-right"><div class="ml-auto h-3 w-1/2 rounded bg-slate-100" /></td>
           </tr>
 
           <tr
             v-else-if="visibleDags.length === 0"
             class="border-b border-border-default last:border-0"
           >
-            <td colspan="6" class="px-4 py-10 text-center text-sm text-fg-muted">
-              Brak DAG-ów do wyświetlenia.
+            <td colspan="7" class="px-4 py-10 text-center text-sm text-fg-muted">
+              No DAGs to display.
             </td>
           </tr>
 
@@ -126,6 +135,15 @@
               <span v-if="dag.schedule" class="font-mono">{{ dag.schedule }}</span>
               <span v-else>—</span>
             </td>
+            <td class="px-4 py-3 text-right">
+              <router-link
+                :to="detailRoute(dag)"
+                class="inline-flex items-center gap-1 rounded-md px-2 py-1 text-xs font-medium text-brand hover:bg-surface-muted"
+              >
+                Open
+                <ChevronRight :size="14" />
+              </router-link>
+            </td>
           </tr>
         </tbody>
       </table>
@@ -136,7 +154,7 @@
 <script setup>
 import { computed, ref } from 'vue';
 import { useRouter } from 'vue-router';
-import { Search, RefreshCw, AlertCircle } from 'lucide-vue-next';
+import { Search, RefreshCw, AlertCircle, ChevronRight } from 'lucide-vue-next';
 import { Button } from '@/components/ui';
 import DagStatusBadge from '../components/DagStatusBadge.vue';
 import { useDagList } from '../composables/queries.js';
@@ -160,8 +178,15 @@ const visibleDags = computed(() => {
   });
 });
 
+function detailRoute(dag) {
+  return {
+    name: 'DAG details',
+    params: { dagId: dag.dag_id },
+  };
+}
+
 function onSelect(dag) {
-  router.push({ name: 'DAG details', params: { dagId: dag.dag_id } });
+  router.push(detailRoute(dag));
 }
 
 function onRefresh() {

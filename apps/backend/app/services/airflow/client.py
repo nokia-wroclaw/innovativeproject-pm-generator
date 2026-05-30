@@ -1,5 +1,7 @@
 import logging
+from datetime import datetime, timezone
 from typing import Any
+from urllib.parse import quote
 
 import httpx
 from tenacity import (
@@ -55,13 +57,28 @@ class AirflowClient:
         return await self._request("GET", "/dags", params=params)
 
     async def get_dag(self, dag_id: str) -> dict[str, Any]:
-        return await self._request("GET", f"/dags/{dag_id}")
+        return await self._request("GET", f"/dags/{_path_segment(dag_id)}")
+
+    async def patch_dag(
+        self, dag_id: str, *, is_paused: bool | None = None
+    ) -> dict[str, Any]:
+        body: dict[str, Any] = {}
+        update_mask: list[str] = []
+        if is_paused is not None:
+            body["is_paused"] = is_paused
+            update_mask.append("is_paused")
+        return await self._request(
+            "PATCH",
+            f"/dags/{_path_segment(dag_id)}",
+            json=body,
+            params={"update_mask": ",".join(update_mask)} if update_mask else None,
+        )
 
     async def get_dag_details(self, dag_id: str) -> dict[str, Any]:
-        return await self._request("GET", f"/dags/{dag_id}/details")
+        return await self._request("GET", f"/dags/{_path_segment(dag_id)}/details")
 
     async def list_dag_tasks(self, dag_id: str) -> dict[str, Any]:
-        return await self._request("GET", f"/dags/{dag_id}/tasks")
+        return await self._request("GET", f"/dags/{_path_segment(dag_id)}/tasks")
 
     async def list_dag_runs(
         self,
@@ -75,21 +92,29 @@ class AirflowClient:
         params: dict[str, Any] = {"limit": limit, "offset": offset, "order_by": order_by}
         if start_date_gte is not None:
             params["start_date_gte"] = start_date_gte
-        return await self._request("GET", f"/dags/{dag_id}/dagRuns", params=params)
+        return await self._request(
+            "GET", f"/dags/{_path_segment(dag_id)}/dagRuns", params=params
+        )
 
     async def get_dag_run(self, dag_id: str, run_id: str) -> dict[str, Any]:
-        return await self._request("GET", f"/dags/{dag_id}/dagRuns/{run_id}")
+        return await self._request(
+            "GET",
+            f"/dags/{_path_segment(dag_id)}/dagRuns/{_path_segment(run_id)}",
+        )
 
     async def list_task_instances(self, dag_id: str, run_id: str) -> dict[str, Any]:
         return await self._request(
-            "GET", f"/dags/{dag_id}/dagRuns/{run_id}/taskInstances"
+            "GET",
+            f"/dags/{_path_segment(dag_id)}/dagRuns/{_path_segment(run_id)}/taskInstances",
         )
 
     async def get_task_instance(
         self, dag_id: str, run_id: str, task_id: str
     ) -> dict[str, Any]:
         return await self._request(
-            "GET", f"/dags/{dag_id}/dagRuns/{run_id}/taskInstances/{task_id}"
+            "GET",
+            f"/dags/{_path_segment(dag_id)}/dagRuns/{_path_segment(run_id)}"
+            f"/taskInstances/{_path_segment(task_id)}",
         )
 
     async def list_task_tries(
@@ -97,7 +122,8 @@ class AirflowClient:
     ) -> dict[str, Any]:
         return await self._request(
             "GET",
-            f"/dags/{dag_id}/dagRuns/{run_id}/taskInstances/{task_id}/tries",
+            f"/dags/{_path_segment(dag_id)}/dagRuns/{_path_segment(run_id)}"
+            f"/taskInstances/{_path_segment(task_id)}/tries",
         )
 
     async def get_task_logs(
@@ -117,7 +143,8 @@ class AirflowClient:
             params["full_content"] = "true"
         return await self._request(
             "GET",
-            f"/dags/{dag_id}/dagRuns/{run_id}/taskInstances/{task_id}/logs/{try_number}",
+            f"/dags/{_path_segment(dag_id)}/dagRuns/{_path_segment(run_id)}"
+            f"/taskInstances/{_path_segment(task_id)}/logs/{try_number}",
             params=params,
             accept="application/json",
         )
@@ -127,17 +154,33 @@ class AirflowClient:
         dag_id: str,
         *,
         conf: dict[str, Any] | None = None,
+        dag_run_id: str | None = None,
         logical_date: str | None = None,
         note: str | None = None,
     ) -> dict[str, Any]:
-        body: dict[str, Any] = {"logical_date": logical_date}
+        # Airflow 3 rejects logical_date=null (500). Use microsecond precision to avoid
+        # collisions when multiple runs are triggered in the same second.
+        run_moment = logical_date or _utc_now_iso()
+        body: dict[str, Any] = {
+            "logical_date": run_moment,
+            "run_after": run_moment,
+        }
+        if dag_run_id is not None:
+            body["dag_run_id"] = dag_run_id
         if conf is not None:
             body["conf"] = conf
         if note is not None:
             body["note"] = note
-        return await self._request(
-            "POST", f"/dags/{dag_id}/dagRuns", json=body
+        raw = await self._request(
+            "POST", f"/dags/{_path_segment(dag_id)}/dagRuns", json=body
         )
+        logger.info(
+            "trigger_dag %s dag_run_id=%s response_keys=%s",
+            dag_id,
+            dag_run_id,
+            list(raw.keys()) if raw else [],
+        )
+        return raw
 
     async def patch_dag_run_state(
         self, dag_id: str, run_id: str, *, state: str, note: str | None = None
@@ -147,7 +190,7 @@ class AirflowClient:
             body["note"] = note
         return await self._request(
             "PATCH",
-            f"/dags/{dag_id}/dagRuns/{run_id}",
+            f"/dags/{_path_segment(dag_id)}/dagRuns/{_path_segment(run_id)}",
             json=body,
             params={"update_mask": "state"},
         )
@@ -174,7 +217,7 @@ class AirflowClient:
         if task_ids:
             body["task_ids"] = task_ids
         return await self._request(
-            "POST", f"/dags/{dag_id}/clearTaskInstances", json=body
+            "POST", f"/dags/{_path_segment(dag_id)}/clearTaskInstances", json=body
         )
 
     async def healthcheck(self) -> dict[str, Any]:
@@ -305,6 +348,16 @@ class AirflowClient:
             f"Unexpected Airflow status {status_code} on {method} {path}",
             details=_safe_json(response),
         )
+
+
+def _path_segment(value: str) -> str:
+    # Keep underscores/dots intact — Airflow run ids rely on them (e.g. modeling__pe__...).
+    # encodeURIComponent on the frontend preserves '_' too; over-encoding caused 404 on GET.
+    return quote(value, safe="-_.~")
+
+
+def _utc_now_iso() -> str:
+    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
 
 
 def _safe_json(response: httpx.Response) -> dict[str, Any]:
