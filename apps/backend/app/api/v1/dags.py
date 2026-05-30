@@ -2,15 +2,14 @@ import asyncio
 import json
 import logging
 import time
-from typing import Any, AsyncIterator
+from collections.abc import AsyncIterator
+from datetime import UTC
+from typing import Any
 
 from fastapi import APIRouter, Depends, Query, Request
 from sse_starlette.sse import EventSourceResponse
 
 from app.core.auth import require_admin, require_auth
-from app.services.airflow.config import get_airflow_settings
-from app.services.airflow.errors import AirflowIntegrationError
-from app.services.airflow.runtime import get_airflow_service
 from app.models.dags import (
     ActionResponse,
     DagDetails,
@@ -21,6 +20,9 @@ from app.models.dags import (
     TaskTry,
     TriggerRequest,
 )
+from app.services.airflow.config import get_airflow_settings
+from app.services.airflow.errors import AirflowIntegrationError
+from app.services.airflow.runtime import get_airflow_service
 from app.services.airflow.service import AirflowService
 
 logger = logging.getLogger(__name__)
@@ -33,11 +35,7 @@ def _service() -> AirflowService:
 
 
 def _identity(payload: dict[str, Any]) -> str | None:
-    return (
-        payload.get("preferred_username")
-        or payload.get("email")
-        or payload.get("sub")
-    )
+    return payload.get("preferred_username") or payload.get("email") or payload.get("sub")
 
 
 @router.get("", response_model=list[DagSummary])
@@ -68,9 +66,7 @@ async def list_dag_runs(
     return await service.list_dag_runs(dag_id, limit=limit, offset=offset)
 
 
-@router.get(
-    "/{dag_id}/runs/{run_id}/tasks", response_model=list[TaskInstance]
-)
+@router.get("/{dag_id}/runs/{run_id}/tasks", response_model=list[TaskInstance])
 async def list_task_instances(
     dag_id: str,
     run_id: str,
@@ -80,9 +76,7 @@ async def list_task_instances(
     return await service.list_task_instances(dag_id, run_id)
 
 
-@router.get(
-    "/{dag_id}/runs/{run_id}/tasks/{task_id}", response_model=TaskInstance
-)
+@router.get("/{dag_id}/runs/{run_id}/tasks/{task_id}", response_model=TaskInstance)
 async def get_task_instance(
     dag_id: str,
     run_id: str,
@@ -107,9 +101,7 @@ async def list_task_tries(
     return await service.list_task_tries(dag_id, run_id, task_id)
 
 
-@router.get(
-    "/{dag_id}/runs/{run_id}/tasks/{task_id}/logs", response_model=LogChunk
-)
+@router.get("/{dag_id}/runs/{run_id}/tasks/{task_id}/logs", response_model=LogChunk)
 async def get_task_logs(
     dag_id: str,
     run_id: str,
@@ -138,9 +130,7 @@ async def trigger_dag(
     )
 
 
-@router.post(
-    "/{dag_id}/runs/{run_id}/stop", response_model=ActionResponse
-)
+@router.post("/{dag_id}/runs/{run_id}/stop", response_model=ActionResponse)
 async def stop_dag_run(
     dag_id: str,
     run_id: str,
@@ -150,9 +140,7 @@ async def stop_dag_run(
     return await service.stop_dag_run(dag_id, run_id, triggered_by=_identity(user))
 
 
-@router.post(
-    "/{dag_id}/runs/{run_id}/clear", response_model=ActionResponse
-)
+@router.post("/{dag_id}/runs/{run_id}/clear", response_model=ActionResponse)
 async def clear_dag_run(
     dag_id: str,
     run_id: str,
@@ -204,7 +192,10 @@ async def stream_task_logs(
         last_heartbeat = started_at
         logger.info(
             "SSE log stream open: dag=%s run=%s task=%s try=%d",
-            dag_id, run_id, task_id, try_number,
+            dag_id,
+            run_id,
+            task_id,
+            try_number,
         )
 
         try:
@@ -232,20 +223,26 @@ async def stream_task_logs(
                 except AirflowIntegrationError as exc:
                     logger.warning(
                         "SSE log stream error: dag=%s task=%s seq=%d code=%s msg=%s",
-                        dag_id, task_id, seq, exc.code, exc.message,
+                        dag_id,
+                        task_id,
+                        seq,
+                        exc.code,
+                        exc.message,
                     )
                     yield {
                         "event": "error",
-                        "data": json.dumps(
-                            {"error": exc.code, "message": exc.message}
-                        ),
+                        "data": json.dumps({"error": exc.code, "message": exc.message}),
                     }
                     return
 
                 payload_has_lines = bool(chunk.lines)
                 logger.info(
                     "SSE log chunk: dag=%s task=%s seq=%d lines=%d has_more=%s",
-                    dag_id, task_id, seq, len(chunk.lines), chunk.has_more,
+                    dag_id,
+                    task_id,
+                    seq,
+                    len(chunk.lines),
+                    chunk.has_more,
                 )
                 if payload_has_lines:
                     yield {
@@ -258,14 +255,14 @@ async def stream_task_logs(
 
                 if token is None:
                     try:
-                        task_instance = await service.get_task_instance(
-                            dag_id, run_id, task_id
-                        )
+                        task_instance = await service.get_task_instance(dag_id, run_id, task_id)
                     except AirflowIntegrationError:
                         await asyncio.sleep(2)
                         continue
                     if task_instance.status in {
-                        "success", "failed", "skipped",
+                        "success",
+                        "failed",
+                        "skipped",
                     }:
                         yield {
                             "event": "end",
@@ -276,9 +273,7 @@ async def stream_task_logs(
                     if (time.monotonic() - last_heartbeat) >= heartbeat:
                         yield {
                             "event": "heartbeat",
-                            "data": json.dumps(
-                                {"ts": _utc_now_iso()}
-                            ),
+                            "data": json.dumps({"ts": _utc_now_iso()}),
                         }
                         last_heartbeat = time.monotonic()
 
@@ -296,6 +291,6 @@ async def stream_task_logs(
 
 
 def _utc_now_iso() -> str:
-    from datetime import datetime, timezone
+    from datetime import datetime
 
-    return datetime.now(tz=timezone.utc).isoformat()
+    return datetime.now(tz=UTC).isoformat()

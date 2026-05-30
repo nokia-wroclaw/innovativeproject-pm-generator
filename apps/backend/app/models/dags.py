@@ -3,7 +3,7 @@ from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from app.db.schemas import DagRunStatus, RunType, TaskStatus, LogLevel
+from app.db.schemas import DagRunStatus, LogLevel, RunType, TaskStatus
 
 
 class DagStats(BaseModel):

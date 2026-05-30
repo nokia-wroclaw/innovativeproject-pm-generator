@@ -3,10 +3,11 @@ import json
 import logging
 import os
 import re
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
+from app.db.schemas import LogLevel, RunType
 from app.models.dags import (
     DagDetails,
     DagGraph,
@@ -68,7 +69,7 @@ def _parse_dt(value: Any) -> datetime | None:
     if value is None:
         return None
     if isinstance(value, datetime):
-        return value if value.tzinfo else value.replace(tzinfo=timezone.utc)
+        return value if value.tzinfo else value.replace(tzinfo=UTC)
     if isinstance(value, str):
         cleaned = value.rstrip("Z")
         suffix = "+00:00" if value.endswith("Z") else ""
@@ -81,13 +82,13 @@ def _parse_dt(value: Any) -> datetime | None:
                 logger.debug("Could not parse Airflow timestamp: %r", value)
                 return None
         if dt.tzinfo is None:
-            dt = dt.replace(tzinfo=timezone.utc)
+            dt = dt.replace(tzinfo=UTC)
         return dt
     return None
 
 
 def _duration_ms(start: datetime | None, end: datetime | None, raw: Any = None) -> int | None:
-    if isinstance(raw, (int, float)) and raw >= 0:
+    if isinstance(raw, int | float) and raw >= 0:
         return int(raw * 1000)
     if start is not None and end is not None:
         return max(0, int((end - start).total_seconds() * 1000))
@@ -104,10 +105,10 @@ def _schedule_str(value: Any) -> str | None:
     return str(value)
 
 
-def _run_type(value: str | None) -> str:
-    allowed = {"manual", "scheduled", "backfill", "asset_triggered"}
+def _run_type(value: str | None) -> RunType:
+    allowed: frozenset[RunType] = frozenset({"manual", "scheduled", "backfill", "asset_triggered"})
     if value in allowed:
-        return value
+        return cast(RunType, value)
     if value == "dataset_triggered":
         return "asset_triggered"
     return "manual"
@@ -132,7 +133,7 @@ def map_dag_run(raw: dict[str, Any]) -> DagRunSummary:
     state = raw.get("state")
     return DagRunSummary(
         run_id=str(raw.get("dag_run_id") or ""),
-        logical_date=logical or start or datetime.now(tz=timezone.utc),
+        logical_date=logical or start or datetime.now(tz=UTC),
         start_date=start,
         end_date=end,
         duration_ms=_duration_ms(start, end),
@@ -270,8 +271,7 @@ def _apply_local_dag_file_fallback(
 
     tasks, dependencies = parsed
     local_task_ids = {
-        str(task.get("task_id") or variable_name)
-        for variable_name, task in tasks.items()
+        str(task.get("task_id") or variable_name) for variable_name, task in tasks.items()
     }
     missing_local_tasks = local_task_ids - seen_nodes
 
@@ -402,7 +402,7 @@ def _extract_shift_dependencies(node: ast.AST) -> list[tuple[str, str]]:
 def _dependency_terms(node: ast.AST) -> list[str]:
     if isinstance(node, ast.Name):
         return [node.id]
-    if isinstance(node, (ast.List, ast.Tuple)):
+    if isinstance(node, ast.List | ast.Tuple):
         terms: list[str] = []
         for item in node.elts:
             terms.extend(_dependency_terms(item))
@@ -526,25 +526,32 @@ def map_log_chunk(
 
     if not lines and content:
         logger.warning(
-            "map_log_chunk: unknown content shape (type=%s); "
-            "emitting raw fallback. Sample=%s",
+            "map_log_chunk: unknown content shape (type=%s); " "emitting raw fallback. Sample=%s",
             type(content).__name__,
-            repr(content[0])[:300] if isinstance(content, list) and content
+            repr(content[0])[:300]
+            if isinstance(content, list) and content
             else repr(content)[:300],
         )
         if isinstance(content, list):
             for entry in content:
-                text = entry if isinstance(entry, str) else json.dumps(
-                    entry, default=str, ensure_ascii=False
+                text = (
+                    entry
+                    if isinstance(entry, str)
+                    else json.dumps(entry, default=str, ensure_ascii=False)
                 )
                 for line in str(text).splitlines() or [str(text)]:
                     if line.strip():
                         lines.append(LogLine(message=line))
 
+    if isinstance(content, str | list):
+        content_len: int | str = len(content)
+    else:
+        content_len = "n/a"
+
     logger.info(
         "map_log_chunk: content_type=%s len=%s -> %d lines",
         type(content).__name__,
-        len(content) if hasattr(content, "__len__") else "n/a",
+        content_len,
         len(lines),
     )
 
@@ -566,8 +573,7 @@ def _consume_log_entry(entry: Any, lines: list[LogLine]) -> None:
             LogLine(
                 timestamp=_parse_dt(entry.get("timestamp")),
                 level=_normalize_log_level(entry.get("level")),
-                source=str(entry.get("logger") or entry.get("source") or "")
-                or None,
+                source=str(entry.get("logger") or entry.get("source") or "") or None,
                 message=event_text,
             )
         )
@@ -583,12 +589,12 @@ def _consume_log_entry(entry: Any, lines: list[LogLine]) -> None:
 _ALLOWED_LOG_LEVELS = frozenset({"DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"})
 
 
-def _normalize_log_level(value: Any) -> str | None:
+def _normalize_log_level(value: Any) -> LogLevel | None:
     if not value:
         return None
     candidate = str(value).upper().strip()
     if candidate in _ALLOWED_LOG_LEVELS:
-        return candidate
+        return cast(LogLevel, candidate)
     if candidate == "WARN":
         return "WARNING"
     if candidate == "FATAL":
@@ -600,9 +606,11 @@ def _parse_log_line(source: str | None, text: str) -> LogLine:
     match = _LOG_PREFIX_RE.match(text)
     if not match:
         return LogLine(timestamp=None, level=None, source=source, message=text)
+    level_raw = match.group("level")
+    level: LogLevel | None = cast(LogLevel, level_raw) if level_raw in _ALLOWED_LOG_LEVELS else None
     return LogLine(
         timestamp=_parse_dt(match.group("ts")),
-        level=match.group("level"),
+        level=level,
         source=match.group("source") or source,
         message=match.group("msg"),
     )

@@ -1,7 +1,8 @@
 import uuid
+
 from pydantic import BaseModel, ConfigDict
 
-from app.db.schemas import DatasetStatus
+from app.db.schemas import DatasetStatus, DatasetType
 
 
 class DatasetRead(BaseModel):
@@ -12,6 +13,7 @@ class DatasetRead(BaseModel):
     s3_key: str
     file_name: str
     status: DatasetStatus
+    type: DatasetType
 
 
 class DatasetCreate(BaseModel):

@@ -100,7 +100,9 @@ def _with_host_variant(base_url: str, host: str) -> str:
     if parsed.port:
         netloc = f"{host}:{parsed.port}"
 
-    return urlunparse((parsed.scheme, netloc, parsed.path, parsed.params, parsed.query, parsed.fragment))
+    return urlunparse(
+        (parsed.scheme, netloc, parsed.path, parsed.params, parsed.query, parsed.fragment)
+    )
 
 
 def _candidate_issuer_roots(settings: KeycloakSettings) -> set[str]:
@@ -118,7 +120,7 @@ def _allowed_issuers(settings: KeycloakSettings) -> set[str]:
 
 
 def get_token_payload(
-        credentials: HTTPAuthorizationCredentials | None = Depends(bearer_scheme),
+    credentials: HTTPAuthorizationCredentials | None = Depends(bearer_scheme),
 ) -> dict[str, Any]:
     if not credentials:
         raise _unauthorized("Missing bearer token")
@@ -157,7 +159,7 @@ def get_token_payload(
 
     token_aud = payload.get("aud")
     aud_matches = token_aud == settings.client_id or (
-            isinstance(token_aud, list) and settings.client_id in token_aud
+        isinstance(token_aud, list) and settings.client_id in token_aud
     )
 
     if (authorized_party := str(payload.get("azp", ""))) and authorized_party != settings.client_id:
@@ -196,4 +198,16 @@ def require_admin(payload: dict[str, Any] = Depends(require_auth)) -> dict[str, 
     token_roles = _extract_roles(payload, settings.client_id)
     if settings.admin_role not in token_roles:
         raise _forbidden("Admin role required to delete datasets")
+    return payload
+
+
+def assert_modeling_admin(payload: dict[str, Any]) -> None:
+    settings = get_keycloak_settings()
+    token_roles = _extract_roles(payload, settings.client_id)
+    if settings.admin_role not in token_roles:
+        raise _forbidden("Admin role required to access modeling")
+
+
+def require_modeling_admin(payload: dict[str, Any] = Depends(require_auth)) -> dict[str, Any]:
+    assert_modeling_admin(payload)
     return payload

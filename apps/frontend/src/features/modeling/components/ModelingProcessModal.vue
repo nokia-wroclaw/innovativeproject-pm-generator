@@ -20,7 +20,7 @@
           >
             <option value="" disabled>Select dataset</option>
             <option v-for="dataset in datasets" :key="dataset.id" :value="dataset.id">
-              #{{ dataset.id }} · {{ dataset.file_name }} · {{ dataset.status }}
+              #{{ dataset.id }} · {{ dataset.file_name }} · {{ dataset.type }} · {{ dataset.status }}
             </option>
           </select>
           <span class="text-xs text-fg-subtle">Only datasets with COMPLETED status are shown.</span>

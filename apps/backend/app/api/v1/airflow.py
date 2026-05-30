@@ -3,9 +3,9 @@ from typing import Any
 from fastapi import APIRouter, Depends
 
 from app.core.auth import require_auth
+from app.services.airflow.client import AirflowClient
 from app.services.airflow.errors import AirflowIntegrationError, AirflowUnavailable
 from app.services.airflow.runtime import get_airflow_client
-from app.services.airflow.client import AirflowClient
 
 router = APIRouter(prefix="/airflow", tags=["airflow"])
 

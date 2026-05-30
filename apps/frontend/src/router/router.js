@@ -1,4 +1,5 @@
 import { createRouter, createWebHistory } from 'vue-router'
+import { hasAdminRole } from '../auth/keycloak'
 import Dags from '../views/Dags.vue'
 import DagDetail from '../views/DagDetail.vue'
 import S3 from '../views/S3.vue'
@@ -25,19 +26,38 @@ const routes = [
     path: '/s3',
     name: 'Storage',
     component: S3,
-    meta: { description: 'Upload, register, and manage datasets stored in S3.' },
+    meta: {
+      description: 'Browse raw, preprocessed and generated datasets stored in S3.',
+    },
   },
   {
     path: '/modeling',
     name: 'Modeling',
     component: () => import('../features/modeling/views/Modeling.vue'),
-    meta: { description: 'Configure preprocessing, feature engineering and model training.' },
+    meta: {
+      description: 'Configure preprocessing, feature engineering and model training.',
+      requiresAdmin: true,
+    },
+  },
+  {
+    path: '/generate',
+    name: 'Generate',
+    component: () => import('../features/modeling/views/Generate.vue'),
+    meta: {
+      description: 'Generate synthetic data from trained models.',
+    },
   },
 ]
 
 const router = createRouter({
   history: createWebHistory(),
   routes,
+})
+
+router.beforeEach((to) => {
+  if (to.meta.requiresAdmin && !hasAdminRole()) {
+    return { path: '/generate' }
+  }
 })
 
 export default router

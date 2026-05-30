@@ -1,21 +1,9 @@
 import asyncio
 import logging
 import time
-from datetime import datetime, timedelta, timezone
-from typing import Any
+from datetime import UTC, datetime, timedelta
+from typing import Any, cast
 
-from app.services.airflow.client import AirflowClient
-from app.services.airflow.config import AirflowSettings
-from app.services.airflow.errors import AirflowIntegrationError, AirflowNotFound
-from app.services.airflow.mapper import (
-    map_dag_details,
-    map_dag_graph,
-    map_dag_run,
-    map_dag_summary,
-    map_log_chunk,
-    map_task_instance,
-    map_task_try,
-)
 from app.models.dags import (
     ActionResponse,
     DagDetails,
@@ -27,6 +15,18 @@ from app.models.dags import (
     TaskInstance,
     TaskTry,
     TriggerRequest,
+)
+from app.services.airflow.client import AirflowClient
+from app.services.airflow.config import AirflowSettings
+from app.services.airflow.errors import AirflowIntegrationError, AirflowNotFound
+from app.services.airflow.mapper import (
+    map_dag_details,
+    map_dag_graph,
+    map_dag_run,
+    map_dag_summary,
+    map_log_chunk,
+    map_task_instance,
+    map_task_try,
 )
 
 logger = logging.getLogger(__name__)
@@ -84,31 +84,25 @@ class AirflowService:
         )
         return map_dag_run(raw)
 
-    async def list_task_instances(
-        self, dag_id: str, run_id: str
-    ) -> list[TaskInstance]:
+    async def list_task_instances(self, dag_id: str, run_id: str) -> list[TaskInstance]:
         raw = await self._client.list_task_instances(dag_id, run_id)
         items = raw.get("task_instances", []) or []
         logger.info(
             "list_task_instances dag=%s run=%s -> %d items (keys=%s)",
-            dag_id, run_id, len(items), list(raw.keys()),
+            dag_id,
+            run_id,
+            len(items),
+            list(raw.keys()),
         )
         return [map_task_instance(ti) for ti in items]
 
-    async def get_task_instance(
-        self, dag_id: str, run_id: str, task_id: str
-    ) -> TaskInstance:
+    async def get_task_instance(self, dag_id: str, run_id: str, task_id: str) -> TaskInstance:
         raw = await self._client.get_task_instance(dag_id, run_id, task_id)
         return map_task_instance(raw)
 
-    async def list_task_tries(
-        self, dag_id: str, run_id: str, task_id: str
-    ) -> list[TaskTry]:
+    async def list_task_tries(self, dag_id: str, run_id: str, task_id: str) -> list[TaskTry]:
         raw = await self._client.list_task_tries(dag_id, run_id, task_id)
-        return [
-            map_task_try(t)
-            for t in (raw.get("task_instances", []) or [])
-        ]
+        return [map_task_try(t) for t in (raw.get("task_instances", []) or [])]
 
     async def get_task_logs_page(
         self,
@@ -120,9 +114,7 @@ class AirflowService:
         token: str | None = None,
         seq: int = 0,
     ) -> LogChunk:
-        raw = await self._client.get_task_logs(
-            dag_id, run_id, task_id, try_number, token=token
-        )
+        raw = await self._client.get_task_logs(dag_id, run_id, task_id, try_number, token=token)
         return map_log_chunk(raw, try_number=try_number, seq=seq)
 
     async def trigger_dag(
@@ -134,9 +126,7 @@ class AirflowService:
     ) -> ActionResponse:
         await self._ensure_dag_unpaused(dag_id)
         note = _compose_note(body.note, triggered_by)
-        logical_date = (
-            body.logical_date.isoformat() if body.logical_date else None
-        )
+        logical_date = body.logical_date.isoformat() if body.logical_date else None
         raw = await self._client.trigger_dag(
             dag_id,
             conf=body.conf,
@@ -190,13 +180,13 @@ class AirflowService:
         for item in raw_list.get("dag_runs", []) or []:
             item_id = _dag_run_id_from_payload(item)
             if item_id and item_id in lookup_ids:
-                return item
+                return cast(dict[str, Any], item)
             item_conf = item.get("conf")
             if not isinstance(item_conf, dict):
                 continue
             conf_run_id = item_conf.get("genpm_run_id")
             if isinstance(conf_run_id, str) and conf_run_id in lookup_ids:
-                return item
+                return cast(dict[str, Any], item)
 
         raise AirflowNotFound(
             f"Dag run '{run_id or genpm_run_id}' not found for DAG '{dag_id}'",
@@ -220,9 +210,7 @@ class AirflowService:
         self, dag_id: str, run_id: str, *, triggered_by: str | None
     ) -> ActionResponse:
         note = _compose_note("Stopped via GenPM", triggered_by)
-        await self._client.patch_dag_run_state(
-            dag_id, run_id, state="failed", note=note
-        )
+        await self._client.patch_dag_run_state(dag_id, run_id, state="failed", note=note)
         self._invalidate_dag_list_cache()
         return ActionResponse(
             run_id=run_id,
@@ -233,9 +221,7 @@ class AirflowService:
     async def clear_dag_run(
         self, dag_id: str, run_id: str, *, triggered_by: str | None
     ) -> ActionResponse:
-        await self._client.clear_task_instances(
-            dag_id, run_id, task_ids=None, reset_dag_runs=True
-        )
+        await self._client.clear_task_instances(dag_id, run_id, task_ids=None, reset_dag_runs=True)
         self._invalidate_dag_list_cache()
         _ = triggered_by
         return ActionResponse(
@@ -277,7 +263,7 @@ class AirflowService:
         if not dag_payloads:
             return []
 
-        start_date_gte = (datetime.now(tz=timezone.utc) - timedelta(hours=24)).isoformat()
+        start_date_gte = (datetime.now(tz=UTC) - timedelta(hours=24)).isoformat()
         results = await asyncio.gather(
             *(
                 self._fetch_dag_recent_window(str(d.get("dag_id") or ""), start_date_gte)
@@ -299,9 +285,7 @@ class AirflowService:
                 last_run, stats = None, DagStats()
             else:
                 last_run, stats = fetched
-            summaries.append(
-                map_dag_summary(dag_payload, last_run=last_run, stats=stats)
-            )
+            summaries.append(map_dag_summary(dag_payload, last_run=last_run, stats=stats))
         return summaries
 
     async def _fetch_dag_recent_window(
@@ -310,9 +294,7 @@ class AirflowService:
         if not dag_id:
             return None, DagStats()
         try:
-            raw = await self._client.list_dag_runs(
-                dag_id, limit=200, start_date_gte=start_date_gte
-            )
+            raw = await self._client.list_dag_runs(dag_id, limit=200, start_date_gte=start_date_gte)
         except AirflowNotFound:
             return None, DagStats()
         runs = [map_dag_run(r) for r in raw.get("dag_runs", []) or []]
@@ -321,7 +303,7 @@ class AirflowService:
         if runs:
             last_run = max(
                 runs,
-                key=lambda r: r.start_date or r.logical_date or datetime.min.replace(tzinfo=timezone.utc),
+                key=lambda r: r.start_date or r.logical_date or datetime.min.replace(tzinfo=UTC),
             )
         return last_run, stats
 

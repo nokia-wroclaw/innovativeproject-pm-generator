@@ -1,16 +1,18 @@
 <script setup>
 import '../assets/S3.css';
-import { ref, reactive, computed, onMounted, onBeforeUnmount } from 'vue';
-import DataTable from '../components/DataTable.vue';
+import { ref, reactive, computed, watch, onMounted, onBeforeUnmount } from 'vue';
+import { useRoute, useRouter } from 'vue-router';
 import BaseModal from '../components/BaseModal.vue';
-import DynamicActions from '../components/TableActions.vue';
+import S3StorageTabBody from '../components/S3StorageTabBody.vue';
 import DeleteAction from '../components/DeleteAction.vue';
+import { Tabs } from '@/components/ui';
 import {
   fetchS3DatasetsPage,
   createS3Dataset,
   deleteS3Dataset,
   updateS3Status,
   DatasetStatus,
+  DatasetType,
   initiateMultipartUpload,
   getPresignedPartUrl,
   completeMultipartUpload,
@@ -23,6 +25,30 @@ import { isAdmin } from '../auth/keycloak';
 const CHUNK_SIZE = 5 * 1024 * 1024;
 const STORAGE_KEY = 's3_pending_upload';
 
+const TAB_RAW = 'raw';
+const TAB_PREPROCESSED = 'preprocessed';
+const TAB_GENERATED = 'generated';
+
+const TAB_TO_DATASET_TYPE = {
+  [TAB_RAW]: DatasetType.RAW,
+  [TAB_PREPROCESSED]: DatasetType.PREPROCESSED,
+  [TAB_GENERATED]: DatasetType.GENERATED,
+};
+
+const ADMIN_TABS = [
+  { value: TAB_RAW, label: 'Raw' },
+  { value: TAB_PREPROCESSED, label: 'Preprocessed' },
+  { value: TAB_GENERATED, label: 'Generated' },
+];
+
+const USER_TABS = [{ value: TAB_GENERATED, label: 'Generated' }];
+
+const TAB_DESCRIPTIONS = {
+  [TAB_RAW]: 'Upload and manage raw datasets before preprocessing.',
+  [TAB_PREPROCESSED]: 'Datasets produced by preprocessing pipelines.',
+  [TAB_GENERATED]: 'Synthetic event logs available for download and preview.',
+};
+
 const TABLE_COLUMNS = [
   { key: 'id', label: 'ID' },
   { key: 'file_name', label: 'Name' },
@@ -30,6 +56,21 @@ const TABLE_COLUMNS = [
   { key: 'status', label: 'Status' },
   { key: 'actions', label: 'Actions' },
 ];
+
+const route = useRoute();
+const router = useRouter();
+
+const storageTabItems = computed(() => (isAdmin.value ? ADMIN_TABS : USER_TABS));
+
+const defaultTab = computed(() => storageTabItems.value[0]?.value ?? TAB_GENERATED);
+
+const activeTab = ref(
+  storageTabItems.value.some((tab) => tab.value === route.query.tab)
+    ? route.query.tab
+    : defaultTab.value,
+);
+
+const canAddDataset = computed(() => isAdmin.value && activeTab.value === TAB_RAW);
 
 const rowActions = computed(() => {
   const actions = [
@@ -41,7 +82,16 @@ const rowActions = computed(() => {
   return actions;
 });
 
-const tableRef = ref(null);
+const rawTabBodyRef = ref(null);
+const preprocessedTabBodyRef = ref(null);
+const generatedTabBodyRef = ref(null);
+
+const tabBodyRefs = {
+  [TAB_RAW]: rawTabBodyRef,
+  [TAB_PREPROCESSED]: preprocessedTabBodyRef,
+  [TAB_GENERATED]: generatedTabBodyRef,
+};
+
 const isAddModalOpen = ref(false);
 const isPreparing = ref(false);
 const activeRow = ref(null);
@@ -78,8 +128,38 @@ const submitButtonLabel = computed(() => {
 });
 
 const hasActiveUpload = computed(() =>
-  activeUploads.value.some((task) => task.status === DatasetStatus.UPLOADING)
+  activeUploads.value.some((task) => task.status === DatasetStatus.UPLOADING),
 );
+
+watch(storageTabItems, (tabs) => {
+  if (!tabs.some((tab) => tab.value === activeTab.value)) {
+    activeTab.value = tabs[0]?.value ?? TAB_GENERATED;
+  }
+});
+
+watch(activeTab, (tab) => {
+  const allowed = new Set(storageTabItems.value.map((item) => item.value));
+  if (!allowed.has(tab)) {
+    activeTab.value = defaultTab.value;
+    return;
+  }
+  const nextQuery = { ...route.query, tab };
+  router.replace({ query: nextQuery });
+  refreshActiveTable();
+});
+
+watch(
+  () => route.query.tab,
+  (tab) => {
+    if (typeof tab === 'string' && storageTabItems.value.some((item) => item.value === tab)) {
+      activeTab.value = tab;
+    }
+  },
+);
+
+function refreshActiveTable() {
+  tabBodyRefs[activeTab.value]?.value?.refresh();
+}
 
 function resetForm() {
   formData.value = { file_name: '', s3_key: '', file: null };
@@ -87,16 +167,13 @@ function resetForm() {
 }
 
 function openAddModal() {
+  if (!canAddDataset.value) return;
   isAddModalOpen.value = true;
 }
 
 function closeAddModal() {
   isAddModalOpen.value = false;
   resetForm();
-}
-
-function refreshTable() {
-  tableRef.value?.refresh();
 }
 
 function createUploadTask({ id, file_name, s3_key }) {
@@ -194,12 +271,12 @@ async function processUploadLoop(file, uploadState, uploadTask) {
 
     for (let partNumber = 1; partNumber <= totalChunks; partNumber += 1) {
       const alreadyUploaded = uploadState.uploadedParts.some(
-        (part) => part.PartNumber === partNumber
+        (part) => part.PartNumber === partNumber,
       );
 
       if (alreadyUploaded) {
         uploadTask.progress = Math.round(
-          (uploadState.uploadedParts.length / totalChunks) * 100
+          (uploadState.uploadedParts.length / totalChunks) * 100,
         );
         continue;
       }
@@ -211,7 +288,7 @@ async function processUploadLoop(file, uploadState, uploadTask) {
       const { url } = await getPresignedPartUrl(
         uploadState.datasetId,
         uploadState.s3UploadId,
-        partNumber
+        partNumber,
       );
       const etag = await uploadChunk(url, chunk);
 
@@ -219,14 +296,14 @@ async function processUploadLoop(file, uploadState, uploadTask) {
       persistUploadState(uploadState);
 
       uploadTask.progress = Math.round(
-        (uploadState.uploadedParts.length / totalChunks) * 100
+        (uploadState.uploadedParts.length / totalChunks) * 100,
       );
     }
 
     await completeMultipartUpload(
       uploadState.datasetId,
       uploadState.s3UploadId,
-      uploadState.uploadedParts
+      uploadState.uploadedParts,
     );
     await updateS3Status(uploadState.datasetId, DatasetStatus.COMPLETED);
 
@@ -235,7 +312,7 @@ async function processUploadLoop(file, uploadState, uploadTask) {
 
     setTimeout(() => {
       activeUploads.value = activeUploads.value.filter((task) => task.id !== uploadTask.id);
-      refreshTable();
+      refreshActiveTable();
     }, 1500);
   } catch (error) {
     console.error('Multipart upload failed:', error);
@@ -266,12 +343,14 @@ async function startMultipartUpload(file, fileName, s3Key) {
 
   activeUploads.value.unshift(uploadTask);
   closeAddModal();
-  refreshTable();
+  refreshActiveTable();
 
   await processUploadLoop(file, uploadState, uploadTask);
 }
 
 async function submitDataset() {
+  if (!canAddDataset.value) return;
+
   const { file_name, s3_key, file } = formData.value;
   if (!s3_key) return;
 
@@ -281,7 +360,7 @@ async function submitDataset() {
     if (isRegisterMode.value) {
       await registerExistingS3Dataset({ file_name, s3_key });
       closeAddModal();
-      refreshTable();
+      refreshActiveTable();
       return;
     }
 
@@ -297,7 +376,7 @@ async function submitDataset() {
 }
 
 async function confirmResume() {
-  if (!resumeFile.value || !pendingResumeState.value) return;
+  if (!isAdmin.value || !resumeFile.value || !pendingResumeState.value) return;
 
   const { fileName, fileSize, datasetId, s3_key } = pendingResumeState.value;
 
@@ -316,14 +395,14 @@ async function confirmResume() {
   });
 
   activeUploads.value.unshift(uploadTask);
-  refreshTable();
+  refreshActiveTable();
 
   await updateS3Status(datasetId, DatasetStatus.UPLOADING);
   await processUploadLoop(resumeFile.value, pendingResumeState.value, uploadTask);
 }
 
 async function cancelResumeUpload() {
-  if (!pendingResumeState.value) return;
+  if (!isAdmin.value || !pendingResumeState.value) return;
 
   try {
     const { datasetId, s3UploadId } = pendingResumeState.value;
@@ -336,34 +415,47 @@ async function cancelResumeUpload() {
   clearPersistedUpload();
   pendingResumeState.value = null;
   isResumeModalOpen.value = false;
-  refreshTable();
+  refreshActiveTable();
 }
 
 function onDeleteSuccess() {
   showDeleteModal.value = false;
-  refreshTable();
+  refreshActiveTable();
 }
 
-async function tableProviderWrapper(params) {
-  const serverData = await fetchS3DatasetsPage(params);
-  const items = Array.isArray(serverData)
-    ? serverData
-    : serverData.data || serverData.items || [];
+function makeTableProvider(tabKey) {
+  const datasetType = TAB_TO_DATASET_TYPE[tabKey];
+  return async (params) => {
+    const serverData = await fetchS3DatasetsPage({ ...params, type: datasetType });
+    const items = Array.isArray(serverData)
+      ? serverData
+      : serverData.data || serverData.items || [];
 
-  const filteredItems = items.filter((item) => item.status !== DatasetStatus.PENDING);
-  const mergedItems = [...activeUploads.value, ...filteredItems];
+    const filteredItems = items.filter((item) => item.status !== DatasetStatus.PENDING);
+    const uploadsForTab =
+      tabKey === TAB_RAW && isAdmin.value ? activeUploads.value : [];
+    const mergedItems = [...uploadsForTab, ...filteredItems];
 
-  if (Array.isArray(serverData)) return mergedItems;
-  return { ...serverData, data: mergedItems, items: mergedItems };
+    if (Array.isArray(serverData)) return mergedItems;
+    return { ...serverData, data: mergedItems, items: mergedItems };
+  };
 }
+
+const tableProviders = {
+  [TAB_RAW]: makeTableProvider(TAB_RAW),
+  [TAB_PREPROCESSED]: makeTableProvider(TAB_PREPROCESSED),
+  [TAB_GENERATED]: makeTableProvider(TAB_GENERATED),
+};
 
 onMounted(() => {
   window.addEventListener('beforeunload', handleBeforeUnload);
 
-  const savedState = localStorage.getItem(STORAGE_KEY);
-  if (savedState) {
-    pendingResumeState.value = JSON.parse(savedState);
-    isResumeModalOpen.value = true;
+  if (isAdmin.value) {
+    const savedState = localStorage.getItem(STORAGE_KEY);
+    if (savedState) {
+      pendingResumeState.value = JSON.parse(savedState);
+      isResumeModalOpen.value = true;
+    }
   }
 });
 
@@ -373,47 +465,55 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
-  <div class="s3-page">
-    <div class="s3-toolbar">
-      <button type="button" class="btn-primary" @click="openAddModal">
-        Add dataset
-      </button>
-    </div>
-
-    <DataTable
-      ref="tableRef"
-      :columns="TABLE_COLUMNS"
-      :provider="tableProviderWrapper"
-      :per-page="10"
+  <div class="s3-page-wrapper">
+    <Tabs
+      v-model="activeTab"
+      class="s3-tabs"
+      :items="storageTabItems"
     >
-      <template #cell-status="{ row }">
-        <div v-if="row.status === DatasetStatus.UPLOADING" class="s3-upload-cell">
-          <div class="s3-progress-bar">
-            <div class="s3-progress-fill" :style="{ width: `${row.progress}%` }" />
-          </div>
-          <span class="s3-progress-text">{{ row.progress }}%</span>
-        </div>
-
-        <span
-          v-else-if="row.status"
-          :class="['s3-status-badge', `s3-status-${row.status.toLowerCase()}`]"
-        >
-          {{ row.status }}
-        </span>
-
-        <span v-else class="s3-status-badge s3-status-unknown">No data</span>
-      </template>
-
-      <template #cell-actions="{ row }">
-        <DynamicActions
-          v-if="row.status === DatasetStatus.COMPLETED"
-          :row="row"
-          :actions="rowActions"
-          @action="handleRowAction"
+      <template #raw>
+        <S3StorageTabBody
+          ref="rawTabBodyRef"
+          :description="TAB_DESCRIPTIONS[TAB_RAW]"
+          :show-add-button="canAddDataset"
+          :columns="TABLE_COLUMNS"
+          :provider="tableProviders[TAB_RAW]"
+          :row-actions="rowActions"
+          :uploading-status="DatasetStatus.UPLOADING"
+          :completed-status="DatasetStatus.COMPLETED"
+          @add-dataset="openAddModal"
+          @row-action="handleRowAction"
         />
-        <span v-else class="s3-status-waiting">Uploading...</span>
       </template>
-    </DataTable>
+
+      <template #preprocessed>
+        <S3StorageTabBody
+          ref="preprocessedTabBodyRef"
+          :description="TAB_DESCRIPTIONS[TAB_PREPROCESSED]"
+          :show-add-button="false"
+          :columns="TABLE_COLUMNS"
+          :provider="tableProviders[TAB_PREPROCESSED]"
+          :row-actions="rowActions"
+          :uploading-status="DatasetStatus.UPLOADING"
+          :completed-status="DatasetStatus.COMPLETED"
+          @row-action="handleRowAction"
+        />
+      </template>
+
+      <template #generated>
+        <S3StorageTabBody
+          ref="generatedTabBodyRef"
+          :description="TAB_DESCRIPTIONS[TAB_GENERATED]"
+          :show-add-button="false"
+          :columns="TABLE_COLUMNS"
+          :provider="tableProviders[TAB_GENERATED]"
+          :row-actions="rowActions"
+          :uploading-status="DatasetStatus.UPLOADING"
+          :completed-status="DatasetStatus.COMPLETED"
+          @row-action="handleRowAction"
+        />
+      </template>
+    </Tabs>
 
     <BaseModal
       :show="isAddModalOpen"
@@ -509,6 +609,7 @@ onBeforeUnmount(() => {
     </BaseModal>
 
     <BaseModal
+      v-if="isAdmin"
       :show="isResumeModalOpen"
       title="Resume interrupted upload"
       width="500px"
@@ -610,7 +711,7 @@ onBeforeUnmount(() => {
     </BaseModal>
 
     <DeleteAction
-      v-if="showDeleteModal"
+      v-if="showDeleteModal && isAdmin"
       :item="activeRow"
       :delete-service="deleteS3Dataset"
       @success="onDeleteSuccess"

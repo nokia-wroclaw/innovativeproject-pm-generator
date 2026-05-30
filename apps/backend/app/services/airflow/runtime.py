@@ -1,13 +1,11 @@
-from typing import Optional
-
 from app.services.airflow.service import AirflowService
 
 from .auth import AirflowAuth
 from .client import AirflowClient
 from .config import get_airflow_settings
 
-_client: Optional[AirflowClient] = None
-_service: Optional[AirflowService] = None
+_client: AirflowClient | None = None
+_service: AirflowService | None = None
 
 
 async def start_airflow_runtime() -> None:

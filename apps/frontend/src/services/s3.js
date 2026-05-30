@@ -1,7 +1,12 @@
 import { authorizedRequest } from './api.js';
 
-export const fetchS3DatasetsPage = async ({ page, limit }) => {
-  const datasets = await authorizedRequest('/api/v1/datasets');
+export const fetchS3DatasetsPage = async ({ page, limit, type }) => {
+  if (!type) {
+    throw new Error('Dataset type is required');
+  }
+  const datasets = await authorizedRequest(
+    `/api/v1/datasets?type=${encodeURIComponent(type)}`,
+  );
   const safeDatasets = Array.isArray(datasets) ? datasets : [];
   const perPage = Number(limit) > 0 ? Number(limit) : 10;
   const currentPage = Number(page) > 0 ? Number(page) : 1;
@@ -14,6 +19,7 @@ export const fetchS3DatasetsPage = async ({ page, limit }) => {
       file_name: dataset.file_name,
       s3_key: dataset.s3_key,
       status: dataset.status,
+      type: dataset.type,
     })),
     total: safeDatasets.length,
   };
@@ -31,6 +37,12 @@ export const DatasetStatus = {
     UPLOADING: "UPLOADING",
     COMPLETED: "COMPLETED",
     FAILED: "FAILED",
+}
+
+export const DatasetType = {
+    RAW: "RAW",
+    PREPROCESSED: "PREPROCESSED",
+    GENERATED: "GENERATED",
 }
 
 export const updateS3Status = async (datasetId, status) => {
@@ -84,4 +96,3 @@ export const deleteS3Dataset = async (datasetID) => {
 export const fetchDatasetPreview = async (datasetId) => {
   return await authorizedRequest(`/api/v1/datasets/${datasetId}/preview`);
 };
-

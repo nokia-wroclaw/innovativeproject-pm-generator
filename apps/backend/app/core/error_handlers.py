@@ -5,6 +5,7 @@ from fastapi import FastAPI, HTTPException, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 
+from app.models.dags import ApiError
 from app.services.airflow.errors import (
     AirflowAuthFailed,
     AirflowConflict,
@@ -12,7 +13,6 @@ from app.services.airflow.errors import (
     AirflowNotFound,
     AirflowUnavailable,
 )
-from app.models.dags import ApiError
 
 logger = logging.getLogger(__name__)
 
@@ -48,16 +48,22 @@ def register_error_handlers(app: FastAPI) -> None:
     async def _airflow_unavailable(request: Request, exc: AirflowUnavailable) -> JSONResponse:
         logger.warning("Airflow unavailable: %s", exc.message)
         return _envelope(
-            code=exc.code, message=exc.message, details=exc.details,
-            request=request, status_code=exc.http_status,
+            code=exc.code,
+            message=exc.message,
+            details=exc.details,
+            request=request,
+            status_code=exc.http_status,
         )
 
     @app.exception_handler(AirflowAuthFailed)
     async def _airflow_auth(request: Request, exc: AirflowAuthFailed) -> JSONResponse:
         logger.error("Airflow rejected service-account token: %s", exc.message)
         return _envelope(
-            code=exc.code, message=exc.message, details=exc.details,
-            request=request, status_code=exc.http_status,
+            code=exc.code,
+            message=exc.message,
+            details=exc.details,
+            request=request,
+            status_code=exc.http_status,
         )
 
     @app.exception_handler(AirflowNotFound)
@@ -70,23 +76,32 @@ def register_error_handlers(app: FastAPI) -> None:
         else:
             code = "DAG_NOT_FOUND"
         return _envelope(
-            code=code, message=exc.message, details=exc.details,
-            request=request, status_code=404,
+            code=code,
+            message=exc.message,
+            details=exc.details,
+            request=request,
+            status_code=404,
         )
 
     @app.exception_handler(AirflowConflict)
     async def _airflow_conflict(request: Request, exc: AirflowConflict) -> JSONResponse:
         return _envelope(
-            code=exc.code, message=exc.message, details=exc.details,
-            request=request, status_code=exc.http_status,
+            code=exc.code,
+            message=exc.message,
+            details=exc.details,
+            request=request,
+            status_code=exc.http_status,
         )
 
     @app.exception_handler(AirflowIntegrationError)
     async def _airflow_integration(request: Request, exc: AirflowIntegrationError) -> JSONResponse:
         logger.exception("Unhandled Airflow integration error: %s", exc.message)
         return _envelope(
-            code=exc.code, message=exc.message, details=exc.details,
-            request=request, status_code=exc.http_status,
+            code=exc.code,
+            message=exc.message,
+            details=exc.details,
+            request=request,
+            status_code=exc.http_status,
         )
 
     @app.exception_handler(RequestValidationError)
@@ -146,7 +161,13 @@ def register_error_handlers(app: FastAPI) -> None:
         )
 
     _ = (
-        _airflow_unavailable, _airflow_auth, _airflow_notfound,
-        _airflow_conflict, _airflow_integration, _validation,
-        _runtime, _http_exception, _fallback,
+        _airflow_unavailable,
+        _airflow_auth,
+        _airflow_notfound,
+        _airflow_conflict,
+        _airflow_integration,
+        _validation,
+        _runtime,
+        _http_exception,
+        _fallback,
     )

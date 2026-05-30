@@ -24,13 +24,30 @@ let authFailureHandled = false;
 
 export const authRoles = ref(new Set());
 
-const getTokenRoles = () => {
-  const parsed = keycloak.tokenParsed;
-  if (!parsed) return new Set();
+function decodeJwtPayload(token) {
+  if (!token) return null;
+  try {
+    const base64 = token.split('.')[1]?.replace(/-/g, '+').replace(/_/g, '/');
+    if (!base64) return null;
+    return JSON.parse(atob(base64));
+  } catch {
+    return null;
+  }
+}
 
-  const realmRoles = parsed.realm_access?.roles ?? [];
-  const clientRoles = parsed.resource_access?.[keycloakClientId]?.roles ?? [];
-  return new Set([...realmRoles, ...clientRoles]);
+const getTokenRoles = () => {
+  const accessParsed = keycloak.tokenParsed ?? decodeJwtPayload(keycloak.token);
+  const idParsed = keycloak.idTokenParsed ?? decodeJwtPayload(keycloak.idToken);
+  const sources = [accessParsed, idParsed].filter(Boolean);
+
+  const roles = new Set();
+  for (const parsed of sources) {
+    const realmRoles = parsed.realm_access?.roles ?? [];
+    const clientRoles = parsed.resource_access?.[keycloakClientId]?.roles ?? [];
+    realmRoles.forEach((role) => roles.add(role));
+    clientRoles.forEach((role) => roles.add(role));
+  }
+  return roles;
 };
 
 const syncAuthRoles = () => {
@@ -62,6 +79,9 @@ export const initKeycloak = async () => {
     onLoad: 'login-required',
     checkLoginIframe: false,
     pkceMethod: 'S256',
+    scope: 'openid profile email roles',
+    onAuthSuccess: () => syncAuthRoles(),
+    onAuthRefreshSuccess: () => syncAuthRoles(),
   });
 
   if (missingVariables.length > 0) {

@@ -4,11 +4,12 @@ from typing import Any, Literal
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 
-from app.core.auth import require_admin, require_auth
+from app.core.auth import assert_modeling_admin, require_auth, require_modeling_admin
 from app.db.database import db_manager
 from app.db.schemas import DagRunStatus, DatasetStatus
 from app.models.dags import TriggerRequest
 from app.models.modeling import (
+    GenerateRunRequest,
     ModelingArtifact,
     ModelingDatasetOption,
     ModelingFormField,
@@ -18,6 +19,7 @@ from app.models.modeling import (
     ModelingRunCreated,
     ModelingRunRequest,
     ModelingRunStatus,
+    ModelingTrainedModelOption,
 )
 from app.services.airflow.errors import AirflowIntegrationError, AirflowNotFound
 from app.services.airflow.runtime import get_airflow_service
@@ -29,12 +31,14 @@ router = APIRouter(prefix="/modeling", tags=["modeling"])
 DAG_ID_MAP: dict[ModelingProcessType, str] = {
     "preprocessing_feature_engineering": "moj_pierwszy_dag",
     "training_dataset": "moj_pierwszy_dag",
+    "generate": "moj_pierwszy_dag",
 }
 
 # Short dag_run_id prefix — long ids (with full process_type) are harder for Airflow to accept.
 _RUN_ID_PREFIX: dict[ModelingProcessType, str] = {
     "preprocessing_feature_engineering": "pe",
     "training_dataset": "td",
+    "generate": "gen",
 }
 
 _BASE_FIELDS: list[ModelingFormField] = [
@@ -68,7 +72,32 @@ _BASE_FIELDS: list[ModelingFormField] = [
 _PROCESS_TITLES: dict[ModelingProcessType, str] = {
     "preprocessing_feature_engineering": "Preprocessing + Feature Engineering",
     "training_dataset": "Training dataset creation",
+    "generate": "Synthetic data generation",
 }
+
+_MOCK_TRAINED_MODELS: list[ModelingTrainedModelOption] = [
+    ModelingTrainedModelOption(
+        id="model_001",
+        name="PM predictor v1 (working days)",
+        source_run_id="genpm_td_a1b2c3d4e5f6",
+        path="s3://genpm-modeling/models/model_001.pkl",
+        created_at="2026-05-20T14:30:00Z",
+    ),
+    ModelingTrainedModelOption(
+        id="model_002",
+        name="PM predictor v1 (weekends)",
+        source_run_id="genpm_td_b2c3d4e5f6a1",
+        path="s3://genpm-modeling/models/model_002.pkl",
+        created_at="2026-05-22T09:15:00Z",
+    ),
+    ModelingTrainedModelOption(
+        id="model_003",
+        name="PM predictor v2 (ensemble)",
+        source_run_id="genpm_td_c3d4e5f6a1b2",
+        path="s3://genpm-modeling/models/model_003.pkl",
+        created_at="2026-05-28T16:45:00Z",
+    ),
+]
 
 
 def _get_s3_service(db: Session = Depends(db_manager.get_db)) -> S3Service:
@@ -80,14 +109,23 @@ def _airflow_service() -> AirflowService:
 
 
 def _identity(payload: dict[str, Any]) -> str | None:
-    return (
-        payload.get("preferred_username")
-        or payload.get("email")
-        or payload.get("sub")
-    )
+    return payload.get("preferred_username") or payload.get("email") or payload.get("sub")
 
 
-def _mock_logs(status: DagRunStatus) -> list[str]:
+def _mock_logs(status: DagRunStatus, process_type: ModelingProcessType) -> list[str]:
+    if process_type == "generate":
+        logs = [
+            "Generation configuration received from Airflow conf.",
+            "Loading trained model artifact from S3.",
+        ]
+        if status in {DagRunStatus.RUNNING, DagRunStatus.SUCCESS, DagRunStatus.FAILED}:
+            logs.append("Sampling synthetic traces from the selected model.")
+        if status == DagRunStatus.SUCCESS:
+            logs.append("Event log and generation report saved successfully.")
+        if status == DagRunStatus.FAILED:
+            logs.append("Generation failed. Check task logs in the DAG view.")
+        return logs
+
     logs = [
         "DAG configuration received from Airflow conf.",
         "Preprocessing started for the selected dataset type.",
@@ -102,9 +140,13 @@ def _mock_logs(status: DagRunStatus) -> list[str]:
     return logs
 
 
-def _mock_metrics(status: DagRunStatus) -> dict[str, float] | None:
+def _mock_metrics(
+    status: DagRunStatus, process_type: ModelingProcessType
+) -> dict[str, float] | None:
     if status != DagRunStatus.SUCCESS:
         return None
+    if process_type == "generate":
+        return {"traces": 128.0, "events": 45210.0, "avg_trace_length": 353.2}
     return {"mae": 0.083, "rmse": 0.127, "mape": 4.82, "validation_loss": 0.018}
 
 
@@ -126,6 +168,19 @@ def _mock_artifacts(
                 status=saved,
             ),
         ]
+    if process_type == "generate":
+        return [
+            ModelingArtifact(
+                kind="generated_event_log",
+                path=f"{base}/generated_event_log.parquet",
+                status=saved,
+            ),
+            ModelingArtifact(
+                kind="generation_report",
+                path=f"{base}/generation_report.json",
+                status=saved,
+            ),
+        ]
     return [
         ModelingArtifact(
             kind="training_dataset",
@@ -140,9 +195,16 @@ def _mock_artifacts(
     ]
 
 
+@router.get("/models", response_model=list[ModelingTrainedModelOption])
+def list_trained_models(
+    _user: dict[str, Any] = Depends(require_auth),
+) -> list[ModelingTrainedModelOption]:
+    return _MOCK_TRAINED_MODELS
+
+
 @router.get("/datasets", response_model=list[ModelingDatasetOption])
 def list_modeling_datasets(
-    _user: dict[str, Any] = Depends(require_auth),
+    _user: dict[str, Any] = Depends(require_modeling_admin),
     service: S3Service = Depends(_get_s3_service),
 ) -> list[ModelingDatasetOption]:
     return [
@@ -158,7 +220,7 @@ def list_modeling_datasets(
 )
 def get_form_schema(
     process_type: ModelingProcessType,
-    _user: dict[str, Any] = Depends(require_auth),
+    _user: dict[str, Any] = Depends(require_modeling_admin),
 ) -> ModelingFormSchema:
     return ModelingFormSchema(
         process_type=process_type,
@@ -168,13 +230,72 @@ def get_form_schema(
 
 
 @router.post(
+    "/processes/generate/runs",
+    response_model=ModelingRunCreated,
+)
+async def trigger_generate_run(
+    body: GenerateRunRequest,
+    user: dict[str, Any] = Depends(require_auth),
+    airflow: AirflowService = Depends(_airflow_service),
+) -> ModelingRunCreated:
+    process_type: Literal["generate"] = "generate"
+    model = next((m for m in _MOCK_TRAINED_MODELS if m.id == body.model_id), None)
+    if not model:
+        raise HTTPException(status_code=404, detail=f"Model not found: {body.model_id}")
+
+    dag_id = DAG_ID_MAP[process_type]
+    run_id = f"genpm_{_RUN_ID_PREFIX[process_type]}_{uuid.uuid4().hex[:12]}"
+    conf = {
+        "genpm_run_id": run_id,
+        "model_id": body.model_id,
+        "model_name": model.name,
+        "model_path": model.path,
+        "prompt": body.prompt,
+        "process_type": process_type,
+        "dag_args": body.dag_args,
+    }
+
+    try:
+        action = await airflow.trigger_dag(
+            dag_id,
+            body=TriggerRequest(
+                conf=conf,
+                dag_run_id=run_id,
+                note="Modeling process generate",
+            ),
+            triggered_by=_identity(user),
+        )
+    except AirflowNotFound as exc:
+        raise HTTPException(
+            status_code=404,
+            detail=(
+                f"DAG '{dag_id}' is not registered in Airflow. "
+                "Ensure apps/airflow/dags is mounted and the scheduler has parsed the DAG."
+            ),
+        ) from exc
+    except AirflowIntegrationError as exc:
+        raise HTTPException(status_code=exc.http_status, detail=exc.message) from exc
+
+    effective_run_id = action.run_id or run_id
+
+    return ModelingRunCreated(
+        process_type=process_type,
+        dag_id=dag_id,
+        run_id=effective_run_id,
+        message=action.message,
+        airflow_status=action.airflow_status,
+        conf=conf,
+    )
+
+
+@router.post(
     "/processes/{process_type}/runs",
     response_model=ModelingRunCreated,
 )
 async def trigger_modeling_run(
-    process_type: ModelingProcessType,
+    process_type: Literal["preprocessing_feature_engineering", "training_dataset"],
     body: ModelingRunRequest,
-    user: dict[str, Any] = Depends(require_admin),
+    user: dict[str, Any] = Depends(require_modeling_admin),
     service: S3Service = Depends(_get_s3_service),
     airflow: AirflowService = Depends(_airflow_service),
 ) -> ModelingRunCreated:
@@ -239,9 +360,12 @@ async def trigger_modeling_run(
 async def get_modeling_run_status(
     process_type: ModelingProcessType,
     run_id: str,
-    _user: dict[str, Any] = Depends(require_auth),
+    user: dict[str, Any] = Depends(require_auth),
     airflow: AirflowService = Depends(_airflow_service),
 ) -> ModelingRunStatus:
+    if process_type != "generate":
+        assert_modeling_admin(user)
+
     dag_id = DAG_ID_MAP[process_type]
 
     try:
@@ -279,7 +403,7 @@ async def get_modeling_run_status(
         start_date=run.start_date.isoformat() if run.start_date else None,
         end_date=run.end_date.isoformat() if run.end_date else None,
         duration_ms=run.duration_ms,
-        logs=_mock_logs(run.status),
-        metrics=_mock_metrics(run.status),
+        logs=_mock_logs(run.status, process_type),
+        metrics=_mock_metrics(run.status, process_type),
         artifacts=_mock_artifacts(run.status, run.run_id, process_type),
     )

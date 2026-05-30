@@ -7,6 +7,9 @@ const FORM_SCHEMA_TIMEOUT_MS = 10_000;
 export const listModelingDatasets = () =>
   authorizedRequest(`${BASE}/datasets`);
 
+export const listModelingModels = () =>
+  authorizedRequest(`${BASE}/models`);
+
 export const getModelingFormSchema = (processType, options = {}) =>
   authorizedRequest(`${BASE}/processes/${enc(processType)}/form-schema`, {
     timeoutMs: FORM_SCHEMA_TIMEOUT_MS,
