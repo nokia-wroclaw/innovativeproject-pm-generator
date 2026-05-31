@@ -74,5 +74,5 @@ RUN uv sync --frozen
 RUN $APP_HOME/.venv/bin/python -m ipykernel install --prefix=$APP_HOME/.venv --name=spark-env --display-name "Python (Spark Project)"
 
 ENV PATH="$APP_HOME/.venv/bin:$PATH"
-EXPOSE 4040 4041 18080 8888
+EXPOSE 4040 4041 7077 18080 8888
 ENTRYPOINT ["/home/spark/entrypoint.sh"]

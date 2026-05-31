@@ -90,7 +90,9 @@ export S3_API_PORT=$((9000 + PORT_OFFSET))
 export S3_WEBCONSOLE_PORT=$((9001 + PORT_OFFSET))
 export KEYCLOAK_PORT=$((8080 + PORT_OFFSET))
 export DEVCONTAINER_SSH_PORT=$((2222 + PORT_OFFSET))
+export SPARK_MASTER=$((7077 + PORT_OFFSET))
 export FRONTEND_ORIGIN="http://localhost:${FRONTEND_PORT}"
+
 
 # Write devcontainer env vars to .bashrc (run only once and reenter VS code process)
 grep -q "^export COMPOSE_PROJECT_NAME=" ~/.bashrc || echo 'export COMPOSE_PROJECT_NAME="${USER}-genpm"' >> ~/.bashrc
@@ -162,7 +164,7 @@ fi
 echo "======================================================================"
 echo "Use this locally to route docker ports through OUR port on vm"
 echo ""
-echo "ssh -L 9005:localhost:9005 -L $FRONTEND_PORT:localhost:$FRONTEND_PORT -L $JUPYTER_PORT:localhost:$JUPYTER_PORT -L $SPARK_MASTER_PORT:localhost:$SPARK_MASTER_PORT -L $SPARK_UI_PORT:localhost:$SPARK_UI_PORT -L $S3_API_PORT:localhost:$S3_API_PORT -L $S3_WEBCONSOLE_PORT:localhost:$S3_WEBCONSOLE_PORT -L $FASTAPI_PORT:localhost:$FASTAPI_PORT -L $KEYCLOAK_PORT:localhost:$KEYCLOAK_PORT -p $VM_SSH_PORT $USER@$VM_PUBLIC_IP"
+echo "ssh -L $SPARK_MASTER:localhost:$SPARK_MASTER -L 9005:localhost:9005 -L $FRONTEND_PORT:localhost:$FRONTEND_PORT -L $JUPYTER_PORT:localhost:$JUPYTER_PORT -L $SPARK_MASTER_PORT:localhost:$SPARK_MASTER_PORT -L $SPARK_UI_PORT:localhost:$SPARK_UI_PORT -L $S3_API_PORT:localhost:$S3_API_PORT -L $S3_WEBCONSOLE_PORT:localhost:$S3_WEBCONSOLE_PORT -L $FASTAPI_PORT:localhost:$FASTAPI_PORT -L $KEYCLOAK_PORT:localhost:$KEYCLOAK_PORT -p $VM_SSH_PORT $USER@$VM_PUBLIC_IP"
 echo ""
 echo "Port Mapping:"
 echo "9005 - Airflow"
@@ -170,6 +172,7 @@ echo "$FRONTEND_PORT - Frontend"
 echo "$JUPYTER_PORT - Jupyter Notebook"
 echo "$SPARK_MASTER_PORT - Spark Master"
 echo "$SPARK_UI_PORT - Spark UI"
+echo "$SPARK_MASTER" - Spark master other port
 echo "$S3_API_PORT - S3 API (MinIO)"
 echo "$S3_WEBCONSOLE_PORT - S3 Console (MinIO)"
 echo "$FASTAPI_PORT - FastAPI Backend"

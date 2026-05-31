@@ -22,6 +22,7 @@ services:
   spark-jupyter:
     image: genpm/spark-jupyter:latest
     container_name: $USER-genpm-spark
+    hostname: $USER-spark-jupyter
     build:
       context: ..
       dockerfile: build/Spark.Dockerfile
@@ -33,9 +34,11 @@ services:
       - "${JUPYTER_PORT}:4041"
       - "${SPARK_MASTER_PORT}:18080"
       - "${SPARK_UI_PORT}:4040"
+      - "${SPARK_MASTER}:7077"
     volumes:
       - ../apps/generator:/home/sparkuser/app/apps/generator
       - /home/shared_dir:/home/sparkuser/app/apps/generator/data/shared_dir
+      - ../apps/generator/apps:/opt/airflow/spark-apps
     env_file:
       - ../.env
     networks:
