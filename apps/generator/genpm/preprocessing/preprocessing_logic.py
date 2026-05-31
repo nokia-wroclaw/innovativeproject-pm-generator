@@ -12,8 +12,6 @@ logger = get_logger()
 EDA_DATA_PATH = SHARED_DIR_PATH / "eda_data"
 PREPROCESSED_DATASET_PATH = SHARED_DIR_PATH / "preprocessed_dataset"
 
-# HELPER FUNCTIONS
-
 
 def _pivot_pm_data(pm_df_long: DataFrame) -> DataFrame:
     # PIVOT ATTEMPT
@@ -71,7 +69,7 @@ def fill_missing_timestamps(
     own min/max time range. Operates in long format — safe for large data.
     """
     logger.info("PREPROCESSING: FILLING MISSING TIMESTAMPS")
-    # Per-group time bounds — small aggregation, stays distributed
+
     station_bounds = df.groupBy(*group_cols).agg(
         f.min(time_col).alias("min_t"), f.max(time_col).alias("max_t")
     )
@@ -81,7 +79,6 @@ def fill_missing_timestamps(
         time_col, f.explode(f.sequence(f.col("min_t"), f.col("max_t"), f.expr("INTERVAL 1 HOUR")))
     ).drop("min_t", "max_t")
 
-    # Left join original data — only fills gaps, no cross-group explosion
     return station_spines.join(df, on=[*group_cols, time_col], how="left")
 
 
@@ -257,94 +254,48 @@ def raw_pm_preperation(pm_df_long: DataFrame) -> DataFrame:
     return pm_df_long
 
 
-# TODO: change this function, so it sees low coverage in time, not overall
-# Low coverage can misidentified by kpis with a period of no data, and a full coverage period
-# Add trimming of low coverage periods to certain kpis / add flags/masks to mark long NO_DATA
-# periods (for trimming)
+def iqr_kpi_outlier_detection(pm_df_long: DataFrame, k: float = 1.5) -> DataFrame:
+    # ── 1. Compute IQR bounds per (distname, kpi_id) ──────────────────────────────
 
-
-# For now, naive trimming is acceptable
-def drop_low_coverage(
-    pm_df: DataFrame,
-    cell_threshold: float = 0.5,
-    kpi_threshold: float = 0.5,
-) -> DataFrame:
-    """
-    Independently compute coverage at cell and KPI level, report bad ones,
-    then drop both.
-
-    Coverage definition:
-      - cell : non_null(kpi_value) / total rows  per (kpi_id, bts_id, distname)
-      - kpi  : non_null(kpi_value) / total rows  per kpi_id  (across ALL cells)
-
-    Dropping is additive — a row is removed if its cell OR its KPI is below
-    the respective threshold.
-    """
-
-    # ── Cell-level coverage ──────────────────────────────────────────────────
-    cell_stats = (
-        pm_df.groupBy("kpi_id", "bts_id", "distname")
+    bounds = (
+        pm_df_long.groupBy("distname", "kpi_id")
         .agg(
-            f.count("*").alias("total"),
-            f.count("kpi_value").alias("non_null"),
+            f.percentile_approx("kpi_value", 0.25).alias("kpi_value_q1"),
+            f.percentile_approx("kpi_value", 0.75).alias("kpi_value_q3"),
         )
-        .withColumn("coverage", f.col("non_null") / f.col("total"))
+        .withColumn("iqr", f.col("kpi_value_q3") - f.col("kpi_value_q1"))
+        .withColumn("lower_iqr_bound", f.col("kpi_value_q1") - k * f.col("iqr"))
+        .withColumn("upper_iqr_bound", f.col("kpi_value_q3") + k * f.col("iqr"))
+        .select("distname", "kpi_id", "lower_iqr_bound", "upper_iqr_bound")
     )
 
-    good_cells = cell_stats.filter(f.col("coverage") >= cell_threshold)
-    bad_cells = cell_stats.filter(f.col("coverage") < cell_threshold)
+    pm_df_with_bounds = pm_df_long.join(bounds, on=["distname", "kpi_id"], how="left")
 
-    n_cells = cell_stats.count()
-    n_bad_cells = bad_cells.count()
-    logger.info(
-        f"[coverage] Cells  — dropped: {n_bad_cells:>6} / {n_cells}  "
-        f"(threshold={cell_threshold:.0%})"
-    )
-    # logger.info("[coverage] Worst offending cells:")
-    # (
-    #     bad_cells.orderBy("coverage")
-    #     .select("kpi_id", "bts_id", "distname", "coverage")
-    #     .show(10, truncate=False)
-    # )
-
-    # ── KPI-level coverage ───────────────────────────────────────────────────
-    kpi_stats = (
-        pm_df.groupBy("kpi_id")
-        .agg(
-            f.count("*").alias("total"),
-            f.count("kpi_value").alias("non_null"),
-        )
-        .withColumn("coverage", f.col("non_null") / f.col("total"))
+    # ── 2. Flag outliers ───────────────────────────────────────────────────────────
+    outlier_mask = (f.col("kpi_value") < f.col("lower_iqr_bound")) | (
+        f.col("kpi_value") > f.col("upper_iqr_bound")
     )
 
-    good_kpis = kpi_stats.filter(f.col("coverage") >= kpi_threshold)
-    bad_kpis = kpi_stats.filter(f.col("coverage") < kpi_threshold)
-
-    n_kpis = kpi_stats.count()
-    n_bad_kpis = bad_kpis.count()
-    logger.info(
-        f"[coverage] KPIs   — dropped: {n_bad_kpis:>6} / {n_kpis}  (threshold={kpi_threshold:.0%})"
+    df_outliers_dropped = pm_df_with_bounds.withColumn(
+        "kpi_id", f.when(~outlier_mask, f.col("kpi_id"))
     )
-    # logger.info("[coverage] Dropped KPIs:")
-    # (
-    #     bad_kpis.orderBy("coverage")
-    #     .select("kpi_id", "coverage", "total", "non_null")
-    #     .show(20, truncate=False)
-    # )
 
-    # ── Drop: remove bad cells, then remove bad KPIs ─────────────────────────
-    df_clean = pm_df.join(
-        good_cells.select("kpi_id", "bts_id", "distname"),
-        on=["kpi_id", "bts_id", "distname"],
-        how="inner",
-    ).join(good_kpis.select("kpi_id"), on="kpi_id", how="inner")
-
-    return df_clean
+    return df_outliers_dropped.drop("lower_iqr_bound", "upper_iqr_bound")
 
 
 def pop_constant_kpis(pm_df_long: DataFrame) -> tuple[DataFrame, DataFrame]:
-    # WARNING: those are only per kpi aggregation
-    # TODO: analyze, if it should be per distname-kpi_id
+    """function to not include constant kpis. A constant kpi, is a kpi, which value over its whole
+    timespan is constant
+       For generating purposes, a second Dataframe is returned with information about those kpis
+       If the user would like to generate one constant kpi aswell
+
+    Args:
+        pm_df_long (DataFrame): PM data Dataframe
+
+    Returns:
+        tuple[DataFrame, DataFrame]: PM data dataframe with const kpis removed, a dataframe
+        containing information about the constant kpi_id, its constant value
+    """
     constant_kpis = (
         pm_df_long.groupBy("kpi_id")
         .agg(
@@ -352,6 +303,7 @@ def pop_constant_kpis(pm_df_long: DataFrame) -> tuple[DataFrame, DataFrame]:
             f.count_distinct("kpi_value").alias("kpi_value_distinct_count"),
             f.first("kpi_value").alias("kpi_value"),
         )
+        # Only one? Or threshold and (mean, min?, max?)
         .where(f.col("kpi_value_distinct_count") == 1)
     )
 

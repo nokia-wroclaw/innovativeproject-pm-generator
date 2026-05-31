@@ -17,7 +17,9 @@ PREPROCESSED_DATASET_PATH = SHARED_DIR_PATH / "preprocessed_dataset"
 # Data download
 
 
-def load_data(sdm: SparkDataManager, args) -> tuple[DataFrame, DataFrame, DataFrame]:
+def load_data(
+    sdm: SparkDataManager, args: argparse.Namespace
+) -> tuple[DataFrame, DataFrame, DataFrame]:
     pm_df_long = sdm.read_parquet(args.pm_data_raw_path)
     kpis_definitions_df = sdm.read_parquet(args.kpi_definitions_raw_path)
     simple_reports_df = sdm.read_parquet(args.simple_reports_raw_path)
@@ -59,15 +61,15 @@ def run(args: argparse.Namespace) -> None:
 
     pm_df_long, pm_df_const_kpi = preprocessing_logic.pop_constant_kpis(pm_df_long)
 
-    # Timestamp frequency uniformoty (1 hour) and KPI-bts recording range verification
+    # Timestamp frequency uniformoty (1 hour)
+    # Perc cell allignment to min max (window coverage handles the rest)
     pm_df_long = preprocessing_logic.fill_missing_timestamps(
-        pm_df_long, "start_time", ["kpi_id", "bts_id", "distname"]
+        pm_df_long, "start_time", ["bts_id", "distname"]
     )
 
-    # TODO: Coverage thresholds should be parsed from user
-    pm_df_long = preprocessing_logic.drop_low_coverage(
-        pm_df_long, cell_threshold=0.5, kpi_threshold=0.5
-    )
+    # pm_df_long = preprocessing_logic.drop_low_coverage_cells(
+    #     pm_df_long, cell_threshold=args.cell_threshold
+    # )
 
     pm_df_long = pm_df_long.cache()
     pm_df_long.count()
@@ -97,6 +99,7 @@ def run(args: argparse.Namespace) -> None:
     for df, df_path in zip(list_of_dfs, preprocessed_data_filenames, strict=True):
         sdm.write_parquet(
             df,
+            # TODO: Add getting output path from args
             PREPROCESSED_DATASET_PATH / df_path,
             mode="overwrite",
         )
