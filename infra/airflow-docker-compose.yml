@@ -30,7 +30,7 @@ x-airflow-common:
     - ${AIRFLOW_PROJ_DIR:-.}/config:/opt/airflow/config
     - ${AIRFLOW_PROJ_DIR:-.}/plugins:/opt/airflow/plugins
 
-    - /home/${USER}/innovativeproject-pm-generator/apps/airflow/dags:/opt/airflow/dags/administrator
+    - /home/${USER}/innovativeproject-pm-generator/apps/airflow/dags:/opt/airflow/dags/${USER}
     - /home/${USER}/innovativeproject-pm-generator/apps/generator/apps:/opt/airflow/spark-apps
 
   user: "${AIRFLOW_UID:-50000}:0"
