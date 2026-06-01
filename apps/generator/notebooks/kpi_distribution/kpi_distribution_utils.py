@@ -459,10 +459,10 @@ def summarize_batch(results: pd.DataFrame) -> None:
 
     print("=" * 56)
     print(f"  KPIs analysed       : {n}")
-    print(f"  Normal (all 4 tests): {normal} ({100*normal/n:.1f}%)")
-    print(f"  Change-point (p<.05): {cp_sig} ({100*cp_sig/n:.1f}%)")
+    print(f"  Normal (all 4 tests): {normal} ({100 * normal / n:.1f}%)")
+    print(f"  Change-point (p<.05): {cp_sig} ({100 * cp_sig / n:.1f}%)")
     print()
     print("  Most common best-fitting distributions:")
     for dist, cnt in top_dists.items():
-        print(f"    {dist:<14}  {cnt:>4}  ({100*cnt/n:.1f}%)")
+        print(f"    {dist:<14}  {cnt:>4}  ({100 * cnt / n:.1f}%)")
     print("=" * 56)

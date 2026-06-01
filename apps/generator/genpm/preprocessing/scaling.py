@@ -2,7 +2,6 @@ from __future__ import annotations
 
 from pyspark.sql import DataFrame, SparkSession
 from pyspark.sql import functions as f
-
 from utils.consts import SHARED_DIR_PATH, SPARK_CONFIGS
 
 cfg = SPARK_CONFIGS["WINDOW_HEAVY"]

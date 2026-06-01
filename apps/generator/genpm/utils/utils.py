@@ -1,5 +1,7 @@
 import os
 import re
+import shutil
+import subprocess
 from functools import reduce
 from pathlib import Path
 
@@ -45,8 +47,19 @@ class SparkDataManager:
         self.spark: SparkSession = builder.getOrCreate()
 
         checkpoint_directory = checkpoint_dir or str(SPARK_CHECKPOINT_PATH)
+        checkpoint_path = Path(checkpoint_directory)
+
+        if checkpoint_path.exists():
+            shutil.rmtree(checkpoint_path)
+        checkpoint_path.mkdir(parents=True, exist_ok=True)
+
+        shared_group = os.getenv("USER")
+        if shared_group:
+            subprocess.run(["chgrp", "-R", shared_group, str(checkpoint_path)], check=True)
+            subprocess.run(["chmod", "g+w", str(checkpoint_path)], check=True)
 
         self.spark.sparkContext.setCheckpointDir(checkpoint_directory)
+        logger.warning(f"CHECKPOINT DIR SET TO {checkpoint_directory}")
 
     @staticmethod
     def minio_spark_conf():
@@ -94,12 +107,12 @@ def load_config(path: str) -> dict:
 
 
 def when_chained(conditions: list[tuple], otherwise=None) -> Column:
-    def reducer(acc, pair):
+    def _reducer(acc, pair):
         cond, val = pair
         return acc.when(cond, val)
 
     first_cond, first_val = conditions[0]
-    chain = reduce(reducer, conditions[1:], f.when(first_cond, first_val))
+    chain = reduce(_reducer, conditions[1:], f.when(first_cond, first_val))
     return chain.otherwise(otherwise)
 
 

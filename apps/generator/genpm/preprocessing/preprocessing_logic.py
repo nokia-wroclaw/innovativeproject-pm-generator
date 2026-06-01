@@ -59,29 +59,6 @@ def _pivot_pm_data(pm_df_long: DataFrame) -> DataFrame:
     return pm_df_wide  # type: ignore
 
 
-def fill_missing_timestamps(
-    df: DataFrame,
-    time_col: str,
-    group_cols: list[str],
-) -> DataFrame:
-    """
-    Fill missing hourly timestamps per station using each station's
-    own min/max time range. Operates in long format — safe for large data.
-    """
-    logger.info("PREPROCESSING: FILLING MISSING TIMESTAMPS")
-
-    station_bounds = df.groupBy(*group_cols).agg(
-        f.min(time_col).alias("min_t"), f.max(time_col).alias("max_t")
-    )
-
-    # Generate hourly spine per group using sequence + explode
-    station_spines = station_bounds.withColumn(
-        time_col, f.explode(f.sequence(f.col("min_t"), f.col("max_t"), f.expr("INTERVAL 1 HOUR")))
-    ).drop("min_t", "max_t")
-
-    return station_spines.join(df, on=[*group_cols, time_col], how="left")
-
-
 def coalesce_kpi_version(
     pm_df_long: DataFrame,
     kpi_definitions: DataFrame,
