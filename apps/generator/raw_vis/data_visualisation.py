@@ -9,12 +9,11 @@ from raw_vis.data_vis_utils import (
     plot_kpi_timeline,
     schema,
 )
-from utils.consts import SHARED_DIR_PATH
+from utils.consts import RAW_DATASET_PATH
 from utils.utils import SparkDataManager
 
 sdm = SparkDataManager()
 
-RAW_DATASET_PATH = SHARED_DIR_PATH / "eda_data/raw_pm_data"
 raw_df = sdm.read_parquet(RAW_DATASET_PATH)
 
 
