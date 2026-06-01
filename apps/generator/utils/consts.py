@@ -226,3 +226,61 @@ SPARK_CONFIGS = {
         "spark.sql.execution.arrow.pyspark.enabled": "true",
     },
 }
+
+# Grouping KPIs based on agg character
+MEAN_LIKE_UNITS = ["%", "bit/s", "kbit/s", "Mbit/s", "ms", "#/s", "#/h"]
+VOLUME_UNITS = ["#"]
+
+MIN_KEYWORDS = ["min", "minimal", "minimum"]
+
+MAX_KEYWORDS = ["max", "maximal", "maximum"]
+
+AVG_KEYWORDS = ["avg", "average"]
+
+# RATIOS: telecom KPI acronyms / categories that are usually percentages
+RATIO_KEYWORDS = [
+    "cssr",  # Call Setup Success Rate
+    "hosr",  # Handover Success Rate
+    "asr",  # Answer Seizure Ratio
+    "ccr",  # Call Completion Ratio / related completion KPIs
+    "dcr",  # Drop Call Ratio
+    "bler",  # Block Error Rate
+    "fer",  # Frame Error Rate
+    "per",  # Packet Error Rate
+    "availability",
+    "accessibility",
+    "retainability",
+    "integrity",
+    "utilization",
+    "Average Time",
+    "Average Duration",
+]
+
+# MEAN-LIKE: speed / quality / radio level / delay measurements
+MEAN_LIKE_KEYWORDS = [
+    "throughput",
+    "latency",
+    "jitter",
+    "rtt",
+    "rssi",
+    "rsrp",
+    "rsrq",
+    "sinr",
+    "snr",
+    "mos",
+]
+
+# VOLUME: additive traffic / count style telecom nouns
+VOLUME_KEYWORDS = [
+    "erlang",
+    "mou",
+    "bytes",
+    "octets",
+    "attempts",
+    "packets",
+    "Total Time",
+    "Total Duration",
+    "volume",
+]
+
+MAX_IMPUTABLE_GAP = 6
