@@ -1,32 +1,31 @@
 import json
 
-from notebooks.data_vis_utils import (
+from pyspark.sql import DataFrame
+
+from raw_vis.data_vis_utils import (
     basic_info,
-    fig_to_base64,
     kpi_bts_coverage,
     kpi_catalog,
+    plot_kpi_timeline,
     schema,
 )
-from notebooks.kpi_distribution_utils import analyze_kpi
 from utils.consts import SHARED_DIR_PATH
 from utils.utils import SparkDataManager
 
 sdm = SparkDataManager()
 
 RAW_DATASET_PATH = SHARED_DIR_PATH / "eda_data/raw_pm_data"
+raw_df = sdm.read_parquet(RAW_DATASET_PATH)
 
 
-def make_summary_json(data_path):
+def make_summary_json(raw_df: DataFrame):
     """
     makes summary in json:
     - schema (df): dataset's schema and columns null %
     - basic_info (df): rows, kpi, bts and distname count, start and end date
     - kpi_catalog (df): some basic info for every kpi
     - kpi_bts_coverage_heatmap (plotly fig): shows kpi bts coverage
-
-    this process takes around 3-4 minutes to complete for the nokia raw dataset
     """
-    raw_df = sdm.read_parquet(data_path)
     summary = {
         "schema": schema(raw_df).to_dict(orient="records"),
         "basic_info": basic_info(raw_df).to_dict(orient="records")[0],
@@ -37,24 +36,11 @@ def make_summary_json(data_path):
         json.dump(summary, f_out, ensure_ascii=False, default=str)
 
 
-def make_kpi_analysis(data_path, kpi_list: list[str]):
-    """
-    Generuje JSON z wykresami (PNG base64) dla wybranych KPI.
-    """
-    raw_df = sdm.read_parquet(data_path)
-
+def make_kpi_analysis(raw_df: DataFrame, kpi_list: list[str]):
     kpi_plots = {}
-
-    for i, kpi_id in enumerate(kpi_list, 1):
-        print(f"[{i}/{len(kpi_list)}] {kpi_id}...")
-        try:
-            result = analyze_kpi(raw_df, kpi_id)
-
-            # konwertuj fig
-            kpi_plots[kpi_id] = fig_to_base64(result["figure"])
-
-        except Exception as e:
-            print(f"{kpi_id} failed: {e}")
+    for kpi in kpi_list:
+        fig = plot_kpi_timeline(raw_df, kpi)
+        kpi_plots[kpi] = json.loads(fig.to_json())
 
     analysis = {
         "kpi_list": kpi_list,
