@@ -103,6 +103,36 @@ echo "Starting environment for $USER-$USER_UID on ports: Frontend=$FRONTEND_PORT
 
 uv sync --quiet
 
+if command -v nvidia-smi &> /dev/null; then
+  if ! command -v nvidia-ctk &> /dev/null; then
+    echo "There is nvdida card installed"
+
+    curl -fsSL https://nvidia.github.io/libnvidia-container/gpgkey | sudo gpg --dearmor --yes -o /usr/share/keyrings/nvidia-container-toolkit-keyring.gpg
+    curl -s -L https://nvidia.github.io/libnvidia-container/stable/deb/nvidia-container-toolkit.list | \
+      sed 's#deb https://#deb [signed-by=/usr/share/keyrings/nvidia-container-toolkit-keyring.gpg] https://#g' | \
+      sudo tee /etc/apt/sources.list.d/nvidia-container-toolkit.list > /dev/null
+
+    sudo apt-get update
+    sudo apt-get install -y nvidia-container-toolkit jq
+
+    echo "Configuring Dockera for NVIDIA runtime..."
+    sudo nvidia-ctk runtime configure --runtime=docker
+
+    if [ -f /etc/docker/daemon.json ] && ! grep -q '"nvidia"' /etc/docker/daemon.json; then
+        echo "confilict in daemon.json"
+        cat /etc/docker/daemon.json | jq '.runtimes.nvidia = {"path": "nvidia-container-runtime", "runtimeArgs": []}' | sudo tee /etc/docker/daemon.json > /dev/null
+    fi
+
+    sudo systemctl daemon-reload
+    sudo systemctl restart docker
+    echo "Done."
+  else
+    echo "NVIDIA Container Toolkit is already installed."
+  fi
+else
+  echo "No nvidia drivers."
+fi
+
 if [ "$BUILD_MODE" = "auto" ]; then
   if docker image inspect genpm/spark-jupyter:latest >/dev/null 2>&1 && docker image inspect genpm/fastapi:latest >/dev/null 2>&1; then
     BUILD_MODE="no-build"
