@@ -1,13 +1,16 @@
-import os
+import getpass
 from pathlib import Path
 
 from dotenv import load_dotenv
 
 load_dotenv()
 
-USER = os.getenv("USER")
+# that's a more robust approach
+USER = getpass.getuser()
+# USER = os.getenv("USER")
 
 SHARED_DIR_PATH = Path(f"/home/{USER}/app/apps/apps/generator/data/shared_dir")
+RAW_DATASET_PATH = SHARED_DIR_PATH / "eda_data/raw_pm_data"
 
 SPARK_CHECKPOINT_PATH = SHARED_DIR_PATH / "tmp" / "checkpoints"
 
