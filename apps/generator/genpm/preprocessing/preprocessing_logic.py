@@ -232,8 +232,9 @@ def raw_pm_preperation(pm_df_long: DataFrame) -> DataFrame:
 
 
 def iqr_kpi_outlier_detection(pm_df_long: DataFrame, k: float = 1.5) -> DataFrame:
-    # ── 1. Compute IQR bounds per (distname, kpi_id) ──────────────────────────────
+    logger.info("IQR OUTLIERS CALCULATIONS")
 
+    # ── 1. Compute IQR bounds per (distname, kpi_id) ──────────────────────────────
     bounds = (
         pm_df_long.groupBy("distname", "kpi_id")
         .agg(
@@ -254,7 +255,7 @@ def iqr_kpi_outlier_detection(pm_df_long: DataFrame, k: float = 1.5) -> DataFram
     )
 
     df_outliers_dropped = pm_df_with_bounds.withColumn(
-        "kpi_id", f.when(~outlier_mask, f.col("kpi_id"))
+        "kpi_value", f.when(~outlier_mask, f.col("kpi_value"))
     )
 
     return df_outliers_dropped.drop("lower_iqr_bound", "upper_iqr_bound")
@@ -273,19 +274,26 @@ def pop_constant_kpis(pm_df_long: DataFrame) -> tuple[DataFrame, DataFrame]:
         tuple[DataFrame, DataFrame]: PM data dataframe with const kpis removed, a dataframe
         containing information about the constant kpi_id, its constant value
     """
+    # Cheaper than count_distinct: no HyperLogLog, just two simple aggregations
     constant_kpis = (
         pm_df_long.groupBy("kpi_id")
         .agg(
-            # check what kpis are contant
-            f.count_distinct("kpi_value").alias("kpi_value_distinct_count"),
+            f.min("kpi_value").alias("kpi_value_min"),
+            f.max("kpi_value").alias("kpi_value_max"),
             f.first("kpi_value").alias("kpi_value"),
         )
-        # Only one? Or threshold and (mean, min?, max?)
-        .where(f.col("kpi_value_distinct_count") == 1)
+        .where(f.col("kpi_value_min") == f.col("kpi_value_max"))
+        .select("kpi_id", "kpi_value")
     )
 
-    # logger.info(f"CONSTANT KPIs FOUND: {constant_kpis.count()}")
-    # drop those kpis from data
-    pm_df_long_no_constant_kpis = pm_df_long.join(constant_kpis, on="kpi_id", how="left_anti")
+    # Cache to avoid recomputing the groupBy when the join triggers a second scan
+    constant_kpis.cache()
+    constant_kpis.count()  # materialize eagerly
+
+    pm_df_long_no_constant_kpis = pm_df_long.join(
+        constant_kpis.select("kpi_id"),  # only need kpi_id for the anti-join
+        on="kpi_id",
+        how="left_anti",
+    )
 
     return pm_df_long_no_constant_kpis, constant_kpis

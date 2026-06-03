@@ -2,15 +2,76 @@ import numpy as np
 import pandas as pd
 import plotly.graph_objects as go
 import scipy.stats as stats
-from kpi_distribution_utils import _fit_distributions, _pettitt_test, _pull_kpi
 from plotly.subplots import make_subplots
 from pyspark.sql import DataFrame
 from pyspark.sql import functions as f
 
-from utils.utils import SparkDataManager
+from genpm.utils.utils import SparkDataManager
 
 # use spark session if needed
 sdm = SparkDataManager()
+
+
+def _fit_distributions(
+    values: np.ndarray,
+) -> list[dict]:
+    """Fit a set of candidate distributions and return sorted goodness-of-fit."""
+    candidates = {
+        "norm": stats.norm,
+        "lognorm": stats.lognorm,
+        "gamma": stats.gamma,
+        "expon": stats.expon,
+        "weibull_min": stats.weibull_min,
+        "beta": stats.beta,
+        "cauchy": stats.cauchy,
+        "laplace": stats.laplace,
+    }
+    results = []
+    for name, dist in candidates.items():
+        try:
+            params = dist.fit(values)
+            D, p = stats.kstest(values, name, args=params)
+            # AIC proxy: 2k - 2*logL
+            log_l = np.sum(dist.logpdf(values, *params))
+            aic = 2 * len(params) - 2 * log_l
+            results.append(dict(distribution=name, ks_stat=D, ks_pvalue=p, aic=aic, params=params))
+        except Exception:
+            pass
+    return sorted(results, key=lambda r: r["aic"])
+
+
+def _pull_kpi(df: DataFrame, kpi: str) -> pd.DataFrame:
+    """Filter to one KPI and aggregate mean over all bts/distname per timestamp."""
+    return (
+        df.filter(f.col("kpi_id") == kpi)
+        .groupBy("start_time")
+        .agg(
+            f.mean("kpi_value").alias("mean_value"),
+            f.stddev("kpi_value").alias("std_value"),
+            f.count("kpi_value").alias("n"),
+        )
+        .orderBy("start_time")
+        .toPandas()
+        .assign(start_time=lambda d: pd.to_datetime(d["start_time"]))
+    )
+
+
+def _pettitt_test(series: np.ndarray) -> tuple[int, float]:
+    """
+    Non-parametric Pettitt change-point test.
+    Uses the recurrence U_t = U_{t-1} + sum(sign(series[t] - series[j]), j=0..t-1)
+    which avoids the shape-mismatch from naively splitting at t=0.
+    Returns (change_point_index, approx_p_value).
+    """
+    n = len(series)
+    # U[t] is built incrementally: each step adds sign(x[t] - x[j]) for all j < t
+    U = np.zeros(n, dtype=float)
+    for t in range(1, n):
+        U[t] = U[t - 1] + np.sum(np.sign(series[t] - series[:t]))
+    K = int(np.argmax(np.abs(U)))
+    T = np.max(np.abs(U))
+    p = 2.0 * np.exp(-6.0 * T**2 / (n**3 + n**2))
+    return K, float(p)
 
 
 def plot_kpi_timeline(
