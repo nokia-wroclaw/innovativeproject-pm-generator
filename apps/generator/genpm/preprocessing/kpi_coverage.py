@@ -1,5 +1,7 @@
+import numpy as np
 from pyspark.sql import DataFrame, Window
 from pyspark.sql import functions as f
+from pyspark.sql.types import LongType
 
 from genpm.utils.consts import MAX_IMPUTABLE_GAP
 from genpm.utils.logger import get_logger
@@ -146,6 +148,11 @@ def filter_gap_pattern(
     for the imputation-guard role and targeted different failure modes.
     This version asks one question: of all null runs in this KPI, what fraction
     are short enough to impute safely (≤ max_imputable_gap hours)?
+
+
+    Window A: ████░░████░░████░░████  (density=0.86, max_gap=2h  — safe)
+    Window B: ████████████░░░░░░░░░░  (density=0.86, max_gap=24h — destroys
+                                        an entire night period)
 
     A KPI where 95 % of gaps are 1–6 h passes, regardless of how many gaps
     there are or how they are spaced.  A KPI with many long gaps fails even if
@@ -353,6 +360,66 @@ def fill_internal_gaps(
 # ═══════════════════════════════════════════════════════════════════════════
 # Stage 2 – Sparse sliding-window density  (replaces compute_window_density)
 # ═══════════════════════════════════════════════════════════════════════════
+
+
+def build_pm_windows_anchor_df(
+    df: DataFrame,
+    *,
+    window_hours: int = 168,
+    stride_hours: int = 24,
+):
+    """
+    Creates a dataframe of **training windows** for every distname (cell)
+
+    1. Broadcast the distname-level time origin (earliest timestamp across all
+       KPIs in the distname).  This is the reference for stride-aligned anchors.
+
+    2. For every data row compute the hourly offset from the distname origin.
+
+    3. Determine the ≤ W/S stride-aligned anchor indices whose window
+       [anchor, anchor + W) contains this row, and ``explode`` them.
+       With W = 168 and S = 24 each row maps to at most 7 anchors.
+
+    """
+
+    n_overlap = window_hours // stride_hours  # 7 for W=168, S=24
+    window_end_offset_s = (window_hours - 1) * 3600  # seconds
+
+    # ── distname-level origin (broadcast-safe) ──────────────────────────
+    distname_origin = df.groupBy("distname").agg(
+        f.min(f.unix_timestamp("start_time")).alias("dist_origin_epoch"),
+    )
+
+    base = (
+        df.join(f.broadcast(distname_origin), on="distname")
+        .withColumn("row_epoch", f.unix_timestamp("start_time"))
+        .withColumn(
+            "offset_h",
+            ((f.col("row_epoch") - f.col("dist_origin_epoch")) / 3600).cast("long"),
+        )
+    )
+
+    # ── explode into anchor memberships ────────────────────────────────
+    #
+    # A row at offset_h belongs to anchors k where
+    #     k × stride  ≤  offset_h  <  k × stride + window_hours
+    # ⇒   k  ∈  [ max(0, ⌊(offset_h − W + 1)/S⌋ + 1) …  ⌊offset_h/S⌋ ]
+    #
+    # Simplified: k ∈ [ max(0, max_k − (n_overlap − 1)) …  max_k ]
+    with_anchors = (
+        base.withColumn("max_k", f.floor(f.col("offset_h") / f.lit(stride_hours)).cast("long"))
+        .withColumn(
+            "min_k",
+            f.greatest(f.lit(0).cast("long"), f.col("max_k") - f.lit(n_overlap - 1)),
+        )
+        .withColumn("anchor_k", f.explode(f.sequence(f.col("min_k"), f.col("max_k"))))
+        .withColumn(
+            "anchor_epoch",
+            f.col("dist_origin_epoch") + f.col("anchor_k") * f.lit(stride_hours * 3600),
+        )
+    )
+
+    return with_anchors
 
 
 def compute_window_density_sparse(
@@ -739,6 +806,7 @@ def compute_kpi_yield_stats(
 # ═══════════════════════════════════════════════════════════════════════════
 
 
+# DROP THIS SHITE
 def filter_temporal_stability(
     good_windows: DataFrame,
     *,
@@ -772,7 +840,7 @@ def filter_variance(
     aligned_df: DataFrame,
     good_windows: DataFrame,
     *,
-    min_cv: float = 0.01,
+    min_std_val: float = 0.01,
     max_zero_frac: float = 0.95,
 ) -> list[str]:
     """Reject KPIs with near-zero variance or near-constant zero values."""
@@ -782,27 +850,15 @@ def filter_variance(
         how="inner",
     ).filter(f.col("kpi_value").isNotNull())
 
-    stats = (
-        valid_values.groupBy("kpi_id")
-        .agg(
-            f.mean("kpi_value").alias("mean_val"),
-            f.stddev("kpi_value").alias("std_val"),
-            (f.sum(f.when(f.col("kpi_value") == 0, 1).otherwise(0)) / f.count("*")).alias(
-                "zero_frac"
-            ),
-        )
-        .withColumn(
-            "cv",
-            f.when(
-                f.col("mean_val") != 0,
-                f.abs(f.col("std_val") / f.col("mean_val")),
-            ).otherwise(f.lit(0.0)),
-        )
+    stats = valid_values.groupBy("kpi_id").agg(
+        f.mean("kpi_value").alias("mean_val"),
+        f.stddev("kpi_value").alias("std_val"),
+        (f.sum(f.when(f.col("kpi_value") == 0, 1).otherwise(0)) / f.count("*")).alias("zero_frac"),
     )
 
     return (
         stats.filter(f.col("zero_frac") <= max_zero_frac)
-        .filter(f.col("cv") >= min_cv)
+        .filter(f.col("std_val") >= min_std_val)
         .select("kpi_id")
         .rdd.flatMap(lambda r: [r["kpi_id"]])
         .collect()
@@ -877,55 +933,177 @@ def prefilter_kpis(
 # ═══════════════════════════════════════════════════════════════════════════
 # Stage 7 – Greedy joint KPI selection  (unchanged)
 # ═══════════════════════════════════════════════════════════════════════════
+def greedy_coverage_curve(
+    good_windows: DataFrame,
+    candidates: list[str],
+) -> list[dict]:
+    """Run greedy selection with no floor, recording the full coverage curve.
+    Returns a list of dicts with step, kpi_id, joint_windows for elbow analysis.
+    """
+    # Same one-scan upfront collection as before
+    rows = (
+        good_windows.withColumn("start_time", f.col("start_time").cast("string"))
+        .groupBy("kpi_id", "distname")
+        .agg(f.collect_set("start_time").alias("anchors"))
+        .collect()
+    )
+
+    kpi_coverage: dict[str, set[tuple[str, str]]] = {}
+    for row in rows:
+        pairs = {(row["distname"], anchor) for anchor in row["anchors"]}
+        if row["kpi_id"] not in kpi_coverage:
+            kpi_coverage[row["kpi_id"]] = set()
+        kpi_coverage[row["kpi_id"]] |= pairs
+
+    available = [k for k in candidates if k in kpi_coverage]
+    best_seed = max(available, key=lambda k: len(kpi_coverage[k]))
+    selected = [best_seed]
+    current_intersection = kpi_coverage[best_seed].copy()
+    available.remove(best_seed)
+
+    curve = [{"step": 1, "kpi_id": best_seed, "joint_windows": len(current_intersection)}]
+
+    step = 2
+    while available:
+        best_kpi, best_next, best_count = None, None, -1
+        for kpi in available:
+            tentative = current_intersection & kpi_coverage[kpi]
+            count = len(tentative)
+            if count > best_count:
+                best_count, best_kpi, best_next = count, kpi, tentative
+
+        selected.append(best_kpi)
+        current_intersection = best_next
+        available.remove(best_kpi)
+        curve.append({"step": step, "kpi_id": best_kpi, "joint_windows": best_count})
+        step += 1
+
+    return curve
+
+
+def find_elbow(curve: list[dict]) -> int:
+    """Return the step index at the elbow of the coverage curve."""
+    counts = np.array([r["joint_windows"] for r in curve], dtype=float)
+
+    # First derivative: coverage loss per step
+    d1 = np.diff(counts)  # negative values — each step loses windows
+
+    # Second derivative: rate of change of loss
+    # A large negative value means coverage started dropping much faster
+    d2 = np.diff(d1)
+
+    # Elbow = where second derivative is most negative
+    # +1 offset because diff reduces length by 1 each time
+    elbow_idx = int(np.argmin(d2)) + 1
+
+    return elbow_idx
+
+
+def suggest_threshold(curve: list[dict], elbow_idx: int) -> int:
+    """Return the joint_windows value just before the elbow — conservative threshold."""
+    # Use the step before the elbow as the threshold — that's where
+    # coverage is still healthy before the cliff
+    safe_idx = max(0, elbow_idx - 1)
+    return curve[safe_idx]["joint_windows"]
 
 
 def greedy_joint_kpi_selection(
     good_windows: DataFrame,
     candidates: list[str],
-    theoretical_max_joint: int,
     *,
-    min_joint_coverage_frac: float = 0.90,
-    min_joint_windows_abs: int = 10_000,
+    min_joint_windows_abs: int | None = None,
 ) -> list[str]:
-    """Greedily build the largest KPI set whose joint window count stays above floor."""
-    min_joint_windows = max(
-        int(min_joint_coverage_frac * theoretical_max_joint),
-        min_joint_windows_abs,
-    )
-    logger.info(
-        f"[greedy] floor = max("
-        f"{min_joint_coverage_frac:.0%} × {theoretical_max_joint:,}, "
-        f"{min_joint_windows_abs:,}) "
-        f"= {min_joint_windows:,}"
-    )
+    """Greedily build the largest KPI set whose joint window count stays above floor.
 
-    selected: list[str] = []
-
-    for idx, kpi in enumerate(candidates):
-        tentative = selected + [kpi]
-        n = len(tentative)
-
-        joint_count = (
-            good_windows.filter(f.col("kpi_id").isin(tentative))
-            .groupBy("distname", "start_time")
-            .agg(f.count("*").alias("n_good_kpis"))
-            .filter(f.col("n_good_kpis") == n)
-            .count()
+    A 'joint window' is a unique (distname, start_time) pair where every
+    selected KPI has data. Each such pair represents one training sample.
+    """
+    if min_joint_windows_abs is None:
+        logger.info(
+            "[elbow] min_joint_windows_abs not selected - defaulting to elbow method of selection"
         )
+        curve = greedy_coverage_curve(good_windows, candidates)
 
-        if joint_count >= min_joint_windows:
-            selected.append(kpi)
+        # Find elbow
+        elbow_idx = find_elbow(curve)
+        suggested_threshold = suggest_threshold(curve, elbow_idx)
+        suggested_n_kpis = elbow_idx  # number of KPIs at the elbow
+
+        logger.info(
+            f"[elbow] suggested cutoff: {suggested_n_kpis} KPIs "
+            f"| joint_windows at elbow: {suggested_threshold:,}"
+        )
+        min_joint_windows = suggested_threshold
+    else:
+        min_joint_windows = min_joint_windows_abs
+
+    logger.info(f"{min_joint_windows=}")
+
+    # Build kpi_id → set of (distname, start_time) anchor pairs in one pass.
+    # After this, all greedy logic is pure Python set operations
+    rows = (
+        good_windows.withColumn("start_time", f.col("start_time").cast("string"))  # safe hashing
+        .groupBy("kpi_id", "distname")
+        .agg(f.collect_set("start_time").alias("anchors"))
+        .collect()
+    )
+
+    kpi_coverage: dict[str, set[tuple[str, str]]] = {}
+    for row in rows:
+        pairs = {(row["distname"], anchor) for anchor in row["anchors"]}
+        if row["kpi_id"] not in kpi_coverage:
+            kpi_coverage[row["kpi_id"]] = set()
+        kpi_coverage[row["kpi_id"]] |= pairs
+
+    # We explicitly pick the KPI with the most coverage as the seed.
+    available = [k for k in candidates if k in kpi_coverage]
+    best_seed = max(available, key=lambda k: len(kpi_coverage[k]))
+    selected: list[str] = [best_seed]
+    current_intersection: set[tuple[str, str]] = kpi_coverage[best_seed].copy()
+    available.remove(best_seed)
+
+    logger.info(f"[greedy] seed '{best_seed}' " f"| coverage={len(current_intersection):,}")
+
+    # ── Bug fix 3: true greedy — pick best candidate at each step ──────────
+    # Original code iterated candidates in fixed order, accepting each one
+    # that passed the threshold. That is not greedy — it is a sequential
+    # filter. True greedy means: at each step, among all remaining candidates,
+    # pick the one that loses the fewest windows from current_intersection.
+    # This produces a better KPI set for the same coverage floor.
+    step = 1
+    while available:
+        best_kpi: str | None = None
+        best_next_intersection: set[tuple[str, str]] | None = None
+        best_count = -1
+
+        for kpi in available:
+            tentative_intersection = current_intersection & kpi_coverage[kpi]
+            count = len(tentative_intersection)
+            if count > best_count:
+                best_count = count
+                best_kpi = kpi
+                best_next_intersection = tentative_intersection
+
+        # If even the best candidate drops below floor, stop entirely —
+        # no remaining candidate can do better than the least-damaging one.
+        if best_count < min_joint_windows:
             logger.info(
-                f"[greedy] step {idx + 1:>4d} | accepted '{kpi}' "
-                f"| selected={len(selected):>4d} "
-                f"| joint_windows={joint_count:,} "
-                f"({joint_count / theoretical_max_joint:.1%} of theoretical max)"
+                f"[greedy] stopping at step {step} — "
+                f"best candidate '{best_kpi}' would reduce coverage "
+                f"to {best_count:,} < {min_joint_windows:,}"
             )
-        else:
-            logger.info(
-                f"[greedy] step {idx + 1:>4d} | SKIPPED  '{kpi}' "
-                f"| joint_windows={joint_count:,} < {min_joint_windows:,}"
-            )
+            break
+
+        selected.append(best_kpi)
+        current_intersection = best_next_intersection
+        available.remove(best_kpi)
+
+        logger.info(
+            f"[greedy] step {step:>4d} | accepted '{best_kpi}' "
+            f"| selected={len(selected):>4d} "
+            f"| joint_windows={best_count:,} "
+        )
+        step += 1
 
     return selected
 
@@ -933,12 +1111,55 @@ def greedy_joint_kpi_selection(
 # ═══════════════════════════════════════════════════════════════════════════
 # Stage 8 – Extract valid training data  (with deferred densification)
 # ═══════════════════════════════════════════════════════════════════════════
+def attach_windows_index_to_pm(
+    pm_df_long_imputed_selected: DataFrame,
+    good_windows: DataFrame,
+    window_hours: int = 168,
+):
+    # Step 1: add window_end to good_windows for the range join
+    good_windows_with_end = good_windows.withColumn(
+        "window_end", f.col("start_time") + f.expr(f"INTERVAL {window_hours} HOURS")
+    ).withColumnRenamed("start_time", "window_anchor")
+
+    # Step 2: range join — each hourly row maps to all anchors it falls within
+    # Join keys: distname + kpi_id (a row only belongs to windows of its own cell/kpi)
+    joined = (
+        pm_df_long_imputed_selected.alias("p")
+        .join(
+            good_windows_with_end.alias("g"),
+            on=[
+                pm_df_long_imputed_selected.distname == good_windows_with_end.distname,
+                pm_df_long_imputed_selected.kpi_id == good_windows_with_end.kpi_id,
+                pm_df_long_imputed_selected.start_time >= good_windows_with_end.window_anchor,
+                pm_df_long_imputed_selected.start_time < good_windows_with_end.window_end,
+            ],
+            how="inner",
+        )
+        .select("p.*", "g.window_anchor")
+    )
+
+    # Step 3: compute hour_idx — position within the window
+    indexed = joined.withColumn(
+        "hour_idx",
+        (
+            (f.col("start_time").cast(LongType()) - f.col("window_anchor").cast(LongType())) / 3600
+        ).cast("integer"),
+    ).select(
+        "distname",
+        "bts_id",
+        "kpi_id",
+        f.col("window_anchor"),
+        "hour_idx",
+        "kpi_value",
+        "imputed_flag",
+    )
+
+    return indexed
 
 
 def extract_valid_pm_windows(
-    raw_df: DataFrame,
-    good_windows: DataFrame,
-    selected_kpis: list[str],
+    pm_df: DataFrame,
+    training_windows_anchors: DataFrame,
     *,
     window_hours: int = 168,
 ) -> DataFrame:
@@ -963,8 +1184,6 @@ def extract_valid_pm_windows(
         Raw (or per-KPI gap-filled) long-format data.
     good_windows : DataFrame
         All-filters-passing anchor DataFrame restricted to selected KPIs.
-    selected_kpis : list[str]
-        Final KPI list from ``greedy_joint_kpi_selection``.
     window_hours : int
         Window width in hours.
 
@@ -981,11 +1200,7 @@ def extract_valid_pm_windows(
     #
     # Distinct (distname, start_time) anchors — KPI-agnostic, because the
     # greedy stage already ensured all selected KPIs share these anchors.
-    distinct_anchors = (
-        good_windows.filter(f.col("kpi_id").isin(selected_kpis))
-        .select("distname", "start_time")
-        .distinct()
-    )
+    distinct_anchors = training_windows_anchors.select("distname", "start_time").distinct()
 
     anchor_spines = distinct_anchors.withColumn(
         "window_time",
@@ -999,18 +1214,14 @@ def extract_valid_pm_windows(
     )
 
     # ── cross with selected KPIs ───────────────────────────────────────
-    kpi_dims = (
-        raw_df.filter(f.col("kpi_id").isin(selected_kpis))
-        .select("distname", "kpi_id", "bts_id")
-        .distinct()
-    )
+    kpi_dims = pm_df.select("distname", "kpi_id", "bts_id").distinct()
 
     full_grid = anchor_spines.join(kpi_dims, on="distname", how="inner")
 
     # ── left-join actual values ────────────────────────────────────────
     covered = (
         full_grid.join(
-            raw_df.filter(f.col("kpi_id").isin(selected_kpis)).select(
+            pm_df.select(
                 "distname",
                 "kpi_id",
                 "bts_id",
@@ -1192,26 +1403,27 @@ def pm_data_kpi_coverage(
     # ------------------------------------------------------------------
     # Stage 5b: temporal stability filter
     # ------------------------------------------------------------------
-    logger.info("Stage 5b: applying temporal stability filter ...")
-    total_weeks_in_dataset = (
-        pm_df.select(f.date_trunc("week", "start_time").alias("week")).distinct().count()
-    )
-    stable_kpis = filter_temporal_stability(
-        good_windows_all,
-        min_weeks_with_good_windows=min_weeks_with_good_windows,
-        total_weeks_in_dataset=total_weeks_in_dataset,
-        min_frac_weeks_covered=min_frac_weeks_covered,
-    )
-    logger.info(f"  {len(stable_kpis)} KPIs pass temporal stability.")
+    # logger.info("Stage 5b: applying temporal stability filter ...")
+    # total_weeks_in_dataset = (
+    #     pm_df.select(f.date_trunc("week", "start_time").alias("week")).distinct().count()
+    # )
+    # stable_kpis = filter_temporal_stability(
+    #     good_windows_all,
+    #     min_weeks_with_good_windows=min_weeks_with_good_windows,
+    #     total_weeks_in_dataset=total_weeks_in_dataset,
+    #     min_frac_weeks_covered=min_frac_weeks_covered,
+    # )
+    # logger.info(f"  {len(stable_kpis)} KPIs pass temporal stability.")
 
     # ------------------------------------------------------------------
     # Stage 5c: variance filter
     # ------------------------------------------------------------------
+    # TODO: FIX
     logger.info("Stage 5c: applying variance filter ...")
     variant_kpis = filter_variance(
         gap_filled_df,
         good_windows_all,
-        min_cv=min_cv,
+        min_std_val=min_cv,
         max_zero_frac=max_zero_frac,
     )
     logger.info(f"  {len(variant_kpis)} KPIs pass variance filter.")
@@ -1219,18 +1431,20 @@ def pm_data_kpi_coverage(
     # ------------------------------------------------------------------
     # Stage 5d: cross-cell consistency filter
     # ------------------------------------------------------------------
-    logger.info("Stage 5d: applying cross-cell consistency filter ...")
-    consistent_kpis = filter_cross_cell_consistency(
-        gap_filled_df,
-        good_windows_all,
-        max_iqr_ratio=max_iqr_ratio,
-    )
-    logger.info(f"  {len(consistent_kpis)} KPIs pass consistency filter.")
+
+    # MAYBE DROP? LOOSE THRESHOLD
+    # logger.info("Stage 5d: applying cross-cell consistency filter ...")
+    # consistent_kpis = filter_cross_cell_consistency(
+    #     gap_filled_df,
+    #     good_windows_all,
+    #     max_iqr_ratio=max_iqr_ratio,
+    # )
+    # logger.info(f"  {len(consistent_kpis)} KPIs pass consistency filter.")
 
     # ------------------------------------------------------------------
     # Intersect all Stage 5 filter survivors
     # ------------------------------------------------------------------
-    quality_survivors = set(stable_kpis) & set(variant_kpis) & set(consistent_kpis)
+    quality_survivors = set(variant_kpis)
     logger.info(f"  {len(quality_survivors)} KPIs survive all Stage-5 quality filters.")
 
     kpi_stats_filtered = kpi_stats.filter(f.col("kpi_id").isin(list(quality_survivors)))

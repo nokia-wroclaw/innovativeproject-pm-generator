@@ -1,6 +1,8 @@
+import atexit
 import os
 import re
 import shutil
+import signal
 import subprocess
 from functools import reduce
 from pathlib import Path
@@ -60,6 +62,21 @@ class SparkDataManager:
 
         self.spark.sparkContext.setCheckpointDir(checkpoint_directory)
         logger.warning(f"CHECKPOINT DIR SET TO {checkpoint_directory}")
+
+        # STOPPING FUNCTIONS TO RESERVE SPACE AT ALL TIMES
+
+        # Fires on normal exit and unhandled exceptions
+        atexit.register(self._stop_spark)
+
+        # Fires on SIGTERM (e.g. container stop, Airflow kill)
+        signal.signal(signal.SIGTERM, lambda sig, frame: self._stop_spark())
+        # Fires on SIGINT (Ctrl+C)
+        signal.signal(signal.SIGINT, lambda sig, frame: self._stop_spark())
+
+    def _stop_spark(self):
+        if self.spark:
+            self.spark.stop()
+            self.spark = None  # type: ignore
 
     @staticmethod
     def minio_spark_conf():
