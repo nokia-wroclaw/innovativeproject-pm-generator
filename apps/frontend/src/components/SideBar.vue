@@ -7,6 +7,7 @@
 
     <nav class="menu">
       <router-link
+        v-if="isAdmin"
         to="/dags"
         class="menu-item"
         :class="{ 'router-link-active': isDagsSection }"

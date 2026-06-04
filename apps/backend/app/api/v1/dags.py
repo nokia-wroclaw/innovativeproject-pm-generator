@@ -9,7 +9,7 @@ from typing import Any
 from fastapi import APIRouter, Depends, Query, Request
 from sse_starlette.sse import EventSourceResponse
 
-from app.core.auth import require_admin, require_auth
+from app.core.auth import require_admin
 from app.models.dags import (
     ActionResponse,
     DagDetails,
@@ -27,7 +27,11 @@ from app.services.airflow.service import AirflowService
 
 logger = logging.getLogger(__name__)
 
-router = APIRouter(prefix="/dags", tags=["dags"])
+router = APIRouter(
+    prefix="/dags",
+    tags=["dags"],
+    dependencies=[Depends(require_admin)],
+)
 
 
 def _service() -> AirflowService:
@@ -40,7 +44,6 @@ def _identity(payload: dict[str, Any]) -> str | None:
 
 @router.get("", response_model=list[DagSummary])
 async def list_dags(
-    _user: dict[str, Any] = Depends(require_auth),
     service: AirflowService = Depends(_service),
 ) -> list[DagSummary]:
     return await service.list_dags()
@@ -49,7 +52,6 @@ async def list_dags(
 @router.get("/{dag_id}", response_model=DagDetails)
 async def get_dag_details(
     dag_id: str,
-    _user: dict[str, Any] = Depends(require_auth),
     service: AirflowService = Depends(_service),
 ) -> DagDetails:
     return await service.get_dag_details(dag_id)
@@ -60,7 +62,6 @@ async def list_dag_runs(
     dag_id: str,
     limit: int = Query(50, ge=1, le=200),
     offset: int = Query(0, ge=0),
-    _user: dict[str, Any] = Depends(require_auth),
     service: AirflowService = Depends(_service),
 ) -> list[DagRunSummary]:
     return await service.list_dag_runs(dag_id, limit=limit, offset=offset)
@@ -70,7 +71,6 @@ async def list_dag_runs(
 async def list_task_instances(
     dag_id: str,
     run_id: str,
-    _user: dict[str, Any] = Depends(require_auth),
     service: AirflowService = Depends(_service),
 ) -> list[TaskInstance]:
     return await service.list_task_instances(dag_id, run_id)
@@ -81,7 +81,6 @@ async def get_task_instance(
     dag_id: str,
     run_id: str,
     task_id: str,
-    _user: dict[str, Any] = Depends(require_auth),
     service: AirflowService = Depends(_service),
 ) -> TaskInstance:
     return await service.get_task_instance(dag_id, run_id, task_id)
@@ -95,7 +94,6 @@ async def list_task_tries(
     dag_id: str,
     run_id: str,
     task_id: str,
-    _user: dict[str, Any] = Depends(require_auth),
     service: AirflowService = Depends(_service),
 ) -> list[TaskTry]:
     return await service.list_task_tries(dag_id, run_id, task_id)
@@ -108,7 +106,6 @@ async def get_task_logs(
     task_id: str,
     try_number: int = Query(..., ge=1),
     token: str | None = Query(None),
-    _user: dict[str, Any] = Depends(require_auth),
     service: AirflowService = Depends(_service),
 ) -> LogChunk:
     return await service.get_task_logs_page(
@@ -178,7 +175,6 @@ async def stream_task_logs(
     run_id: str,
     task_id: str,
     try_number: int = Query(..., ge=1),
-    _user: dict[str, Any] = Depends(require_auth),
     service: AirflowService = Depends(_service),
 ) -> EventSourceResponse:
     settings = get_airflow_settings()

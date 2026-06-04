@@ -7,20 +7,26 @@ import S3 from '../views/S3.vue'
 const routes = [
   {
     path: '/',
-    redirect: '/dags',
+    redirect: () => (hasAdminRole() ? '/dags' : '/generate'),
   },
   {
     path: '/dags',
     name: 'DAGs',
     component: Dags,
-    meta: { description: 'Manage and monitor your Airflow DAGs.' },
+    meta: {
+      description: 'Manage and monitor your Airflow DAGs.',
+      requiresAdmin: true,
+    },
   },
   {
     path: '/dags/:dagId',
     name: 'DAG details',
     component: DagDetail,
     props: true,
-    meta: { description: 'Interactive DAG graph, task instances and logs.' },
+    meta: {
+      description: 'Interactive DAG graph, task instances and logs.',
+      requiresAdmin: true,
+    },
   },
   {
     path: '/s3',
