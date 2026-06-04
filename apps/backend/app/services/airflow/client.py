@@ -1,6 +1,6 @@
 import logging
-from datetime import datetime, timezone
-from typing import Any
+from datetime import UTC, datetime
+from typing import Any, cast
 from urllib.parse import quote
 
 import httpx
@@ -59,9 +59,7 @@ class AirflowClient:
     async def get_dag(self, dag_id: str) -> dict[str, Any]:
         return await self._request("GET", f"/dags/{_path_segment(dag_id)}")
 
-    async def patch_dag(
-        self, dag_id: str, *, is_paused: bool | None = None
-    ) -> dict[str, Any]:
+    async def patch_dag(self, dag_id: str, *, is_paused: bool | None = None) -> dict[str, Any]:
         body: dict[str, Any] = {}
         update_mask: list[str] = []
         if is_paused is not None:
@@ -92,9 +90,7 @@ class AirflowClient:
         params: dict[str, Any] = {"limit": limit, "offset": offset, "order_by": order_by}
         if start_date_gte is not None:
             params["start_date_gte"] = start_date_gte
-        return await self._request(
-            "GET", f"/dags/{_path_segment(dag_id)}/dagRuns", params=params
-        )
+        return await self._request("GET", f"/dags/{_path_segment(dag_id)}/dagRuns", params=params)
 
     async def get_dag_run(self, dag_id: str, run_id: str) -> dict[str, Any]:
         return await self._request(
@@ -108,18 +104,14 @@ class AirflowClient:
             f"/dags/{_path_segment(dag_id)}/dagRuns/{_path_segment(run_id)}/taskInstances",
         )
 
-    async def get_task_instance(
-        self, dag_id: str, run_id: str, task_id: str
-    ) -> dict[str, Any]:
+    async def get_task_instance(self, dag_id: str, run_id: str, task_id: str) -> dict[str, Any]:
         return await self._request(
             "GET",
             f"/dags/{_path_segment(dag_id)}/dagRuns/{_path_segment(run_id)}"
             f"/taskInstances/{_path_segment(task_id)}",
         )
 
-    async def list_task_tries(
-        self, dag_id: str, run_id: str, task_id: str
-    ) -> dict[str, Any]:
+    async def list_task_tries(self, dag_id: str, run_id: str, task_id: str) -> dict[str, Any]:
         return await self._request(
             "GET",
             f"/dags/{_path_segment(dag_id)}/dagRuns/{_path_segment(run_id)}"
@@ -171,9 +163,7 @@ class AirflowClient:
             body["conf"] = conf
         if note is not None:
             body["note"] = note
-        raw = await self._request(
-            "POST", f"/dags/{_path_segment(dag_id)}/dagRuns", json=body
-        )
+        raw = await self._request("POST", f"/dags/{_path_segment(dag_id)}/dagRuns", json=body)
         logger.info(
             "trigger_dag %s dag_run_id=%s response_keys=%s",
             dag_id,
@@ -224,16 +214,12 @@ class AirflowClient:
         if self._client is None:
             raise AirflowUnavailable("Airflow client not started")
         try:
-            response = await self._client.get(
-                f"{self._settings.base_url}/api/v2/monitor/health"
-            )
+            response = await self._client.get(f"{self._settings.base_url}/api/v2/monitor/health")
         except httpx.HTTPError as exc:
             raise AirflowUnavailable(f"Cannot reach Airflow: {exc}") from exc
         if response.status_code >= 500:
-            raise AirflowUnavailable(
-                f"Airflow health returned {response.status_code}"
-            )
-        return response.json()
+            raise AirflowUnavailable(f"Airflow health returned {response.status_code}")
+        return cast(dict[str, Any], response.json())
 
     async def _request(
         self,
@@ -258,18 +244,14 @@ class AirflowClient:
         async for attempt_ctx in retrying:
             with attempt_ctx:
                 attempt += 1
-                response = await self._send(
-                    method, path, params=params, json=json, accept=accept
-                )
+                response = await self._send(method, path, params=params, json=json, accept=accept)
                 if response.status_code in _RETRYABLE_STATUSES:
                     raise AirflowUnavailable(
                         f"Airflow returned {response.status_code} on {method} {path}"
                     )
                 return self._handle_response(method, path, response)
 
-        raise AirflowUnavailable(
-            f"Exhausted retries for {method} {path}"
-        )
+        raise AirflowUnavailable(f"Exhausted retries for {method} {path}")
 
     async def _send(
         self,
@@ -296,27 +278,26 @@ class AirflowClient:
 
         logger.info(
             "airflow %s %s -> %d (%d bytes)",
-            method, path, response.status_code, len(response.content or b""),
+            method,
+            path,
+            response.status_code,
+            len(response.content or b""),
         )
 
         if response.status_code == 401:
             await self._auth.invalidate()
-            raise AirflowAuthFailed(
-                "Airflow rejected our service-account JWT (will retry once)"
-            )
+            raise AirflowAuthFailed("Airflow rejected our service-account JWT (will retry once)")
 
         return response
 
-    def _handle_response(
-        self, method: str, path: str, response: httpx.Response
-    ) -> dict[str, Any]:
+    def _handle_response(self, method: str, path: str, response: httpx.Response) -> dict[str, Any]:
         status_code = response.status_code
 
         if 200 <= status_code < 300:
             if status_code == 204 or not response.content:
                 return {}
             try:
-                return response.json()
+                return cast(dict[str, Any], response.json())
             except ValueError as exc:
                 raise AirflowIntegrationError(
                     f"Airflow returned non-JSON 2xx body on {method} {path}"
@@ -357,7 +338,7 @@ def _path_segment(value: str) -> str:
 
 
 def _utc_now_iso() -> str:
-    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
+    return datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
 
 
 def _safe_json(response: httpx.Response) -> dict[str, Any]:

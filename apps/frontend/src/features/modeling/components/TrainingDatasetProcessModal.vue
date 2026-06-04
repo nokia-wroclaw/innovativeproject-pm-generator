@@ -165,7 +165,7 @@ const isSubmitDisabled = computed(() => !form.dataset_id || !form.target_column?
 const datasetOptions = computed(() =>
   props.datasets.map((dataset) => ({
     value: dataset.id,
-    label: `#${dataset.id} · ${dataset.file_name} · ${dataset.status}`,
+    label: `#${dataset.id} · ${dataset.file_name} · ${dataset.type} · ${dataset.status}`,
   })),
 );
 

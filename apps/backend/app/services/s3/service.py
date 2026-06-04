@@ -6,6 +6,7 @@ import unicodedata
 import uuid
 from functools import lru_cache
 from pathlib import Path
+from typing import Any, cast
 from urllib.parse import urlparse
 
 import boto3
@@ -17,8 +18,8 @@ from botocore.exceptions import ClientError
 from fastapi import HTTPException
 from sqlalchemy.orm import Session
 
-from app.db.schemas import Dataset, DatasetStatus
 from app.core.config import settings
+from app.db.schemas import Dataset, DatasetStatus, DatasetType
 
 PREVIEW_ROW_LIMIT = 5
 CSV_PREVIEW_RANGE_BYTES = 4 * 1024 * 1024
@@ -72,7 +73,12 @@ class S3Service:
 
         final_s3_key = f"{s3_key}/{unique_id}_{name}"
 
-        dataset = Dataset(user_uuid=user_uuid, file_name=name, s3_key=final_s3_key)
+        dataset = Dataset(
+            user_uuid=user_uuid,
+            file_name=name,
+            s3_key=final_s3_key,
+            type=DatasetType.RAW,
+        )
         self._db.add(dataset)
         self._db.commit()
         self._db.refresh(dataset)
@@ -85,8 +91,9 @@ class S3Service:
             self.s3_client_internal.head_object(Bucket=S3_BUCKET, Key=s3_key)
         except Exception as e:
             raise HTTPException(
-                status_code=404, detail=f"[S3] Dataset not found on S3 or access denied: {str(e)}"
-            )
+                status_code=404,
+                detail=f"[S3] Dataset not found on S3 or access denied: {str(e)}",
+            ) from e
 
         if not file_name:
             file_name = Path(s3_key).name
@@ -95,28 +102,34 @@ class S3Service:
         name = re.sub(r"[^\w\.\-]", "_", name)
 
         dataset = Dataset(
-            user_uuid=user_uuid, file_name=name, s3_key=s3_key, status=DatasetStatus.COMPLETED
+            user_uuid=user_uuid,
+            file_name=name,
+            s3_key=s3_key,
+            status=DatasetStatus.COMPLETED,
+            type=DatasetType.RAW,
         )
         self._db.add(dataset)
         self._db.commit()
         self._db.refresh(dataset)
         return dataset
 
-    def change_dataset_status(self, dataset_id: int, status: DatasetStatus) -> type[Dataset]:
+    def change_dataset_status(self, dataset_id: int, status: DatasetStatus) -> Dataset:
         dataset = self.get_dataset(dataset_id)
         dataset.status = status
         self._db.commit()
         self._db.refresh(dataset)
         return dataset
 
-    def initiate_multipart_upload(self, dataset: Dataset) -> dict:
+    def initiate_multipart_upload(self, dataset: Dataset) -> dict[str, Any]:
         try:
             response = self.s3_client_internal.create_multipart_upload(
                 Bucket=S3_BUCKET, Key=dataset.s3_key
             )
             return {"upload_id": response["UploadId"], "s3_key": dataset.s3_key}
         except Exception as e:
-            raise HTTPException(status_code=400, detail=f"[S3] Initialization error: {str(e)}")
+            raise HTTPException(
+                status_code=400, detail=f"[S3] Initialization error: {str(e)}"
+            ) from e
 
     def get_presigned_part_url(self, s3_key: str, upload_id: str, part_number: int) -> str:
         try:
@@ -130,19 +143,23 @@ class S3Service:
                 },
                 ExpiresIn=3600,
             )
-            return presigned_url
+            return str(presigned_url)
 
         except Exception as e:
-            raise HTTPException(status_code=400, detail=f"[S3] URL generation error: {str(e)}")
+            raise HTTPException(
+                status_code=400, detail=f"[S3] URL generation error: {str(e)}"
+            ) from e
 
-    def complete_multipart_upload(self, s3_key: str, upload_id: str, parts: list[dict]) -> dict:
+    def complete_multipart_upload(
+        self, s3_key: str, upload_id: str, parts: list[dict[str, Any]]
+    ) -> dict[str, Any]:
         try:
             response = self.s3_client_internal.complete_multipart_upload(
                 Bucket=S3_BUCKET, Key=s3_key, UploadId=upload_id, MultipartUpload={"Parts": parts}
             )
-            return response
+            return cast(dict[str, Any], response)
         except Exception as e:
-            raise HTTPException(status_code=400, detail=f"[S3] Merge upload error: {str(e)}")
+            raise HTTPException(status_code=400, detail=f"[S3] Merge upload error: {str(e)}") from e
 
     def abort_multipart_upload(self, s3_key: str, upload_id: str) -> None:
         try:
@@ -150,7 +167,9 @@ class S3Service:
                 Bucket=S3_BUCKET, Key=s3_key, UploadId=upload_id
             )
         except Exception as e:
-            raise HTTPException(status_code=400, detail=f"[S3] Cancel upload error: {str(e)}")
+            raise HTTPException(
+                status_code=400, detail=f"[S3] Cancel upload error: {str(e)}"
+            ) from e
 
     def delete_dataset(self, dataset_id: int) -> None:
         dataset = self.get_dataset(dataset_id)
@@ -159,21 +178,25 @@ class S3Service:
             self.s3_client_internal.delete_object(Bucket=S3_BUCKET, Key=dataset.s3_key)
         except Exception as e:
             raise HTTPException(
-                status_code=400, detail=f"[S3] Error deleting file from S3: {str(e)}"
-            )
+                status_code=400,
+                detail=f"[S3] Error deleting file from S3: {str(e)}",
+            ) from e
 
         self._db.delete(dataset)
         self._db.commit()
 
-    def get_dataset(self, dataset_id: int) -> type[Dataset]:
+    def get_dataset(self, dataset_id: int) -> Dataset:
         dataset = self._db.query(Dataset).filter(Dataset.id == dataset_id).first()
         if not dataset:
             raise HTTPException(status_code=404, detail=f"[S3] Dataset not found: {dataset_id}")
 
         return dataset
 
-    def get_datasets(self) -> list[type[Dataset]]:
-        return self._db.query(Dataset).all()
+    def get_datasets(self, dataset_type: DatasetType | None = None) -> list[Dataset]:
+        query = self._db.query(Dataset)
+        if dataset_type is not None:
+            query = query.filter(Dataset.type == dataset_type)
+        return query.all()
 
     def preview_dataset(self, dataset_id: int) -> dict:
         dataset = self.get_dataset(dataset_id)
@@ -320,4 +343,5 @@ class S3Service:
     @staticmethod
     def _dataframe_to_rows(dataframe: pd.DataFrame) -> list[dict[str, object]]:
         trimmed = dataframe.head(PREVIEW_ROW_LIMIT)
-        return json.loads(trimmed.to_json(orient="records", date_format="iso"))
+        rows = json.loads(trimmed.to_json(orient="records", date_format="iso"))
+        return cast(list[dict[str, object]], rows)

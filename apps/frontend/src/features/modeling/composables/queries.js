@@ -6,8 +6,11 @@ import * as Api from '../services/modelingApi.js';
 const THREE_SECONDS = 3_000;
 const FIFTEEN_SECONDS = 15_000;
 
+const ONE_HOUR = 60 * 60 * 1000;
+
 export const modelingQueryKeys = {
   datasets: () => ['modeling', 'datasets'],
+  models: () => ['modeling', 'models'],
   formSchema: (processType) => ['modeling', 'form-schema', unref(processType)],
   runStatus: (processType, runId) => [
     'modeling',
@@ -23,6 +26,14 @@ export function useModelingDatasets() {
     queryKey: modelingQueryKeys.datasets(),
     queryFn: Api.listModelingDatasets,
     refetchInterval: FIFTEEN_SECONDS,
+  });
+}
+
+export function useModelingModels() {
+  return useQuery({
+    queryKey: modelingQueryKeys.models(),
+    queryFn: Api.listModelingModels,
+    staleTime: ONE_HOUR,
   });
 }
 

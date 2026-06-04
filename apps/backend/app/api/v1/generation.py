@@ -3,7 +3,7 @@ from sqlalchemy.orm import Session
 
 from app.core.auth import require_auth
 from app.db.database import db_manager
-from app.models.generation import GenerationRead, GenerationCreate
+from app.models.generation import GenerationCreate, GenerationRead
 from app.services.generation.service import GenerationService
 
 router = APIRouter(dependencies=[Depends(require_auth)])

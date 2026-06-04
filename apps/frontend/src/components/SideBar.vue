@@ -7,6 +7,7 @@
 
     <nav class="menu">
       <router-link
+        v-if="isAdmin"
         to="/dags"
         class="menu-item"
         :class="{ 'router-link-active': isDagsSection }"
@@ -20,9 +21,14 @@
         <span v-if="!isCollapsed">Storage</span>
       </router-link>
 
-      <router-link to="/modeling" class="menu-item">
+      <router-link v-if="isAdmin" to="/modeling" class="menu-item">
         <Brain class="icon" :size="20" />
         <span v-if="!isCollapsed">Modeling</span>
+      </router-link>
+
+      <router-link to="/generate" class="menu-item">
+        <Sparkles class="icon" :size="20" />
+        <span v-if="!isCollapsed">Generate</span>
       </router-link>
     </nav>
   </aside>
@@ -31,7 +37,8 @@
 <script setup>
 import { computed, ref } from 'vue';
 import { useRoute } from 'vue-router';
-import { GitBranch, Database, Brain } from 'lucide-vue-next';
+import { GitBranch, Database, Brain, Sparkles } from 'lucide-vue-next';
+import { isAdmin } from '../auth/keycloak';
 import SidebarToggleButton from './ToggleButton.vue';
 
 const route = useRoute();

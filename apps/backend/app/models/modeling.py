@@ -2,9 +2,13 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from app.db.schemas import DagRunStatus, DatasetStatus
+from app.db.schemas import DagRunStatus, DatasetStatus, DatasetType
 
-ModelingProcessType = Literal["preprocessing_feature_engineering", "training_dataset"]
+ModelingProcessType = Literal[
+    "preprocessing_feature_engineering",
+    "training_dataset",
+    "generate",
+]
 
 
 class ModelingDatasetOption(BaseModel):
@@ -14,6 +18,7 @@ class ModelingDatasetOption(BaseModel):
     file_name: str
     s3_key: str
     status: DatasetStatus
+    type: DatasetType
 
 
 class ModelingFormOption(BaseModel):
@@ -46,11 +51,29 @@ class ModelingFormSchema(BaseModel):
     fields: list[ModelingFormField]
 
 
+class ModelingTrainedModelOption(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    id: str
+    name: str
+    source_run_id: str | None = None
+    path: str
+    created_at: str | None = None
+
+
 class ModelingRunRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     dataset_id: int = Field(gt=0)
     dataset_type: Literal["working_days", "weekends"] = "working_days"
+    dag_args: dict[str, Any] = Field(default_factory=dict)
+
+
+class GenerateRunRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    model_id: str = Field(min_length=1)
+    prompt: str = Field(min_length=1)
     dag_args: dict[str, Any] = Field(default_factory=dict)
 
 
@@ -73,6 +96,8 @@ class ModelingArtifact(BaseModel):
         "featured_dataset",
         "training_dataset",
         "model_pickle",
+        "generated_event_log",
+        "generation_report",
     ]
     path: str
     status: Literal["pending", "saved"]

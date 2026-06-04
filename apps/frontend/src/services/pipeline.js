@@ -48,7 +48,7 @@ export const deletePipelineRun = async (runId) => {
 };
 
 export const fetchCompletedDatasets = async () => {
-  const datasets = await authorizedRequest('/api/v1/datasets');
+  const datasets = await authorizedRequest('/api/v1/datasets?type=RAW');
   return Array.isArray(datasets)
     ? datasets.filter((d) => d.status === 'COMPLETED')
     : [];

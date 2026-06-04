@@ -156,7 +156,7 @@ const form = reactive({
 const datasetOptions = computed(() =>
   props.datasets.map((dataset) => ({
     value: dataset.id,
-    label: `#${dataset.id} · ${dataset.file_name} · ${dataset.status}`,
+    label: `#${dataset.id} · ${dataset.file_name} · ${dataset.type} · ${dataset.status}`,
   })),
 );
 

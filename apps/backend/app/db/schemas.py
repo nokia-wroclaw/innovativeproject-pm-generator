@@ -4,6 +4,7 @@ import uuid
 from typing import Literal
 
 from sqlalchemy import DateTime, ForeignKey, Integer, String, Uuid
+from sqlalchemy import Enum as SQLEnum
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.db.database import Base
@@ -14,6 +15,12 @@ class DatasetStatus(enum.Enum):
     UPLOADING = "UPLOADING"
     COMPLETED = "COMPLETED"
     FAILED = "FAILED"
+
+
+class DatasetType(enum.StrEnum):
+    RAW = "RAW"
+    PREPROCESSED = "PREPROCESSED"
+    GENERATED = "GENERATED"
 
 
 class PipelineType(enum.Enum):
@@ -29,7 +36,7 @@ class PipelineRunStatus(enum.Enum):
     FAILED = "FAILED"
 
 
-class TaskStatus(str, enum.Enum):
+class TaskStatus(enum.StrEnum):
     SUCCESS = "success"
     RUNNING = "running"
     FAILED = "failed"
@@ -39,7 +46,7 @@ class TaskStatus(str, enum.Enum):
     NONE = "none"
 
 
-class DagRunStatus(str, enum.Enum):
+class DagRunStatus(enum.StrEnum):
     SUCCESS = "success"
     RUNNING = "running"
     FAILED = "failed"
@@ -74,15 +81,19 @@ class Dataset(Base):
     file_name: Mapped[str] = mapped_column(String, nullable=False)
 
     status: Mapped[DatasetStatus] = mapped_column(default=DatasetStatus.PENDING)
+    type: Mapped[DatasetType] = mapped_column(
+        SQLEnum(DatasetType, name="dataset_type"),
+        default=DatasetType.RAW,
+        nullable=False,
+        index=True,
+    )
 
 
 class PipelineRun(Base):
     __tablename__ = "pipeline_runs"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
-    dataset_id: Mapped[int] = mapped_column(
-        Integer, ForeignKey("datasets.id", ondelete="CASCADE")
-    )
+    dataset_id: Mapped[int] = mapped_column(Integer, ForeignKey("datasets.id", ondelete="CASCADE"))
     pipeline_type: Mapped[PipelineType] = mapped_column(default=PipelineType.PREPROCESSING)
     status: Mapped[PipelineRunStatus] = mapped_column(default=PipelineRunStatus.PENDING)
     airflow_run_id: Mapped[str | None] = mapped_column(String, nullable=True)

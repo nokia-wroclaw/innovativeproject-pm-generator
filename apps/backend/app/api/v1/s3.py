@@ -1,23 +1,31 @@
 import typing
+import uuid
+from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 
 from app.core.auth import require_admin, require_auth
+from app.core.storage_access import (
+    assert_dataset_accessible,
+    assert_raw_dataset,
+    assert_storage_type_allowed,
+    require_storage_admin,
+)
 from app.db.database import db_manager
-from app.services.s3.service import S3Service
-
+from app.db.schemas import DatasetType
 from app.models.s3 import (
-    DatasetRead,
-    DatasetCreate,
-    DatasetStatusUpdate,
-    CompleteMultipartRequest,
     AbortMultipartRequest,
+    CompleteMultipartRequest,
+    DatasetCreate,
+    DatasetPreviewResponse,
+    DatasetRead,
+    DatasetRegisterRequest,
+    DatasetStatusUpdate,
     MultipartInitiateResponse,
     PartUrlResponse,
-    DatasetRegisterRequest,
-    DatasetPreviewResponse,
 )
+from app.services.s3.service import S3Service
 
 router = APIRouter(dependencies=[Depends(require_auth)])
 
@@ -32,9 +40,9 @@ def get_s3_service(
 async def create_s3_dataset(
     dataset: DatasetCreate,
     service: S3Service = Depends(get_s3_service),
-    token_payload: dict[str, typing.Any] = Depends(require_auth),
+    token_payload: dict[str, typing.Any] = Depends(require_storage_admin),
 ) -> DatasetRead:
-    user_uuid = token_payload.get("sub")
+    user_uuid = uuid.UUID(str(token_payload["user_id"]))
 
     s3_dataset = service.create_dataset(
         user_uuid=user_uuid,
@@ -49,10 +57,13 @@ async def create_s3_dataset(
 async def initiate_multipart(
     dataset_id: int,
     service: S3Service = Depends(get_s3_service),
-):
+    token_payload: dict[str, typing.Any] = Depends(require_storage_admin),
+) -> MultipartInitiateResponse:
     dataset = service.get_dataset(dataset_id)
     if not dataset:
         raise HTTPException(status_code=404, detail="Dataset not found")
+    assert_dataset_accessible(token_payload, dataset)
+    assert_raw_dataset(dataset, context="upload")
 
     result = service.initiate_multipart_upload(dataset)
     return MultipartInitiateResponse.model_validate(result)
@@ -64,10 +75,13 @@ async def get_part_url(
     upload_id: str = Query(...),
     part_number: int = Query(...),
     service: S3Service = Depends(get_s3_service),
-):
+    token_payload: dict[str, typing.Any] = Depends(require_storage_admin),
+) -> PartUrlResponse:
     dataset = service.get_dataset(dataset_id)
     if not dataset:
         raise HTTPException(status_code=404, detail="Dataset not found")
+    assert_dataset_accessible(token_payload, dataset)
+    assert_raw_dataset(dataset, context="upload")
 
     url = service.get_presigned_part_url(dataset.s3_key, upload_id, part_number)
     return PartUrlResponse.model_validate({"url": url})
@@ -75,11 +89,16 @@ async def get_part_url(
 
 @router.post("/datasets/{dataset_id}/multipart/complete")
 async def complete_multipart(
-    dataset_id: int, request: CompleteMultipartRequest, service: S3Service = Depends(get_s3_service)
-):
+    dataset_id: int,
+    request: CompleteMultipartRequest,
+    service: S3Service = Depends(get_s3_service),
+    token_payload: dict[str, typing.Any] = Depends(require_storage_admin),
+) -> dict[str, Any]:
     dataset = service.get_dataset(dataset_id)
     if not dataset:
         raise HTTPException(status_code=404, detail="Dataset not found")
+    assert_dataset_accessible(token_payload, dataset)
+    assert_raw_dataset(dataset, context="upload")
 
     parts_dicts = [{"PartNumber": p.PartNumber, "ETag": p.ETag} for p in request.parts]
     return service.complete_multipart_upload(dataset.s3_key, request.upload_id, parts_dicts)
@@ -87,11 +106,11 @@ async def complete_multipart(
 
 @router.post("/datasets/register", response_model=DatasetRead)
 async def register_s3_dataset(
-        request: DatasetRegisterRequest,
-        service: S3Service = Depends(get_s3_service),
-        token_payload: dict[str, typing.Any] = Depends(require_auth),
+    request: DatasetRegisterRequest,
+    service: S3Service = Depends(get_s3_service),
+    token_payload: dict[str, typing.Any] = Depends(require_storage_admin),
 ) -> DatasetRead:
-    user_uuid = token_payload["user_id"]
+    user_uuid = uuid.UUID(str(token_payload["user_id"]))
 
     s3_dataset = service.register_existing_dataset(
         user_uuid=user_uuid,
@@ -104,11 +123,16 @@ async def register_s3_dataset(
 
 @router.post("/datasets/{dataset_id}/multipart/abort")
 async def abort_multipart(
-    dataset_id: int, request: AbortMultipartRequest, service: S3Service = Depends(get_s3_service)
-):
+    dataset_id: int,
+    request: AbortMultipartRequest,
+    service: S3Service = Depends(get_s3_service),
+    token_payload: dict[str, typing.Any] = Depends(require_storage_admin),
+) -> dict[str, str]:
     dataset = service.get_dataset(dataset_id)
     if not dataset:
         raise HTTPException(status_code=404, detail="Dataset not found")
+    assert_dataset_accessible(token_payload, dataset)
+    assert_raw_dataset(dataset, context="upload")
 
     service.abort_multipart_upload(dataset.s3_key, request.upload_id)
     return {"status": "aborted"}
@@ -116,23 +140,36 @@ async def abort_multipart(
 
 @router.post("/datasets/update_status", response_model=DatasetRead)
 async def confirm_s3_dataset(
-    dataset_status: DatasetStatusUpdate, service: S3Service = Depends(get_s3_service)
+    dataset_status: DatasetStatusUpdate,
+    service: S3Service = Depends(get_s3_service),
+    token_payload: dict[str, typing.Any] = Depends(require_storage_admin),
 ) -> DatasetRead:
+    dataset = service.get_dataset(dataset_status.dataset_id)
+    assert_dataset_accessible(token_payload, dataset)
+    assert_raw_dataset(dataset, context="status")
     return DatasetRead.model_validate(
         service.change_dataset_status(dataset_status.dataset_id, dataset_status.status)
     )
 
 
 @router.get("/datasets", response_model=list[DatasetRead])
-def get_s3_datasets(service: S3Service = Depends(get_s3_service)) -> list[DatasetRead]:
-    return [DatasetRead.model_validate(dataset) for dataset in service.get_datasets()]
+def get_s3_datasets(
+    type: DatasetType = Query(..., description="Dataset category: RAW, PREPROCESSED, or GENERATED"),
+    service: S3Service = Depends(get_s3_service),
+    token_payload: dict[str, typing.Any] = Depends(require_auth),
+) -> list[DatasetRead]:
+    assert_storage_type_allowed(token_payload, type)
+    return [DatasetRead.model_validate(dataset) for dataset in service.get_datasets(type)]
 
 
 @router.get("/datasets/{dataset_id}/preview", response_model=DatasetPreviewResponse)
 def preview_s3_dataset(
     dataset_id: int,
     service: S3Service = Depends(get_s3_service),
+    token_payload: dict[str, typing.Any] = Depends(require_auth),
 ) -> DatasetPreviewResponse:
+    dataset = service.get_dataset(dataset_id)
+    assert_dataset_accessible(token_payload, dataset)
     return DatasetPreviewResponse.model_validate(service.preview_dataset(dataset_id))
 
 
@@ -140,7 +177,9 @@ def preview_s3_dataset(
 def delete_s3_dataset(
     dataset_id: int,
     service: S3Service = Depends(get_s3_service),
-    _: dict[str, typing.Any] = Depends(require_admin),
+    token_payload: dict[str, typing.Any] = Depends(require_admin),
 ) -> dict:
+    dataset = service.get_dataset(dataset_id)
+    assert_dataset_accessible(token_payload, dataset)
     service.delete_dataset(dataset_id)
     return {"message": "dataset deleted successfully", "dataset_id": dataset_id}

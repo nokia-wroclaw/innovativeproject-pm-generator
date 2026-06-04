@@ -1,6 +1,6 @@
+import os
 from dataclasses import dataclass
 from functools import lru_cache
-import os
 
 
 def _required_env(name: str) -> str:
@@ -35,11 +35,7 @@ def get_airflow_settings() -> AirflowSettings:
         username=_required_env("AIRFLOW_USERNAME"),
         password=_required_env("AIRFLOW_PASSWORD"),
         http_timeout_seconds=float(os.getenv("AIRFLOW_HTTP_TIMEOUT_SECONDS", "15")),
-        log_stream_max_duration_seconds=int(
-            os.getenv("LOG_STREAM_MAX_DURATION_SECONDS", "7200")
-        ),
-        log_stream_heartbeat_seconds=int(
-            os.getenv("LOG_STREAM_HEARTBEAT_SECONDS", "15")
-        ),
+        log_stream_max_duration_seconds=int(os.getenv("LOG_STREAM_MAX_DURATION_SECONDS", "7200")),
+        log_stream_heartbeat_seconds=int(os.getenv("LOG_STREAM_HEARTBEAT_SECONDS", "15")),
         dag_list_cache_seconds=int(os.getenv("DAG_LIST_CACHE_SECONDS", "30")),
     )
