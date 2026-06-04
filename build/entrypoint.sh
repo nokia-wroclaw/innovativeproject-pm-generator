@@ -20,7 +20,8 @@ export SPARK_LOG_DIR="/tmp/spark-logs"
 export IVY_HOME="$HOME/.ivy2"
 
 export SPARK_SUBMIT_OPTS="${SPARK_SUBMIT_OPTS:-} -Duser.name=$USER -Duser.home=$HOME -Divy.home=$IVY_HOME -Divy.cache.dir=$IVY_HOME/cache"
-
+export PYSPARK_PYTHON="${APP_HOME}/.venv/bin/python3"
+export PYSPARK_DRIVER_PYTHON="${APP_HOME}/.venv/bin/python3"
 mkdir -p "$JUPYTER_CONFIG_DIR" "$JUPYTER_DATA_DIR" "$JUPYTER_RUNTIME_DIR" \
     "$SPARK_LOCAL_DIRS" "$SPARK_WORKER_DIR" "$SPARK_LOG_DIR" "$IVY_HOME" "$IVY_HOME/cache" "$IVY_HOME/local"
 
@@ -29,11 +30,16 @@ if [ "$#" -gt 0 ]; then
 fi
 
 start_jupyter() {
+    echo "Starting Spark Master..."
+    $SPARK_HOME/sbin/start-master.sh --host 0.0.0.0 --port 7077 || true
+    echo "Starting Spark Worker..."
+    $SPARK_HOME/sbin/start-worker.sh spark://$(hostname):7077 || true
     echo "Starting Spark History Server..."
-    echo "Starting Jupyter Notebook..."
     $SPARK_HOME/sbin/start-history-server.sh || true
+    echo "Starting Jupyter Notebook..."
     jupyter notebook --ip=0.0.0.0 --port=4041 --no-browser --NotebookApp.token='' --NotebookApp.password='' --notebook-dir="${APP_HOME}/apps/generator"
 }
+
 DEVCONTAINER=false
 if [ "$DEVCONTAINER" = "true" ]; then
     rm -rf /home/sparkuser/app/.venv

@@ -36,6 +36,11 @@ RUN SPARK_DOWNLOAD_URL="https://archive.apache.org/dist/spark/spark-${SPARK_VERS
 
 RUN wget --verbose -O ${SPARK_HOME}/jars/rapids-4-spark_2.12-${RAPIDS_VERSION}.jar \
     "https://repo1.maven.org/maven2/com/nvidia/rapids-4-spark_2.12/${RAPIDS_VERSION}/rapids-4-spark_2.12-${RAPIDS_VERSION}.jar"
+ENV HADOOP_JAR_VERSION=3.3.4
+ENV AWS_SDK_VERSION=1.12.262
+
+RUN wget --quiet -O ${SPARK_HOME}/jars/hadoop-aws-${HADOOP_JAR_VERSION}.jar https://repo1.maven.org/maven2/org/apache/hadoop/hadoop-aws/${HADOOP_JAR_VERSION}/hadoop-aws-${HADOOP_JAR_VERSION}.jar \
+    && wget --quiet -O ${SPARK_HOME}/jars/aws-java-sdk-bundle-${AWS_SDK_VERSION}.jar https://repo1.maven.org/maven2/com/amazonaws/aws-java-sdk-bundle/${AWS_SDK_VERSION}/aws-java-sdk-bundle-${AWS_SDK_VERSION}.jar
 
 ARG USERNAME=hostuser
 ARG USER_UID=1000
@@ -74,5 +79,5 @@ RUN uv sync --frozen
 RUN $APP_HOME/.venv/bin/python -m ipykernel install --prefix=$APP_HOME/.venv --name=spark-env --display-name "Python (Spark Project)"
 
 ENV PATH="$APP_HOME/.venv/bin:$PATH"
-EXPOSE 4040 4041 18080 8888
+EXPOSE 4040 4041 7077 18080 8888
 ENTRYPOINT ["/home/spark/entrypoint.sh"]
