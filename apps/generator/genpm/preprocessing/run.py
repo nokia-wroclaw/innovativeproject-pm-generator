@@ -1,9 +1,9 @@
 import argparse
 
 from pyspark.sql import DataFrame
-
-from genpm.preprocessing import kpi_coverage, preprocessing_logic
-from genpm.utils.consts import SHARED_DIR_PATH, SPARK_CONFIGS
+from pyspark.sql import functions as f
+from genpm.preprocessing import kpi_coverage, preprocessing_logic, imputing
+from genpm.utils.consts import SHARED_DIR_PATH, SPARK_CONFIGS, MAX_IMPUTABLE_GAP
 from genpm.utils.logger import get_logger
 from genpm.utils.utils import SparkDataManager
 
@@ -34,16 +34,16 @@ def run(args: argparse.Namespace) -> None:
     sdm = SparkDataManager(SPARK_CONFIGS["FULL_RESOURCES"])
 
     # UNCOMMENT LATER FOR FULL PREPROP
-    # pm_df_long_raw, kpi_definitions_df_raw, simple_reports_df_raw = _load_data(sdm, args)
+    pm_df_long_raw, kpi_definitions_df_raw, simple_reports_df_raw = _load_data(sdm, args)
 
-    # pm_df_long_raw = preprocessing_logic.raw_pm_preperation(pm_df_long_raw)
+    pm_df_long_raw = preprocessing_logic.raw_pm_preperation(pm_df_long_raw)
 
     # # KPI version flattening
-    # pm_df_long, kpi_definitions = preprocessing_logic.coalesce_kpi_version(
-    #     pm_df_long_raw, kpi_definitions_df_raw
-    # )
+    pm_df_long, kpi_definitions = preprocessing_logic.coalesce_kpi_version(
+        pm_df_long_raw, kpi_definitions_df_raw
+    )
 
-    # pm_df_long, pm_df_const_kpi = preprocessing_logic.pop_constant_kpis(pm_df_long)
+    pm_df_long, pm_df_const_kpi = preprocessing_logic.pop_constant_kpis(pm_df_long)
 
     # sdm.write_parquet(pm_df_long, PREPROCESSED_DATASET_PATH / "intermediate" / "pm_df_long", mode="overwrite")
     # sdm.write_parquet(kpi_definitions, PREPROCESSED_DATASET_PATH / "intermediate" / "kpi_definitions", mode="overwrite")
@@ -52,10 +52,10 @@ def run(args: argparse.Namespace) -> None:
     kpi_definitions = sdm.read_parquet(
         PREPROCESSED_DATASET_PATH / "intermediate" / "kpi_definitions"
     )
-    # STAGE: COVERAGE ANALYSIS
-    # Timestamp frequency uniformoty (1 hour)
-    # Perc cell allignment to min max (window coverage handles the rest)
-    # print("INTERMIEDATE 1")
+    # # STAGE: COVERAGE ANALYSIS
+    # # Timestamp frequency uniformoty (1 hour)
+    # # Perc cell allignment to min max (window coverage handles the rest)
+    # # print("INTERMIEDATE 1")
     # pm_df_long_filled_gaps = kpi_coverage.fill_internal_gaps(pm_df_long, "start_time")
     # pm_df_long_filled_gaps.cache()
     # pm_df_long_filled_gaps.count()
@@ -243,37 +243,38 @@ def run(args: argparse.Namespace) -> None:
     print(
         pm_df_long_imputed_selected.select("kpi_id").distinct().rdd.flatMap(lambda x: x).collect()
     )
+    selected_kpis = [r["kpi_id"] for r in pm_df_long_imputed_selected.select("kpi_id").distinct().collect()]
+    logger.info("Stage 7b: applying joint completeness gate across selected KPIs ...")
+    good_windows_selected = kpi_coverage.filter_joint_complete_windows(
+        good_windows_selected,
+        selected_kpis,
+    )
+    good_windows_selected.cache()
+    n_joint = good_windows_selected.select("distname", "start_time").distinct().count()
+    logger.info(f"  {n_joint:,} joint-complete (distname, anchor) windows survive.")
 
     pm_df_long_indexed_winds = kpi_coverage.attach_windows_index_to_pm(
         pm_df_long_imputed_selected,
         good_windows_selected,
         window_hours=168,
     )
-
-    pm_df_long_indexed_winds = pm_df_long_indexed_winds.cache()
-    pm_df_long_indexed_winds.count()
-    pm_df_long_preprocessed = kpi_coverage.extract_valid_pm_windows(
-        pm_df_long_imputed_selected,
-        good_windows_selected,
-        window_hours=168,
-    )
-
-    # Kpi wide format
-    pm_df_wide = preprocessing_logic._pivot_pm_data(pm_df_long)
-
+    
     simple_reports = preprocessing_logic.simple_reports_pivot(simple_reports_df_raw)
+
+    pm_df_long_indexed_winds_with_simple_reports = pm_df_long_indexed_winds.join(simple_reports.drop("datetime", "bts_id"), on="distname", how="left")
 
     # Save preprocessed data
     list_of_dfs = [
-        pm_df_long,
-        pm_df_wide,
+        pm_df_long_indexed_winds_with_simple_reports,
+        pm_df_long_indexed_winds,
         pm_df_const_kpi,
         kpi_definitions,
         simple_reports,
     ]
 
     preprocessed_data_filenames = [
-        "pm_data_long",
+        "pm_data_dataset_preprocessed",
+        "pm_df_long_indexed_winds",
         "pm_data_wide",
         "pm_data_const_kpi",
         "kpi_definitions",
@@ -289,7 +290,7 @@ def run(args: argparse.Namespace) -> None:
         sdm.write_parquet(
             df,
             # TODO: Add getting output path from args
-            PREPROCESSED_DATASET_PATH / df_path,
+            PREPROCESSED_DATASET_PATH / "final" / df_path,
             mode="overwrite",
         )
 
