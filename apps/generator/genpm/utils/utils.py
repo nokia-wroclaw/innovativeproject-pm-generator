@@ -248,8 +248,8 @@ def validate_windowed_pm(
     # ── 1. Basic shape ─────────────────────────────────────────────────────
     total_rows = df.count()
     n_distnames = df.select("distname").distinct().count()
-    n_kpis      = df.select("kpi_id").distinct().count()
-    n_anchors   = df.select("distname", "window_anchor").distinct().count()
+    n_kpis = df.select("kpi_id").distinct().count()
+    n_anchors = df.select("distname", "window_anchor").distinct().count()
 
     logger.info(f"[shape] total rows:      {total_rows:>15,}")
     logger.info(f"[shape] distnames:       {n_distnames:>15,}")
@@ -257,48 +257,46 @@ def validate_windowed_pm(
     logger.info(f"[shape] unique windows:  {n_anchors:>15,}")
 
     expected_rows = n_anchors * n_kpis * window_hours
-    logger.info(f"[shape] expected rows:   {expected_rows:>15,}  (windows × kpis × {window_hours}h)")
+    logger.info(
+        f"[shape] expected rows:   {expected_rows:>15,}  (windows × kpis × {window_hours}h)"
+    )
     if total_rows != expected_rows:
         logger.warning(
             f"[shape] ❌ row count mismatch: got {total_rows:,}, expected {expected_rows:,}"
         )
     else:
-        logger.info(f"[shape] ✅ row count matches expected")
+        logger.info("[shape] ✅ row count matches expected")
 
     # ── 2. Null check ──────────────────────────────────────────────────────
     n_null_values = df.filter(f.col("kpi_value").isNull()).count()
-    n_null_flags  = df.filter(f.col("imputed_flag").isNull()).count()
+    n_null_flags = df.filter(f.col("imputed_flag").isNull()).count()
 
     if n_null_values > 0:
         logger.warning(f"[nulls] ❌ kpi_value nulls: {n_null_values:,}")
     else:
-        logger.info(f"[nulls] ✅ no kpi_value nulls")
+        logger.info("[nulls] ✅ no kpi_value nulls")
 
     if n_null_flags > 0:
         logger.warning(f"[nulls] ❌ imputed_flag nulls: {n_null_flags:,}")
     else:
-        logger.info(f"[nulls] ✅ no imputed_flag nulls")
+        logger.info("[nulls] ✅ no imputed_flag nulls")
 
     # ── 3. hour_idx range ─────────────────────────────────────────────────
     # Every (distname, window_anchor, kpi_id) must have exactly
     # hour_idx 0 to window_hours-1 — no gaps, no out-of-range values
-    hour_stats = (
-        df
-        .groupBy("distname", "window_anchor", "kpi_id")
-        .agg(
-            f.count("*").alias("n_hours"),
-            f.min("hour_idx").alias("min_hour"),
-            f.max("hour_idx").alias("max_hour"),
-        )
+    hour_stats = df.groupBy("distname", "window_anchor", "kpi_id").agg(
+        f.count("*").alias("n_hours"),
+        f.min("hour_idx").alias("min_hour"),
+        f.max("hour_idx").alias("max_hour"),
     )
 
     bad_hour_counts = hour_stats.filter(f.col("n_hours") != window_hours)
-    bad_hour_range  = hour_stats.filter(
+    bad_hour_range = hour_stats.filter(
         (f.col("min_hour") != 0) | (f.col("max_hour") != window_hours - 1)
     )
 
     n_bad_counts = bad_hour_counts.count()
-    n_bad_range  = bad_hour_range.count()
+    n_bad_range = bad_hour_range.count()
 
     if n_bad_counts > 0:
         logger.warning(f"[hours] ❌ combos with wrong hour count: {n_bad_counts:,}")
@@ -315,15 +313,12 @@ def validate_windowed_pm(
     # ── 4. KPI consistency across windows ─────────────────────────────────
     # Every window_anchor for a given distname should have the same set of KPIs
     # A distname that loses KPIs across windows will produce ragged tensors
-    kpis_per_window = (
-        df
-        .groupBy("distname", "window_anchor")
-        .agg(f.countDistinct("kpi_id").alias("n_kpis"))
+    kpis_per_window = df.groupBy("distname", "window_anchor").agg(
+        f.countDistinct("kpi_id").alias("n_kpis")
     )
 
     kpi_count_variance = (
-        kpis_per_window
-        .groupBy("distname")
+        kpis_per_window.groupBy("distname")
         .agg(
             f.min("n_kpis").alias("min_kpis"),
             f.max("n_kpis").alias("max_kpis"),
@@ -338,15 +333,14 @@ def validate_windowed_pm(
         )
         kpi_count_variance.show(10, truncate=False)
     else:
-        logger.info(f"[kpis] ✅ all distnames have consistent KPI count across windows")
+        logger.info("[kpis] ✅ all distnames have consistent KPI count across windows")
 
     # ── 5. Imputation flag distribution ───────────────────────────────────
     # flag=0: real observed value
     # flag=1: filled by upstream per-KPI imputation
     # flag=2: filled by cross-KPI alignment (should be rare)
     flag_dist = (
-        df
-        .groupBy("imputed_flag")
+        df.groupBy("imputed_flag")
         .agg(f.count("*").alias("n_rows"))
         .withColumn("pct", f.round(f.col("n_rows") / total_rows * 100, 2))
         .orderBy("imputed_flag")
@@ -371,8 +365,7 @@ def validate_windowed_pm(
     # Flags distnames that ended up with very few windows after alignment —
     # these will be underrepresented in CVAE training
     windows_per_distname = (
-        df
-        .select("distname", "window_anchor")
+        df.select("distname", "window_anchor")
         .distinct()
         .groupBy("distname")
         .agg(f.count("*").alias("n_windows"))
@@ -401,7 +394,7 @@ def validate_windowed_pm(
         )
         sparse_distnames.show(20, truncate=False)
     else:
-        logger.info(f"[windows/distname] ✅ all distnames have >= 30 windows")
+        logger.info("[windows/distname] ✅ all distnames have >= 30 windows")
 
     logger.info("=" * 60)
     logger.info("[validate] done")

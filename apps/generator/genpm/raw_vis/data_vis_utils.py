@@ -6,11 +6,6 @@ from plotly.subplots import make_subplots
 from pyspark.sql import DataFrame
 from pyspark.sql import functions as f
 
-from genpm.utils.utils import SparkDataManager
-
-# use spark session if needed
-sdm = SparkDataManager()
-
 
 def _fit_distributions(
     values: np.ndarray,
@@ -95,7 +90,7 @@ def plot_kpi_timeline(
     t = pdf["start_time"]
     v = pdf["mean_value"]
     std = pdf["std_value"].fillna(0)
-    values = v.dropna().values
+    values: np.ndarray = v.dropna().to_numpy()
 
     cp_idx, cp_p = _pettitt_test(values)
     cp_time = pdf["start_time"].iloc[cp_idx] if cp_idx < len(pdf) else None
@@ -154,8 +149,8 @@ def plot_kpi_timeline(
         col=1,
     )
 
-    if cp_p < 0.10:
-        fig.add_vline(
+    if cp_p < 0.10 and cp_time is not None:
+        fig.add_vline(  # type: ignore[call-arg]
             x=cp_time.value // 10**6,
             line_color=ERR,
             line_dash="dot",
@@ -234,8 +229,8 @@ def plot_kpi_timeline(
     return fig
 
 
-def schema(df: DataFrame):
-    # SCHEMA + NULL % per column for pm data
+def schema(df: DataFrame) -> pd.DataFrame:
+    """Return a DataFrame with each column's Spark type, nullable flag, and null percentage."""
     total = df.count()
 
     null_exprs = [
@@ -257,8 +252,8 @@ def schema(df: DataFrame):
     return schema_df
 
 
-def basic_info(df: DataFrame):
-    # some basic info about the pm dataset
+def basic_info(df: DataFrame) -> pd.DataFrame:
+    """Return a single-row DataFrame with row count, distinct KPI/BTS/distname counts, and date range."""
     counts = df.agg(
         f.count("*").alias("rows_count"),
         f.countDistinct("kpi_id").alias("kpi_count"),
@@ -337,8 +332,8 @@ def kpi_bts_coverage(df: DataFrame):
     return fig.to_json()
 
 
-def kpi_catalog(df: DataFrame):
-    # KPI catalog with basic metrics regarding each kpi eg. min value, max value etc.
+def kpi_catalog(df: DataFrame) -> pd.DataFrame:
+    """Return per-KPI statistics: record count, BTS/day counts, time range, value mean/std/min/max, and null %."""
     kpi_catalog = (
         df.groupBy("kpi_id")
         .agg(
