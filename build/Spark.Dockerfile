@@ -6,6 +6,9 @@ ENV SPARK_VERSION=3.5.1
 ENV HADOOP_VERSION=3
 ENV SPARK_HOME=/home/spark
 
+ENV JAVA_HOME=/usr/lib/jvm/java-17-openjdk-amd64
+ENV PATH="${JAVA_HOME}/bin:${PATH}"
+
 ARG DEVCONTAINER
 
 RUN apt-get update && apt-get install -y \
@@ -21,6 +24,7 @@ RUN apt-get update && apt-get install -y \
     whois \
     ca-certificates-java \
     procps \
+    nvidia-utils-525 \
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/*
 
