@@ -33,7 +33,7 @@ def main(argv=None):
     parser.add_argument("--stride-hours", type=int, default=24)
     parser.add_argument("--max-gap-hours", type=int, default=6)
     parser.add_argument("--min-joint-windows-abs", type=int, default=None, required=False)
-    parser.add_argument("--no-impute", action="store_true")
+    parser.add_argument("--impute", action="store_true")
 
     args = parser.parse_args(argv)
 
@@ -52,7 +52,7 @@ def main(argv=None):
         stride_hours=args.stride_hours,
         max_gap_hours=args.max_gap_hours,
         min_joint_windows_abs=args.min_joint_windows_abs,
-        impute=not args.no_impute,
+        impute=args.no_impute,
     )
 
     sdm = SparkDataManager(SPARK_CONFIGS["HALF_SAFE"])
