@@ -195,6 +195,7 @@ const sections = [
         min: 1,
         step: 1,
         default: 168,
+        required: true,
         hint: 'Window length. Valid windows need all W contiguous hours (0..W-1).',
       }),
       num({
@@ -203,6 +204,7 @@ const sections = [
         min: 1,
         step: 1,
         default: 24,
+        required: true,
         hint: 'Hours between stride-aligned window anchors.',
       }),
       num({
@@ -211,6 +213,7 @@ const sections = [
         min: 1,
         step: 1,
         default: 6,
+        required: true,
         hint: 'Max consecutive null hours per window and safe imputation limit.',
       }),
       num({
@@ -315,7 +318,6 @@ async function submit() {
   await triggerRun(
     {
       dataset_id: Number(form.dataset_id),
-      dataset_type: 'working_days',
       dag_args: buildDagArgs(),
     },
     emit,
