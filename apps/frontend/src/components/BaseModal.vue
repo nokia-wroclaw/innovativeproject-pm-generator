@@ -1,7 +1,7 @@
 <template>
   <Teleport to="body">
     <Transition name="fade">
-      <div v-if="show" class="modal-overlay" @click.self="close">
+      <div v-if="show" class="modal-overlay" @click.self="close" @wheel.self.prevent>
         <Transition name="scale">
           <div v-if="show" class="modal-container" :style="{ maxWidth: width }">
             <div class="modal-header">
@@ -28,8 +28,21 @@
 </template>
 
 <script setup>
-import { onMounted, onUnmounted } from 'vue';
+import { onMounted, onUnmounted, watch } from 'vue';
 import { X } from 'lucide-vue-next';
+
+let bodyScrollLockCount = 0;
+
+function lockBodyScroll() {
+  if (bodyScrollLockCount === 0) document.body.classList.add('modal-open');
+  bodyScrollLockCount += 1;
+}
+
+function unlockBodyScroll() {
+  if (bodyScrollLockCount <= 0) return;
+  bodyScrollLockCount -= 1;
+  if (bodyScrollLockCount === 0) document.body.classList.remove('modal-open');
+}
 
 const props = defineProps({
   show: {
@@ -56,8 +69,20 @@ const handleEsc = (e) => {
   if (e.key === 'Escape' && props.show) close();
 };
 
+watch(
+  () => props.show,
+  (isShown) => {
+    if (isShown) lockBodyScroll();
+    else unlockBodyScroll();
+  },
+  { immediate: true },
+);
+
 onMounted(() => window.addEventListener('keydown', handleEsc));
-onUnmounted(() => window.removeEventListener('keydown', handleEsc));
+onUnmounted(() => {
+  if (props.show) unlockBodyScroll();
+  window.removeEventListener('keydown', handleEsc);
+});
 </script>
 
 <style scoped>
@@ -78,6 +103,7 @@ onUnmounted(() => window.removeEventListener('keydown', handleEsc));
 .modal-container {
   background: white;
   width: 90%;
+  max-height: 90vh;
   border-radius: 12px;
   box-shadow: 0 20px 25px -5px rgba(0, 0, 0, 0.1), 0 10px 10px -5px rgba(0, 0, 0, 0.04);
   display: flex;
@@ -122,6 +148,10 @@ onUnmounted(() => window.removeEventListener('keydown', handleEsc));
   font-size: 0.95rem;
   color: #374151;
   line-height: 1.5;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  flex: 1 1 auto;
+  min-height: 0;
 }
 
 .modal-footer {

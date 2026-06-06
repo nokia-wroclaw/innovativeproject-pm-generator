@@ -37,6 +37,10 @@ body {
   overflow-y: auto;
 }
 
+body.modal-open .content {
+  overflow: hidden;
+}
+
 .content-header {
   display: flex;
   justify-content: space-between;
