@@ -1,0 +1,1335 @@
+import numpy as np
+from pyspark.sql import DataFrame, Window
+from pyspark.sql import functions as f
+from pyspark.sql.types import LongType
+
+from genpm.utils.consts import MAX_IMPUTABLE_GAP
+from genpm.utils.logger import get_logger
+
+logger = get_logger()
+
+"""
+kpi_coverage.py  (refactored — sparse pipeline)
+================================================
+Full pipeline for selecting the largest jointly-valid KPI subset for TimeVAE
+training, and materialising the indexed training dataset.
+
+Key change vs. the original
+----------------------------
+The old ``allign_kpis_in_distname`` extended every (distname, kpi_id) series
+to the **distname-wide** time envelope, producing a massive dense grid
+(≈ 8 760 h × 25 000 combos per distname) that was mostly NaN.  All downstream
+stages (density, max-gap, variance …) then ran on this grid.
+
+The refactored pipeline removes that cross-join:
+
+*  **Stage 1** fills gaps only inside each KPI's *own* [min_t, max_t] range.
+   A KPI that lives for 3 000 hours never sees the other 5 760 hours of null
+   padding that the old code generated.
+
+*  **Stage 2** computes window density via an *explode-into-anchors* approach:
+   every data row is mapped to the ≤ 7 stride-aligned window anchors that
+   contain it (W/S = 168/24 = 7), then a simple ``groupBy`` + ``count`` gives
+   non-null density.  No ``rowsBetween`` on a pre-densified grid is needed.
+
+*  **Stage 2b** detects the longest null run per window from the per-KPI
+   gap-filled spine **plus** an explicit leading-gap term for windows whose
+   anchor precedes the KPI's first timestamp.
+
+*  **Stage 8** indexes each hourly row by window anchor and hour_idx by joining
+   the imputed data against the joint-complete anchor set.  Only selected KPIs
+   and valid windows are touched, so the output is orders of magnitude smaller
+   than the old upfront cross-join.
+
+Everything else (stages 3–7) operates on window metadata or on non-null values
+only, so it works identically on the sparser input.
+
+────────────────────────────────────────────────────────────────────────────
+CORRECTNESS FIX (windowed validation failures)
+────────────────────────────────────────────────────────────────────────────
+Validation on the materialised windows revealed three coupled defects, all
+rooted in the same cause: window validity was decided **per (distname, kpi_id)
+independently** and **as a fraction**, so
+
+  1. A window could pass at a density of 0.917 while missing its first or last
+     few hours — a *clipped edge*.  The anchor grid is stride-aligned to the
+     distname origin (earliest ts across all KPIs in the cell), but each KPI
+     starts at its own time, so KPIs that start late get a window anchored
+     before their first row.  6 missing leading hours out of 168 = 3.6 %,
+     comfortably under the threshold, so the clipped window was marked good.
+     Result: windows with n_hours=162, hour_idx spanning 6..167.
+
+  2. Because the gate is per-KPI, two KPIs in the same cell survive at
+     different anchor sets.  When the windows are assembled, each anchor
+     inherits whatever subset of KPIs happened to pass for *that* anchor →
+     min_kpis=84, max_kpis=134 within one cell.
+
+  3. The Stage-8 indexing join re-joined on kpi_id, so it never enforced a
+     joint anchor set either; it faithfully indexed whatever incomplete data
+     arrived.
+
+The fix has three parts, applied below:
+
+  (A) Stage 2 now uses **strict edge-contiguity**: a window is good for a KPI
+      only if it has all 168 distinct hours with hour_idx spanning exactly
+      0..167.  ``window_valid_frac`` is retained for diagnostics but the gate
+      is the contiguity flag, not the fraction.
+
+  (B) A new **joint gate** (``filter_joint_complete_windows``) runs *after*
+      greedy selection: an anchor survives for a distname only if **all**
+      selected KPIs are complete at that anchor.  This is the piece that
+      collapses min_kpis == max_kpis per cell.
+
+  (C) Stage 8 ``attach_windows_index_to_pm`` gates window membership on
+      **distname + time only** (joint anchors), using kpi_id solely to carry
+      values, never to decide window membership.
+
+Pipeline stages (as executed in run.py)
+----------------------------------------
+0a. filter_global_value_density      — reject KPIs that are globally sparse
+                                       across cells; operates on gap-filled data
+                                       before imputing.
+0b. filter_gap_pattern               — reject KPIs whose null runs are dominated
+                                       by gaps too long to impute safely; also
+                                       operates on gap-filled data before imputing.
+ [imputing]                          — forward-fill / interpolation of short gaps
+                                       (up to MAX_IMPUTABLE_GAP hours); window
+                                       density is computed on the imputed data.
+1.  fill_internal_gaps               — per-(distname, kpi_id) hourly spine
+                                       covering [kpi_min_t, kpi_max_t] only;
+                                       left-joins actual values.
+2.  compute_window_density_sparse    — explode imputed rows into their ≤ 7 window
+                                       memberships; STRICT edge-contiguity gate.
+3.  discard_invalid_windows          — keep is_good_window == 1 only.
+2b. filter_max_gap_sparse            — null-run detection on the per-KPI spine
+                                       plus leading-gap awareness; runs on the
+                                       density-passing windows (after Stage 3).
+4.  compute_theoretical_max_windows  — per-(distname, kpi_id) upper-bound window
+                                       count (NOTE: currently known to be
+                                       inaccurate; see TODO in run.py).
+5.  compute_kpi_yield_stats          — aggregate per-KPI stats (total windows,
+                                       cell coverage, window_coverage_frac).
+5c. filter_variance                  — reject near-zero-variance or near-constant-
+                                       zero KPIs.
+6.  prefilter_kpis                   — structural filters on window_coverage_frac
+                                       and frac_contributing_cells; returns
+                                       candidate list sorted by coverage.
+7.  greedy_joint_kpi_selection       — greedily build the largest KPI set whose
+                                       joint (distname, anchor) count stays above
+                                       the elbow-method floor.
+7b. filter_joint_complete_windows    — joint completeness gate: keep only anchors
+                                       where all selected KPIs are present.
+8.  attach_windows_index_to_pm       — join imputed selected-KPI data against joint
+                                       anchors on distname + time span; assigns
+                                       window_anchor and hour_idx to every row.
+
+NOTE: ``filter_temporal_stability`` and ``filter_cross_cell_consistency`` exist
+in this module but are **not** called in the current pipeline.
+``extract_valid_pm_windows`` also exists (deferred densification via a cross-join)
+but is likewise unused; ``attach_windows_index_to_pm`` is the active Stage 8.
+
+Input schema (raw long-format DataFrame)
+-----------------------------------------
+    start_time  : timestamp  — hourly
+    kpi_id      : string
+    kpi_value   : double
+    bts_id      : string     — parent of distname
+    distname    : string     — cell identifier
+
+Output schema (indexed training DataFrame)
+------------------------------------------
+    distname      : string
+    bts_id        : string
+    kpi_id        : string   — selected KPIs only
+    window_anchor : timestamp — stride-aligned window start
+    hour_idx      : int      — 0-based position within the window (0..167)
+    kpi_value     : double   — imputed where data was absent
+    imputed_flag  : int/bool — 1 where value was imputed
+"""
+
+
+# OTHER FILTERS BEFORE IQR OUTLIERS AND IMPUTING
+def filter_global_value_density(
+    gap_filled_df: DataFrame,
+    *,
+    min_global_density: float = 0.80,
+    min_frac_cells_passing: float = 0.80,
+) -> DataFrame:
+    """Reject KPIs that are globally sparse across cells.
+
+    Operates per (distname, kpi_id) first, then decides at the KPI level how
+    many cells must meet the threshold.  This prevents a KPI that is dense in
+    a handful of cells but absent in most from sneaking through.
+
+    Parameters
+    ----------
+    gap_filled_df : DataFrame
+        Output of fill_internal_gaps — per-KPI hourly spine with null rows for
+        missing hours.  count(*) over the spine gives the true active-range
+        length per series, so no cross-KPI padding inflates the denominator.
+    min_global_density : float
+        Minimum non-null fraction over a series' own active range for that
+        (distname, kpi_id) pair to be considered "dense" (default 0.80).
+    min_frac_cells_passing : float
+        Fraction of a KPI's contributing cells that must individually meet
+        min_global_density for the KPI to pass (default 0.80).
+
+    Returns
+    -------
+    list[str]
+        KPI IDs that pass the global density filter.
+    """
+    per_series = (
+        gap_filled_df.groupBy("kpi_id", "distname")
+        .agg(
+            f.sum(f.when(f.col("kpi_value").isNotNull(), 1).otherwise(0)).alias("non_null_count"),
+            f.count("*").alias("total_hours"),
+        )
+        .withColumn(
+            "global_density",
+            f.col("non_null_count") / f.col("total_hours"),
+        )
+        .withColumn(
+            "cell_passes",
+            (f.col("global_density") >= min_global_density).cast("int"),
+        )
+    )
+
+    return (
+        per_series.groupBy("kpi_id")
+        .agg(f.mean("cell_passes").alias("frac_passing_cells"))
+        .filter(f.col("frac_passing_cells") >= min_frac_cells_passing)
+        .select("kpi_id")
+    )
+
+
+def filter_gap_pattern(
+    gap_filled_df: DataFrame,
+    *,
+    max_imputable_gap: int = 6,
+    min_imputable_gap_frac: float = 0.90,
+) -> DataFrame:
+    """Reject KPIs whose null-run distribution is dominated by long gaps.
+
+    The original criteria (median gap length + gap frequency) were too strict
+    for the imputation-guard role and targeted different failure modes.
+    This version asks one question: of all null runs in this KPI, what fraction
+    are short enough to impute safely (≤ max_imputable_gap hours)?
+
+
+    Window A: ████░░████░░████░░████  (density=0.86, max_gap=2h  — safe)
+    Window B: ████████████░░░░░░░░░░  (density=0.86, max_gap=24h — destroys
+                                        an entire night period)
+
+    A KPI where 95 % of gaps are 1–6 h passes, regardless of how many gaps
+    there are or how they are spaced.  A KPI with many long gaps fails even if
+    its median is technically short, because imputable_gap_frac penalises any
+    run that exceeds the threshold.
+
+    Parameters
+    ----------
+    gap_filled_df : DataFrame
+        Output of fill_internal_gaps.
+    max_imputable_gap : int
+        Maximum null-run length in hours that is safe to impute (default 6).
+    min_imputable_gap_frac : float
+        Minimum fraction of all null runs that must be ≤ max_imputable_gap for
+        the KPI to pass (default 0.90).
+
+    Returns
+    -------
+    list[str]
+        KPI IDs that pass the gap pattern filter.
+    """
+    lag_w = Window.partitionBy("distname", "kpi_id").orderBy("start_time")
+
+    with_runs = (
+        gap_filled_df.withColumn("is_null", f.col("kpi_value").isNull().cast("int"))
+        .withColumn("prev_is_null", f.lag("is_null", 1, 0).over(lag_w))
+        .withColumn(
+            "null_run_start",
+            f.when((f.col("is_null") == 1) & (f.col("prev_is_null") == 0), 1).otherwise(0),
+        )
+        .withColumn(
+            "run_id",
+            f.sum("null_run_start").over(lag_w.rowsBetween(Window.unboundedPreceding, 0)),
+        )
+    )
+
+    null_run_lengths = (
+        with_runs.filter(f.col("is_null") == 1)
+        .groupBy("kpi_id", "distname", "run_id")
+        .agg(f.count("*").alias("run_length"))
+    )
+
+    return (
+        null_run_lengths.groupBy("kpi_id")
+        .agg(
+            f.mean(f.when(f.col("run_length") <= max_imputable_gap, 1).otherwise(0)).alias(
+                "imputable_gap_frac"
+            ),
+        )
+        .filter(f.col("imputable_gap_frac") >= min_imputable_gap_frac)
+        .select("kpi_id")
+    )
+
+
+def fill_internal_gaps(
+    df: DataFrame,
+    time_col: str = "start_time",
+    freq_hours: int = 1,
+) -> DataFrame:
+    """Create an hourly spine *per (distname, kpi_id, bts_id)* and left-join values.
+
+    Unlike the old ``allign_kpis_in_distname`` this does **not** extend any
+    series to the distname-wide envelope.  Only hours between the KPI's own
+    earliest and latest timestamps are generated, so internal gaps are
+    null-filled but no cross-KPI padding is created.
+
+    Complexity comparison (example: 500 KPIs, distname span 8 760 h,
+    average KPI span 4 000 h):
+
+        Old cross-join:  500 × 8 760  = 4 380 000 rows/distname
+        New per-KPI:     500 × 4 000  = 2 000 000 rows/distname  (−54 %)
+
+    For KPIs with heterogeneous lifetimes the savings are even larger.
+
+    Parameters
+    ----------
+    df : DataFrame
+        Raw long-format data.
+    time_col : str
+        Timestamp column (default ``"start_time"``).
+    freq_hours : int
+        Grid resolution in hours (default 1).
+
+    Returns
+    -------
+    DataFrame
+        Schema identical to *df* but with null-valued rows inserted for
+        every missing hour inside each series' own [min_t, max_t].
+    """
+    interval_expr = f"INTERVAL {freq_hours} HOUR"
+
+    df = df.repartition("distname", "kpi_id")
+
+    # Dedup once, up front: at most one row per (distname, kpi_id, bts_id, hour).
+    # Downstream window stats use a plain count() of non-null rows as a proxy
+    # for the distinct-hour count; that equivalence only holds if the spine has
+    # no duplicate timestamps per series. Paying the dedup here (one pass) is
+    # far cheaper than forcing a countDistinct on every window in Stage 2.
+    df = df.dropDuplicates(["distname", "kpi_id", "bts_id", time_col])
+
+    # Per-series bounds — NOT distname-wide
+    series_bounds = df.groupBy("distname", "kpi_id", "bts_id").agg(
+        f.min(time_col).alias("min_t"),
+        f.max(time_col).alias("max_t"),
+    )
+
+    # Hourly spine per series
+    series_spine = series_bounds.withColumn(
+        time_col,
+        f.explode(f.sequence(f.col("min_t"), f.col("max_t"), f.expr(interval_expr))),
+    ).drop("min_t", "max_t")
+
+    # Left-join actual values onto the per-series spine
+    return series_spine.join(df, on=["distname", "kpi_id", "bts_id", time_col], how="left")
+
+
+# TODO: This function was created to help with performance on max gap filtering
+# (not creating the anchor windows again)
+# It should be redeveloped later
+def build_pm_windows_anchor_df(
+    df: DataFrame,
+    *,
+    window_hours: int = 168,
+    stride_hours: int = 24,
+):
+    """
+    Creates a dataframe of **training windows** for every distname (cell)
+
+    1. Broadcast the distname-level time origin (earliest timestamp across all
+       KPIs in the distname).  This is the reference for stride-aligned anchors.
+
+    2. For every data row compute the hourly offset from the distname origin.
+
+    3. Determine the ≤ W/S stride-aligned anchor indices whose window
+       [anchor, anchor + W) contains this row, and ``explode`` them.
+       With W = 168 and S = 24 each row maps to at most 7 anchors.
+
+    """
+
+    n_overlap = window_hours // stride_hours  # 7 for W=168, S=24
+    # window_end_offset_s = (window_hours - 1) * 3600  # seconds
+
+    # ── distname-level origin (broadcast-safe) ──────────────────────────
+    distname_origin = df.groupBy("distname").agg(
+        f.min(f.unix_timestamp("start_time")).alias("dist_origin_epoch"),
+    )
+
+    base = (
+        df.join(f.broadcast(distname_origin), on="distname")
+        .withColumn("row_epoch", f.unix_timestamp("start_time"))
+        .withColumn(
+            "offset_h",
+            ((f.col("row_epoch") - f.col("dist_origin_epoch")) / 3600).cast("long"),
+        )
+    )
+
+    # ── explode into anchor memberships ────────────────────────────────
+    #
+    # A row at offset_h belongs to anchors k where
+    #     k × stride  ≤  offset_h  <  k × stride + window_hours
+    # ⇒   k  ∈  [ max(0, ⌊(offset_h − W + 1)/S⌋ + 1) …  ⌊offset_h/S⌋ ]
+    #
+    # Simplified: k ∈ [ max(0, max_k − (n_overlap − 1)) …  max_k ]
+    with_anchors = (
+        base.withColumn("max_k", f.floor(f.col("offset_h") / f.lit(stride_hours)).cast("long"))
+        .withColumn(
+            "min_k",
+            f.greatest(f.lit(0).cast("long"), f.col("max_k") - f.lit(n_overlap - 1)),
+        )
+        .withColumn("anchor_k", f.explode(f.sequence(f.col("min_k"), f.col("max_k"))))
+        .withColumn(
+            "anchor_epoch",
+            f.col("dist_origin_epoch") + f.col("anchor_k") * f.lit(stride_hours * 3600),
+        )
+    )
+
+    return with_anchors
+
+
+# TODO THIS FUNCTION (FOR NOW) DOESNT REALLY USE THE DENSITY THRESHOLD
+# Right now, only the really CLEAN WINDOWs are taken for training
+def compute_window_density_sparse(
+    df: DataFrame,
+    *,
+    window_hours: int = 168,
+    stride_hours: int = 24,
+    density_threshold: float = 0.917,
+) -> DataFrame:
+    """Compute per-anchor window validity **without** a distname-wide dense grid.
+
+    Algorithm
+    ---------
+    1. Broadcast the distname-level time origin (earliest timestamp across all
+       KPIs in the distname).  This is the reference for stride-aligned anchors.
+
+    2. For every data row compute the hourly offset from the distname origin.
+
+    3. Determine the ≤ W/S stride-aligned anchor indices whose window
+       [anchor, anchor + W) contains this row, and ``explode`` them.
+       With W = 168 and S = 24 each row maps to at most 7 anchors.
+
+    4. ``groupBy(distname, kpi_id, anchor)`` → count non-null values **and**
+       record the min / max within-window hour offset of those non-null rows.
+
+    5. A window is good only under **strict edge-contiguity**:
+
+           non_null_count == window_hours
+           AND min_hour_idx == 0
+           AND max_hour_idx == window_hours - 1
+
+       ``window_valid_frac = non_null_count / window_hours`` is still emitted
+       for diagnostics, but it is NOT the gate.
+
+    Why strict contiguity (vs. the old fractional ``density_threshold``)
+    --------------------------------------------------------------------
+    The anchor grid is aligned to the distname origin (earliest ts across all
+    KPIs in the cell), but each KPI starts at its own time.  A KPI that starts
+    6 h after the cell origin gets a window anchored *before* its first row, so
+    that window is missing hours 0..5.  At W=168 that is only 3.6 % missing —
+    under any reasonable fractional threshold — yet the resulting tensor cannot
+    be built (hour_idx 0..5 do not exist).  Requiring a full, contiguous 0..167
+    span eliminates these clipped-edge windows at the source.
+
+    The ``density_threshold`` parameter is retained for signature stability /
+    diagnostics but no longer gates ``is_good_window``.
+
+    Tail filter
+    -----------
+    Anchors whose window would extend past the **KPI's own** series-end are
+    discarded.  (Strict contiguity already rejects them — a window past the
+    series end cannot have hour 167 — but the explicit tail filter keeps the
+    intermediate set small.)
+
+    Parameters
+    ----------
+    df : DataFrame
+        Per-KPI gap-filled data from ``fill_internal_gaps``, **or** raw data.
+    window_hours : int
+        Window width in hours (default 168 = 1 week).
+    stride_hours : int
+        Stride between window anchors in hours (default 24 = 1 day).
+    density_threshold : float
+        Retained for diagnostics; no longer gates validity.
+
+    Returns
+    -------
+    DataFrame
+        Schema: (bts_id, distname, kpi_id, start_time, window_valid_frac,
+                 is_good_window).
+        One row per stride-aligned anchor that fits inside the KPI's active
+        range.
+    """
+    n_overlap = window_hours // stride_hours  # 7 for W=168, S=24
+    window_end_offset_s = (window_hours - 1) * 3600  # seconds
+
+    # ── distname-level origin (broadcast-safe) ──────────────────────────
+    distname_origin = df.groupBy("distname").agg(
+        f.min(f.unix_timestamp("start_time")).alias("dist_origin_epoch"),
+    )
+
+    # ── per-(distname, kpi_id) series end for tail filter ───────────────
+    series_end = (
+        df.filter(f.col("kpi_value").isNotNull())
+        .groupBy("distname", "kpi_id")
+        .agg(
+            f.max(f.unix_timestamp("start_time")).alias("series_end_epoch"),
+        )
+    )
+
+    # ── bts_id lookup (one bts_id per distname × kpi_id) ───────────────
+    bts_lookup = df.select("distname", "kpi_id", "bts_id").distinct()
+
+    # ── attach origin & compute offset ─────────────────────────────────
+    base = (
+        df.join(f.broadcast(distname_origin), on="distname")
+        .withColumn("row_epoch", f.unix_timestamp("start_time"))
+        .withColumn(
+            "offset_h",
+            ((f.col("row_epoch") - f.col("dist_origin_epoch")) / 3600).cast("long"),
+        )
+    )
+
+    # ── explode into anchor memberships ────────────────────────────────
+    #
+    # A row at offset_h belongs to anchors k where
+    #     k × stride  ≤  offset_h  <  k × stride + window_hours
+    # ⇒   k  ∈  [ max(0, ⌊(offset_h − W + 1)/S⌋ + 1) …  ⌊offset_h/S⌋ ]
+    #
+    # Simplified: k ∈ [ max(0, max_k − (n_overlap − 1)) …  max_k ]
+    with_anchors = (
+        base.withColumn("max_k", f.floor(f.col("offset_h") / f.lit(stride_hours)).cast("long"))
+        .withColumn(
+            "min_k",
+            f.greatest(f.lit(0).cast("long"), f.col("max_k") - f.lit(n_overlap - 1)),
+        )
+        .withColumn("anchor_k", f.explode(f.sequence(f.col("min_k"), f.col("max_k"))))
+        .withColumn(
+            "anchor_epoch",
+            f.col("dist_origin_epoch") + f.col("anchor_k") * f.lit(stride_hours * 3600),
+        )
+        # within-window hour offset of THIS row for the exploded anchor
+        .withColumn(
+            "hour_idx",
+            ((f.col("row_epoch") - f.col("anchor_epoch")) / 3600).cast("long"),
+        )
+    )
+
+    # ── aggregate validity per (distname, kpi_id, anchor) ──────────────
+    #
+    # Strict edge-contiguity: count distinct non-null hours AND track the
+    # first / last non-null hour offset inside the window.  Only non-null
+    # rows count toward coverage.
+    non_null = with_anchors.filter(
+        (f.col("kpi_value").isNotNull())
+        & (f.col("hour_idx") >= 0)
+        & (f.col("hour_idx") < window_hours)
+    )
+
+    window_stats = (
+        non_null.groupBy("distname", "kpi_id", "anchor_epoch")
+        .agg(
+            # Plain count(), NOT countDistinct: after the Stage-1 dedup there is
+            # at most one row per (series, hour), so count of non-null rows in a
+            # window equals the distinct-hour count. count/min/max are all
+            # partial aggregates (map-side combinable) — countDistinct is not,
+            # and forces a heavy second shuffle + per-group set tracking that
+            # spills to disk. This is the line that was slow.
+            f.count(f.lit(1)).alias("non_null_count"),
+            f.min("hour_idx").alias("min_hour_idx"),
+            f.max("hour_idx").alias("max_hour_idx"),
+        )
+        .withColumn(
+            "window_valid_frac",
+            f.col("non_null_count") / f.lit(window_hours),
+        )
+        .withColumn(
+            "is_good_window",
+            f.when(
+                (f.col("non_null_count") == f.lit(window_hours))
+                & (f.col("min_hour_idx") == f.lit(0))
+                & (f.col("max_hour_idx") == f.lit(window_hours - 1)),
+                1,
+            ).otherwise(0),
+        )
+    )
+
+    # ── tail filter + attach metadata ──────────────────────────────────
+    result = (
+        window_stats.join(series_end, on=["distname", "kpi_id"])
+        .filter(f.col("anchor_epoch") + f.lit(window_end_offset_s) <= f.col("series_end_epoch"))
+        .drop("series_end_epoch", "non_null_count", "min_hour_idx", "max_hour_idx")
+        .join(bts_lookup, on=["distname", "kpi_id"])
+        .withColumn(
+            "start_time",
+            f.from_unixtime(f.col("anchor_epoch")).cast("timestamp"),
+        )
+        .select(
+            "bts_id",
+            "distname",
+            "kpi_id",
+            "start_time",
+            "window_valid_frac",
+            "is_good_window",
+        )
+    )
+
+    return result
+
+
+def filter_max_gap_sparse(
+    gap_filled_df: DataFrame,
+    good_windows: DataFrame,
+    *,
+    window_hours: int = 168,
+    stride_hours: int = 24,
+    max_gap_hours: int = MAX_IMPUTABLE_GAP,
+) -> DataFrame:
+    """Reject windows containing a single null run longer than *max_gap_hours*.
+
+    Compared with the original ``filter_max_gap`` this version adds
+    **leading-gap awareness**: because the per-KPI spine no longer extends to
+    the distname-wide origin, a window whose anchor precedes the KPI's first
+    timestamp has an implicit null run at the front that was previously
+    materialised as explicit null rows.
+
+        leading_gap_h = max(0, (kpi_start_epoch − anchor_epoch) / 3600)
+
+    The effective max null run for each window is then::
+
+        max(leading_gap_h, worst_internal_null_run)
+
+    NOTE: with the strict edge-contiguity gate now applied in Stage 2, any
+    window with a leading gap (or any null at all) has already been rejected,
+    so this filter is largely redundant on its survivors.  It is retained as a
+    defensive second gate and because it also catches long *internal* runs that
+    a fractional gate would have missed — harmless now, but cheap insurance.
+
+    Parameters
+    ----------
+    gap_filled_df : DataFrame
+        Output of ``fill_internal_gaps`` — per-KPI hourly spine.
+    good_windows : DataFrame
+        Density-passing anchors (output of ``discard_invalid_windows``).
+    window_hours : int
+        Window width in hours (must match density stage).
+    stride_hours : int
+        Stride in hours (informational only; anchors come from *good_windows*).
+    max_gap_hours : int
+        Maximum tolerable consecutive null hours per window.
+
+    Returns
+    -------
+    DataFrame
+        Same schema as *good_windows*, with offending windows removed.
+    """
+    lag_w = Window.partitionBy("distname", "kpi_id").orderBy("start_time")
+
+    # ── step 1-3: null-run detection on the per-KPI spine ──────────────
+    with_run_ids = (
+        gap_filled_df.withColumn("is_null", f.col("kpi_value").isNull().cast("int"))
+        .withColumn("prev_is_null", f.lag("is_null", 1, 0).over(lag_w))
+        .withColumn(
+            "null_run_start",
+            f.when((f.col("is_null") == 1) & (f.col("prev_is_null") == 0), 1).otherwise(0),
+        )
+        .withColumn(
+            "run_id",
+            f.sum("null_run_start").over(lag_w.rowsBetween(Window.unboundedPreceding, 0)),
+        )
+    )
+
+    null_runs = (
+        with_run_ids.filter(f.col("is_null") == 1)
+        .groupBy("distname", "kpi_id", "run_id")
+        .agg(
+            f.count("*").alias("run_length"),
+            f.min(f.unix_timestamp("start_time")).alias("run_start_epoch"),
+        )
+    )
+
+    # ── step 4: per-KPI series start for leading-gap computation ───────
+    kpi_starts = gap_filled_df.groupBy("distname", "kpi_id").agg(
+        f.min(f.unix_timestamp("start_time")).alias("kpi_start_epoch")
+    )
+
+    # ── step 5: for each anchor, compute worst internal null run ───────
+    anchors = good_windows.select(
+        "distname",
+        "kpi_id",
+        f.unix_timestamp("start_time").alias("anchor_epoch"),
+        "start_time",
+        "bts_id",
+        "window_valid_frac",
+        "is_good_window",
+    )
+
+    window_end_offset = (window_hours - 1) * 3600
+
+    worst_internal = (
+        anchors.join(null_runs, on=["distname", "kpi_id"], how="left")
+        .filter(
+            (f.col("run_start_epoch") >= f.col("anchor_epoch"))
+            & (f.col("run_start_epoch") <= f.col("anchor_epoch") + f.lit(window_end_offset))
+        )
+        .groupBy(
+            "distname",
+            "kpi_id",
+            "anchor_epoch",
+            "start_time",
+            "bts_id",
+            "window_valid_frac",
+            "is_good_window",
+        )
+        .agg(f.max("run_length").alias("max_internal_gap"))
+    )
+
+    # ── step 6: combine internal + leading gap ─────────────────────────
+    with_gaps = (
+        anchors.join(
+            worst_internal.select("distname", "kpi_id", "start_time", "max_internal_gap"),
+            on=["distname", "kpi_id", "start_time"],
+            how="left",
+        )
+        .join(kpi_starts, on=["distname", "kpi_id"], how="left")
+        .fillna({"max_internal_gap": 0})
+        .withColumn(
+            "leading_gap",
+            f.greatest(
+                f.lit(0),
+                ((f.col("kpi_start_epoch") - f.col("anchor_epoch")) / 3600).cast("long"),
+            ),
+        )
+        .withColumn(
+            "max_null_run",
+            f.greatest(f.col("leading_gap"), f.col("max_internal_gap")),
+        )
+    )
+
+    return with_gaps.filter(f.col("max_null_run") <= max_gap_hours).select(
+        "bts_id",
+        "distname",
+        "kpi_id",
+        "start_time",
+        "window_valid_frac",
+        "is_good_window",
+    )
+
+
+def discard_invalid_windows(
+    window_density: DataFrame,
+) -> DataFrame:
+    """Drop windows that did not meet the validity gate."""
+    return window_density.filter(f.col("is_good_window") == 1)
+
+
+def compute_theoretical_max_windows(
+    df: DataFrame,
+    *,
+    window_hours: int = 168,
+    stride_hours: int = 24,
+) -> DataFrame:
+    """Compute the upper-bound window count per (distname, kpi_id).
+
+    Uses only non-null rows — works identically on per-KPI gap-filled data
+    and the old distname-wide grid (gap-fill rows are null, filtered out here).
+    """
+    return (
+        df.filter(f.col("kpi_value").isNotNull())
+        .groupBy("distname", "kpi_id")
+        .agg(
+            f.min("start_time").alias("kpi_tmin"),
+            f.max("start_time").alias("kpi_tmax"),
+        )
+        .withColumn(
+            "active_hours",
+            (f.unix_timestamp("kpi_tmax") - f.unix_timestamp("kpi_tmin")) / 3600 + 1,
+        )
+        .withColumn(
+            "theoretical_max_windows",
+            f.greatest(
+                f.lit(0),
+                ((f.col("active_hours") - f.lit(window_hours)) / f.lit(stride_hours)).cast("long")
+                + f.lit(1),
+            ),
+        )
+        .select("distname", "kpi_id", "active_hours", "theoretical_max_windows")
+    )
+
+
+def compute_kpi_yield_stats(
+    good_windows: DataFrame,
+    theoretical_max: DataFrame,
+    *,
+    total_distinct_cells: int,
+) -> DataFrame:
+    """Aggregate per-KPI statistics needed by the pre-filter."""
+    kpi_theoretical_max = theoretical_max.groupBy("kpi_id").agg(
+        f.sum("theoretical_max_windows").alias("theoretical_max_windows")
+    )
+
+    observed = (
+        good_windows.groupBy("kpi_id")
+        .agg(
+            f.count("*").alias("total_windows"),
+            f.countDistinct("distname").alias("n_cells"),
+        )
+        .withColumn(
+            "frac_contributing_cells",
+            f.col("n_cells") / f.lit(total_distinct_cells),
+        )
+        .withColumn(
+            "mean_windows_per_cell",
+            f.col("total_windows") / f.col("n_cells"),
+        )
+    )
+
+    stats = observed.join(kpi_theoretical_max, on="kpi_id", how="left").withColumn(
+        "window_coverage_frac",
+        f.when(
+            f.col("theoretical_max_windows") > 0,
+            f.col("total_windows") / f.col("theoretical_max_windows"),
+        ).otherwise(f.lit(0.0)),
+    )
+
+    return stats
+
+
+# NOTE: DROP THIS SHITE?
+def filter_temporal_stability(
+    good_windows: DataFrame,
+    *,
+    min_weeks_with_good_windows: int = 8,
+    total_weeks_in_dataset: int,
+    min_frac_weeks_covered: float = 0.60,
+) -> list[str]:
+    """Reject KPIs whose good windows are concentrated in too few weeks."""
+    effective_week_floor = max(
+        min_weeks_with_good_windows,
+        int(min_frac_weeks_covered * total_weeks_in_dataset),
+    )
+
+    return (
+        good_windows.withColumn("week", f.date_trunc("week", "start_time"))
+        .groupBy("kpi_id")
+        .agg(f.countDistinct("week").alias("n_weeks_with_good_windows"))
+        .filter(f.col("n_weeks_with_good_windows") >= effective_week_floor)
+        .select("kpi_id")
+        .rdd.flatMap(lambda r: [r["kpi_id"]])
+        .collect()
+    )
+
+
+def filter_variance(
+    aligned_df: DataFrame,
+    good_windows: DataFrame,
+    *,
+    min_std_val: float = 0.01,
+    max_zero_frac: float = 0.95,
+) -> list[str]:
+    """Reject KPIs with near-zero variance or near-constant zero values."""
+    valid_values = aligned_df.join(
+        good_windows.select("distname", "kpi_id").distinct(),
+        on=["distname", "kpi_id"],
+        how="inner",
+    ).filter(f.col("kpi_value").isNotNull())
+
+    stats = valid_values.groupBy("kpi_id").agg(
+        f.mean("kpi_value").alias("mean_val"),
+        f.stddev("kpi_value").alias("std_val"),
+        (f.sum(f.when(f.col("kpi_value") == 0, 1).otherwise(0)) / f.count("*")).alias("zero_frac"),
+    )
+
+    return (
+        stats.filter(f.col("zero_frac") <= max_zero_frac)
+        .filter(f.col("std_val") >= min_std_val)
+        .select("kpi_id")
+        .rdd.flatMap(lambda r: [r["kpi_id"]])
+        .collect()
+    )
+
+
+def filter_cross_cell_consistency(
+    aligned_df: DataFrame,
+    good_windows: DataFrame,
+    *,
+    max_iqr_ratio: float = 5.0,
+) -> list[str]:
+    """Reject KPIs whose per-cell median distribution spans an implausible range."""
+    valid_values = aligned_df.join(
+        good_windows.select("distname", "kpi_id").distinct(),
+        on=["distname", "kpi_id"],
+        how="inner",
+    ).filter(f.col("kpi_value").isNotNull())
+
+    cell_medians = valid_values.groupBy("kpi_id", "distname").agg(
+        f.expr("percentile(kpi_value, 0.50)").alias("cell_median")
+    )
+
+    consistency = (
+        cell_medians.groupBy("kpi_id")
+        .agg(
+            f.expr("percentile(cell_median, 0.25)").alias("p25"),
+            f.expr("percentile(cell_median, 0.75)").alias("p75"),
+        )
+        .withColumn(
+            "iqr_ratio",
+            f.when(f.col("p25") > 0, f.col("p75") / f.col("p25")).otherwise(f.lit(999.0)),
+        )
+    )
+
+    return (
+        consistency.filter(f.col("iqr_ratio") <= max_iqr_ratio)
+        .select("kpi_id")
+        .rdd.flatMap(lambda r: [r["kpi_id"]])
+        .collect()
+    )
+
+
+def prefilter_kpis(
+    kpi_yield_stats: DataFrame,
+    *,
+    min_window_coverage_frac: float = 0.50,
+    min_frac_contributing_cells: float = 0.50,
+) -> list[str]:
+    """Apply structural filters and return surviving KPI list sorted by coverage."""
+    surviving = (
+        kpi_yield_stats.filter(f.col("window_coverage_frac") >= min_window_coverage_frac)
+        .filter(f.col("frac_contributing_cells") >= min_frac_contributing_cells)
+        .orderBy(f.desc("window_coverage_frac"))
+        .select("kpi_id")
+        .rdd.flatMap(lambda r: [r["kpi_id"]])
+        .collect()
+    )
+    return surviving
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+#                Greedy joint KPI selection
+# ═══════════════════════════════════════════════════════════════════════════
+def greedy_coverage_curve(
+    good_windows: DataFrame,
+    candidates: list[str],
+) -> list[dict]:
+    """Run greedy selection with no floor, recording the full coverage curve.
+    Returns a list of dicts with step, kpi_id, joint_windows for elbow analysis.
+    """
+    # Same one-scan upfront collection as before
+    rows = (
+        good_windows.withColumn("start_time", f.col("start_time").cast("string"))
+        .groupBy("kpi_id", "distname")
+        .agg(f.collect_set("start_time").alias("anchors"))
+        .collect()
+    )
+
+    kpi_coverage: dict[str, set[tuple[str, str]]] = {}
+    for row in rows:
+        pairs = {(row["distname"], anchor) for anchor in row["anchors"]}
+        if row["kpi_id"] not in kpi_coverage:
+            kpi_coverage[row["kpi_id"]] = set()
+        kpi_coverage[row["kpi_id"]] |= pairs
+
+    available = [k for k in candidates if k in kpi_coverage]
+    best_seed = max(available, key=lambda k: len(kpi_coverage[k]))
+    selected = [best_seed]
+    current_intersection = kpi_coverage[best_seed].copy()
+    available.remove(best_seed)
+
+    curve = [{"step": 1, "kpi_id": best_seed, "joint_windows": len(current_intersection)}]
+
+    step = 2
+    while available:
+        best_kpi, best_next, best_count = None, None, -1
+        for kpi in available:
+            tentative = current_intersection & kpi_coverage[kpi]
+            count = len(tentative)
+            if count > best_count:
+                best_count, best_kpi, best_next = count, kpi, tentative
+
+        selected.append(best_kpi)
+        current_intersection = best_next
+        available.remove(best_kpi)
+        curve.append({"step": step, "kpi_id": best_kpi, "joint_windows": best_count})
+        step += 1
+
+    return curve
+
+
+def find_elbow(curve: list[dict]) -> int:
+    """Return the step index at the elbow of the coverage curve."""
+    counts = np.array([r["joint_windows"] for r in curve], dtype=float)
+
+    # First derivative: coverage loss per step
+    d1 = np.diff(counts)  # negative values — each step loses windows
+
+    # Second derivative: rate of change of loss
+    # A large negative value means coverage started dropping much faster
+    d2 = np.diff(d1)
+
+    # Elbow = where second derivative is most negative
+    # +1 offset because diff reduces length by 1 each time
+    elbow_idx = int(np.argmin(d2)) + 1
+
+    return elbow_idx
+
+
+def suggest_threshold(curve: list[dict], elbow_idx: int) -> int:
+    """Return the joint_windows value just before the elbow — conservative threshold."""
+    # Use the step before the elbow as the threshold — that's where
+    # coverage is still healthy before the cliff
+    safe_idx = max(0, elbow_idx - 1)
+    return curve[safe_idx]["joint_windows"]
+
+
+def greedy_joint_kpi_selection(
+    good_windows: DataFrame,
+    candidates: list[str],
+    *,
+    min_joint_windows_abs: int | None = None,
+) -> list[str]:
+    """Greedily build the largest KPI set whose joint window count stays above floor.
+
+    A 'joint window' is a unique (distname, start_time) pair where every
+    selected KPI has data. Each such pair represents one training sample.
+    """
+    if min_joint_windows_abs is None:
+        logger.info(
+            "[elbow] min_joint_windows_abs not selected - defaulting to elbow method of selection"
+        )
+        curve = greedy_coverage_curve(good_windows, candidates)
+
+        # Find elbow
+        elbow_idx = find_elbow(curve)
+        suggested_threshold = suggest_threshold(curve, elbow_idx)
+        suggested_n_kpis = elbow_idx  # number of KPIs at the elbow
+
+        logger.info(
+            f"[elbow] suggested cutoff: {suggested_n_kpis} KPIs "
+            f"| joint_windows at elbow: {suggested_threshold:,}"
+        )
+        min_joint_windows = suggested_threshold
+    else:
+        min_joint_windows = min_joint_windows_abs
+
+    logger.info(f"{min_joint_windows=}")
+
+    # Build kpi_id → set of (distname, start_time) anchor pairs in one pass.
+    # After this, all greedy logic is pure Python set operations
+    rows = (
+        good_windows.withColumn("start_time", f.col("start_time").cast("string"))  # safe hashing
+        .groupBy("kpi_id", "distname")
+        .agg(f.collect_set("start_time").alias("anchors"))
+        .collect()
+    )
+
+    kpi_coverage: dict[str, set[tuple[str, str]]] = {}
+    for row in rows:
+        pairs = {(row["distname"], anchor) for anchor in row["anchors"]}
+        if row["kpi_id"] not in kpi_coverage:
+            kpi_coverage[row["kpi_id"]] = set()
+        kpi_coverage[row["kpi_id"]] |= pairs
+
+    # We explicitly pick the KPI with the most coverage as the seed.
+    available = [k for k in candidates if k in kpi_coverage]
+    best_seed = max(available, key=lambda k: len(kpi_coverage[k]))
+    selected: list[str] = [best_seed]
+    current_intersection: set[tuple[str, str]] = kpi_coverage[best_seed].copy()
+    available.remove(best_seed)
+
+    logger.info(f"[greedy] seed '{best_seed}' | coverage={len(current_intersection):,}")
+
+    # ── Bug fix 3: true greedy — pick best candidate at each step ──────────
+    # Original code iterated candidates in fixed order, accepting each one
+    # that passed the threshold. That is not greedy — it is a sequential
+    # filter. True greedy means: at each step, among all remaining candidates,
+    # pick the one that loses the fewest windows from current_intersection.
+    # This produces a better KPI set for the same coverage floor.
+    step = 1
+    while available:
+        best_kpi: str | None = None
+        best_next_intersection: set[tuple[str, str]] | None = None
+        best_count = -1
+
+        for kpi in available:
+            tentative_intersection = current_intersection & kpi_coverage[kpi]
+            count = len(tentative_intersection)
+            if count > best_count:
+                best_count = count
+                best_kpi = kpi
+                best_next_intersection = tentative_intersection
+
+        # If even the best candidate drops below floor, stop entirely —
+        # no remaining candidate can do better than the least-damaging one.
+        if best_count < min_joint_windows:
+            logger.info(
+                f"[greedy] stopping at step {step} — "
+                f"best candidate '{best_kpi}' would reduce coverage "
+                f"to {best_count:,} < {min_joint_windows:,}"
+            )
+            break
+
+        selected.append(best_kpi)
+        current_intersection = best_next_intersection
+        available.remove(best_kpi)
+
+        logger.info(
+            f"[greedy] step {step:>4d} | accepted '{best_kpi}' "
+            f"| selected={len(selected):>4d} "
+            f"| joint_windows={best_count:,} "
+        )
+        step += 1
+
+    return selected
+
+
+def filter_joint_complete_windows(
+    good_windows: DataFrame,
+    selected_kpis: list[str],
+) -> DataFrame:
+    """Keep only anchors where **every** selected KPI is complete.
+
+    This is the gate that fixes the min_kpis / max_kpis divergence within a
+    cell.  ``good_windows`` is already restricted to fully-contiguous per-KPI
+    windows (Stage 2 strict gate), but different KPIs still survive at
+    different anchor sets.  When the windows are later densified / indexed,
+    each (distname, anchor) must carry the *same* set of selected KPIs — every
+    one present and complete — or the assembled tensor is ragged.
+
+    An anchor (distname, start_time) survives iff the number of distinct
+    selected KPIs that have a good window there equals ``len(selected_kpis)``.
+
+    The returned frame is restricted to ``selected_kpis`` and to surviving
+    anchors, so every (distname, start_time) it contains has exactly
+    ``len(selected_kpis)`` rows — one complete window per selected KPI.
+
+    Parameters
+    ----------
+    good_windows : DataFrame
+        All-filters-passing per-KPI anchors (Stage 2 / 2b survivors), with at
+        least columns (distname, kpi_id, start_time, bts_id).  May contain KPIs
+        beyond ``selected_kpis``; they are filtered out here.
+    selected_kpis : list[str]
+        Final KPI set from greedy selection.
+
+    Returns
+    -------
+    DataFrame
+        Same schema as *good_windows*, restricted to selected KPIs and to
+        anchors where all selected KPIs are present.
+    """
+    n_selected = len(selected_kpis)
+
+    selected_windows = good_windows.filter(f.col("kpi_id").isin(selected_kpis))
+
+    complete_anchors = (
+        selected_windows.groupBy("distname", "start_time")
+        .agg(f.countDistinct("kpi_id").alias("n_kpis_present"))
+        .filter(f.col("n_kpis_present") == f.lit(n_selected))
+        .select("distname", "start_time")
+    )
+
+    return selected_windows.join(complete_anchors, on=["distname", "start_time"], how="inner")
+
+
+def attach_windows_index_to_pm(
+    pm_df_long_imputed_selected: DataFrame,
+    good_windows: DataFrame,
+    window_hours: int = 168,
+):
+    """Attach (window_anchor, hour_idx) to every hourly row.
+
+    Window membership is gated on **distname + time only**.  ``good_windows``
+    is expected to be the JOINT-complete anchor set (output of
+    ``filter_joint_complete_windows``): every (distname, window_anchor) it
+    contains is valid for *all* selected KPIs simultaneously.  Therefore an
+    hourly row belongs to a window purely by virtue of its cell and timestamp
+    falling inside the window span — kpi_id must NOT participate in the
+    membership predicate, or per-KPI divergence is reintroduced.
+
+    The previous version joined on distname AND kpi_id, which let each KPI
+    inherit its own anchor set and produced ragged windows (min_kpis != max_kpis
+    per cell, and clipped windows missing leading/trailing hours).
+    """
+    # Step 1: distinct joint anchors (KPI-agnostic) + window_end for range join
+    joint_anchors = (
+        good_windows.select("distname", "start_time")
+        .distinct()
+        .withColumn("window_end", f.col("start_time") + f.expr(f"INTERVAL {window_hours} HOURS"))
+        .withColumnRenamed("start_time", "window_anchor")
+    )
+
+    # range join — membership on distname + time span ONLY.
+    # kpi_id deliberately excluded from the join predicate.
+    joined = (
+        pm_df_long_imputed_selected.alias("p")
+        .join(
+            joint_anchors.alias("g"),
+            on=[
+                pm_df_long_imputed_selected.distname == joint_anchors.distname,
+                pm_df_long_imputed_selected.start_time >= joint_anchors.window_anchor,
+                pm_df_long_imputed_selected.start_time < joint_anchors.window_end,
+            ],
+            how="inner",
+        )
+        .select("p.*", "g.window_anchor")
+    )
+
+    # compute hour_idx — position within the window
+    indexed = joined.withColumn(
+        "hour_idx",
+        (
+            (f.col("start_time").cast(LongType()) - f.col("window_anchor").cast(LongType())) / 3600
+        ).cast("integer"),
+    ).select(
+        "distname",
+        "bts_id",
+        "kpi_id",
+        f.col("window_anchor"),
+        "hour_idx",
+        "kpi_value",
+        "imputed_flag",
+    )
+
+    return indexed
+
+
+def extract_valid_pm_windows(
+    pm_df: DataFrame,
+    training_windows_anchors: DataFrame,
+    *,
+    window_hours: int = 168,
+) -> DataFrame:
+    """Return densified rows that fall inside at least one valid window.
+
+    **Deferred densification** — the full hourly grid is built here, but only
+    for the final selected KPIs and valid-window ranges.  This is the only
+    point in the pipeline where the cross-join (anchor spine × selected KPIs)
+    is materialised.  Because only surviving anchors participate, the output is
+    orders of magnitude smaller than the old upfront ``allign_kpis_in_distname``.
+
+    ``training_windows_anchors`` is expected to be the JOINT-complete anchor
+    set (output of ``filter_joint_complete_windows``).  Because every
+    (distname, start_time) there is valid for all selected KPIs, the
+    KPI-agnostic cross of (distinct anchors) × (selected KPIs) yields exactly
+    the dense, ragged-free grid the dataloader needs.
+
+    For each valid window anchor the function:
+
+    1. Generates the ``window_hours``-long hourly spine.
+    2. Crosses the spine with the selected KPIs (plus their bts_id).
+    3. Left-joins actual values from the raw data.
+    4. Deduplicates hours covered by multiple overlapping windows.
+
+    Parameters
+    ----------
+    pm_df : DataFrame
+        Raw (or per-KPI gap-filled) long-format data.
+    training_windows_anchors : DataFrame
+        Joint-complete anchor DataFrame restricted to selected KPIs.
+    window_hours : int
+        Window width in hours.
+
+    Returns
+    -------
+    DataFrame
+        Long-format, schema: (start_time, kpi_id, kpi_value, bts_id, distname).
+        Contains null kpi_value rows where data was absent inside a valid window.
+    """
+    interval_1h = f.expr("INTERVAL 1 HOUR")
+    window_end_expr = f.expr(f"INTERVAL {window_hours - 1} HOUR")
+
+    # Distinct (distname, start_time) anchors — KPI-agnostic, because the
+    # joint-completeness gate already ensured all selected KPIs share these
+    # anchors.
+    distinct_anchors = training_windows_anchors.select("distname", "start_time").distinct()
+
+    anchor_spines = distinct_anchors.withColumn(
+        "window_time",
+        f.explode(
+            f.sequence(
+                f.col("start_time"),
+                f.col("start_time") + window_end_expr,
+                interval_1h,
+            )
+        ),
+    )
+
+    kpi_dims = pm_df.select("distname", "kpi_id", "bts_id").distinct()
+
+    full_grid = anchor_spines.join(kpi_dims, on="distname", how="inner")
+
+    covered = (
+        full_grid.join(
+            pm_df.select(
+                "distname",
+                "kpi_id",
+                "bts_id",
+                f.col("start_time").alias("window_time"),
+                "kpi_value",
+            ),
+            on=["distname", "kpi_id", "bts_id", "window_time"],
+            how="left",
+        )
+        .select(
+            f.col("window_time").alias("start_time"),
+            "kpi_id",
+            "kpi_value",
+            "bts_id",
+            "distname",
+        )
+        .distinct()  # deduplicate overlapping-window hours
+    )
+
+    return covered
+
+
+def compute_joint_theoretical_max(
+    aligned_df: DataFrame,
+    candidates: list[str],
+    *,
+    window_hours: int = 168,
+    stride_hours: int = 24,
+) -> int:
+    """Exact theoretical max joint windows via per-cell anchor range intersection."""
+    series_bounds = (
+        aligned_df.filter(f.col("kpi_id").isin(candidates))
+        .filter(f.col("kpi_value").isNotNull())
+        .groupBy("distname", "kpi_id")
+        .agg(
+            f.min("start_time").alias("kpi_tmin"),
+            f.max("start_time").alias("kpi_tmax"),
+        )
+    )
+
+    cell_joint_range = series_bounds.groupBy("distname").agg(
+        f.unix_timestamp(f.max("kpi_tmin")).alias("joint_anchor_start_epoch"),
+        (f.unix_timestamp(f.min("kpi_tmax")) - f.lit((window_hours - 1) * 3600)).alias(
+            "joint_anchor_end_epoch"
+        ),
+    )
+
+    with_counts = cell_joint_range.withColumn(
+        "span_seconds",
+        f.col("joint_anchor_end_epoch") - f.col("joint_anchor_start_epoch"),
+    ).withColumn(
+        "cell_joint_max",
+        f.greatest(
+            f.lit(0),
+            (f.col("span_seconds") / f.lit(stride_hours * 3600)).cast("long") + f.lit(1),
+        ),
+    )
+
+    total = with_counts.agg(f.sum("cell_joint_max")).collect()[0][0]
+    return int(total or 0)

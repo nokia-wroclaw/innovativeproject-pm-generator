@@ -2,15 +2,71 @@ import numpy as np
 import pandas as pd
 import plotly.graph_objects as go
 import scipy.stats as stats
-from kpi_distribution_utils import _fit_distributions, _pettitt_test, _pull_kpi
 from plotly.subplots import make_subplots
 from pyspark.sql import DataFrame
 from pyspark.sql import functions as f
 
-from utils.utils import SparkDataManager
 
-# use spark session if needed
-sdm = SparkDataManager()
+def _fit_distributions(
+    values: np.ndarray,
+) -> list[dict]:
+    """Fit a set of candidate distributions and return sorted goodness-of-fit."""
+    candidates = {
+        "norm": stats.norm,
+        "lognorm": stats.lognorm,
+        "gamma": stats.gamma,
+        "expon": stats.expon,
+        "weibull_min": stats.weibull_min,
+        "beta": stats.beta,
+        "cauchy": stats.cauchy,
+        "laplace": stats.laplace,
+    }
+    results = []
+    for name, dist in candidates.items():
+        try:
+            params = dist.fit(values)
+            D, p = stats.kstest(values, name, args=params)
+            # AIC proxy: 2k - 2*logL
+            log_l = np.sum(dist.logpdf(values, *params))
+            aic = 2 * len(params) - 2 * log_l
+            results.append(dict(distribution=name, ks_stat=D, ks_pvalue=p, aic=aic, params=params))
+        except Exception:
+            pass
+    return sorted(results, key=lambda r: r["aic"])
+
+
+def _pull_kpi(df: DataFrame, kpi: str) -> pd.DataFrame:
+    """Filter to one KPI and aggregate mean over all bts/distname per timestamp."""
+    return (
+        df.filter(f.col("kpi_id") == kpi)
+        .groupBy("start_time")
+        .agg(
+            f.mean("kpi_value").alias("mean_value"),
+            f.stddev("kpi_value").alias("std_value"),
+            f.count("kpi_value").alias("n"),
+        )
+        .orderBy("start_time")
+        .toPandas()
+        .assign(start_time=lambda d: pd.to_datetime(d["start_time"]))
+    )
+
+
+def _pettitt_test(series: np.ndarray) -> tuple[int, float]:
+    """
+    Non-parametric Pettitt change-point test.
+    Uses the recurrence U_t = U_{t-1} + sum(sign(series[t] - series[j]), j=0..t-1)
+    which avoids the shape-mismatch from naively splitting at t=0.
+    Returns (change_point_index, approx_p_value).
+    """
+    n = len(series)
+    # U[t] is built incrementally: each step adds sign(x[t] - x[j]) for all j < t
+    U = np.zeros(n, dtype=float)
+    for t in range(1, n):
+        U[t] = U[t - 1] + np.sum(np.sign(series[t] - series[:t]))
+    K = int(np.argmax(np.abs(U)))
+    T = np.max(np.abs(U))
+    p = 2.0 * np.exp(-6.0 * T**2 / (n**3 + n**2))
+    return K, float(p)
 
 
 def plot_kpi_timeline(
@@ -34,7 +90,7 @@ def plot_kpi_timeline(
     t = pdf["start_time"]
     v = pdf["mean_value"]
     std = pdf["std_value"].fillna(0)
-    values = v.dropna().values
+    values: np.ndarray = v.dropna().to_numpy()
 
     cp_idx, cp_p = _pettitt_test(values)
     cp_time = pdf["start_time"].iloc[cp_idx] if cp_idx < len(pdf) else None
@@ -93,8 +149,8 @@ def plot_kpi_timeline(
         col=1,
     )
 
-    if cp_p < 0.10:
-        fig.add_vline(
+    if cp_p < 0.10 and cp_time is not None:
+        fig.add_vline(  # type: ignore[call-arg]
             x=cp_time.value // 10**6,
             line_color=ERR,
             line_dash="dot",
@@ -173,8 +229,8 @@ def plot_kpi_timeline(
     return fig
 
 
-def schema(df: DataFrame):
-    # SCHEMA + NULL % per column for pm data
+def schema(df: DataFrame) -> pd.DataFrame:
+    """Return a DataFrame with each column's Spark type, nullable flag, and null percentage."""
     total = df.count()
 
     null_exprs = [
@@ -196,8 +252,8 @@ def schema(df: DataFrame):
     return schema_df
 
 
-def basic_info(df: DataFrame):
-    # some basic info about the pm dataset
+def basic_info(df: DataFrame) -> pd.DataFrame:
+    """Return a single-row DataFrame with row count, distinct KPI/BTS/distname counts, and date range."""
     counts = df.agg(
         f.count("*").alias("rows_count"),
         f.countDistinct("kpi_id").alias("kpi_count"),
@@ -276,8 +332,8 @@ def kpi_bts_coverage(df: DataFrame):
     return fig.to_json()
 
 
-def kpi_catalog(df: DataFrame):
-    # KPI catalog with basic metrics regarding each kpi eg. min value, max value etc.
+def kpi_catalog(df: DataFrame) -> pd.DataFrame:
+    """Return per-KPI statistics: record count, BTS/day counts, time range, value mean/std/min/max, and null %."""
     kpi_catalog = (
         df.groupBy("kpi_id")
         .agg(

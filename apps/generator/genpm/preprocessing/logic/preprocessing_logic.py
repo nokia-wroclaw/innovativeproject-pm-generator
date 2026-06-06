@@ -4,17 +4,13 @@ from pyspark import StorageLevel
 from pyspark.sql import DataFrame, Window
 from pyspark.sql import functions as f
 
-from utils.consts import SHARED_DIR_PATH, SPARK_CONFIGS
-from utils.logger import get_logger
-from utils.utils import SparkDataManager
+from genpm.utils.consts import SHARED_DIR_PATH
+from genpm.utils.logger import get_logger
 
 logger = get_logger()
-sdm = SparkDataManager(SPARK_CONFIGS["FULL_HEAVY"])
 
 EDA_DATA_PATH = SHARED_DIR_PATH / "eda_data"
 PREPROCESSED_DATASET_PATH = SHARED_DIR_PATH / "preprocessed_dataset"
-
-# HELPER FUNCTIONS
 
 
 def _pivot_pm_data(pm_df_long: DataFrame) -> DataFrame:
@@ -28,7 +24,7 @@ def _pivot_pm_data(pm_df_long: DataFrame) -> DataFrame:
 
     kpis = [r.kpi_id for r in pm_df_long.select("kpi_id").distinct().collect()]
     batches = list(__chunk(kpis, BATCH_SIZE))
-    print(f"{len(batches)=}")
+    logger.info(f"{len(batches)=}")
 
     pm_df_long = pm_df_long.repartition("kpi_id").persist()
 
@@ -37,10 +33,10 @@ def _pivot_pm_data(pm_df_long: DataFrame) -> DataFrame:
 
     pm_df_wide = None
 
-    print("PM DATA PIVOTTING")
+    logger.info("PM DATA PIVOTTING")
 
     for i, batch in enumerate(batches):
-        print(f"\tBatch {i}")
+        logger.info(f"\tBatch {i}")
 
         df_batch = pm_df_long.filter(f.col("kpi_id").isin(batch))
 
@@ -58,33 +54,9 @@ def _pivot_pm_data(pm_df_long: DataFrame) -> DataFrame:
         else:
             pm_df_wide = pm_df_wide.join(df_pivot, ["bts_id", "distname", "start_time"], "outer")
 
-    print("PM DATA PIVOTTING COMPLETED")
+    logger.info("PM DATA PIVOTTING COMPLETED")
 
     return pm_df_wide  # type: ignore
-
-
-def fill_missing_timestamps(
-    df: DataFrame,
-    time_col: str,
-    group_cols: list[str],
-) -> DataFrame:
-    """
-    Fill missing hourly timestamps per station using each station's
-    own min/max time range. Operates in long format — safe for large data.
-    """
-    print("PREPROCESSING: FILLING MISSING TIMESTAMPS")
-    # Per-group time bounds — small aggregation, stays distributed
-    station_bounds = df.groupBy(*group_cols).agg(
-        f.min(time_col).alias("min_t"), f.max(time_col).alias("max_t")
-    )
-
-    # Generate hourly spine per group using sequence + explode
-    station_spines = station_bounds.withColumn(
-        time_col, f.explode(f.sequence(f.col("min_t"), f.col("max_t"), f.expr("INTERVAL 1 HOUR")))
-    ).drop("min_t", "max_t")
-
-    # Left join original data — only fills gaps, no cross-group explosion
-    return station_spines.join(df, on=[*group_cols, time_col], how="left")
 
 
 def coalesce_kpi_version(
@@ -127,9 +99,7 @@ def coalesce_kpi_version(
 
     # TODO: ANALYZE HOW KPI STATISTICS CHANGE, WHEN VERSION CHANGES
 
-    # TODO: Add empirical KPI exclusion for statistical differences
-
-    print("PREPROCESSING: KPI VERSION COALESCE")
+    logger.info("PREPROCESSING - KPI VERSION COALESCE")
     # get only relevent kpis
     distinct_kpis = pm_df_long.select("kpi_id").distinct()
     kpi_definitions = kpi_definitions.join(f.broadcast(distinct_kpis), on="kpi_id", how="inner")
@@ -181,7 +151,7 @@ def coalesce_kpi_version(
     result_frames = []
 
     for chunk in chunks:
-        print(f"CHUNK CONTAINS: \n{', '.join(chunk)}")
+        logger.info(f"CHUNK CONTAINS: \n{', '.join(chunk)}")
         chunk_df = pm_data_for_kpi_merge.filter(f.col("base_kpi").isin(chunk))
 
         # best non-null version_rank per group
@@ -244,24 +214,6 @@ def coalesce_kpi_version(
     return df_result, kpi_definitions_final
 
 
-# Data download
-
-
-def load_data() -> tuple[DataFrame, DataFrame, DataFrame]:
-    PM_DATA_PATH = [SHARED_DIR_PATH / "raw_data" / f"pm_kpis_part{i}.parquet" for i in range(1, 6)]
-    KPI_DEFINITIONS_PATH = SHARED_DIR_PATH / "raw_data" / "kpis_definitions.parquet"
-    SIMPLE_REPORTS_PATH = SHARED_DIR_PATH / "raw_data" / "simple_reports.parquet"
-
-    list_of_pm_dfs = [sdm.read_parquet(dp) for dp in PM_DATA_PATH]
-
-    pm_df_long: DataFrame = reduce(lambda df1, df2: df1.unionByName(df2), list_of_pm_dfs)
-
-    kpis_definitions_df = sdm.read_parquet(KPI_DEFINITIONS_PATH)
-    simple_reports_df = sdm.read_parquet(SIMPLE_REPORTS_PATH)
-
-    return pm_df_long, kpis_definitions_df, simple_reports_df
-
-
 # pivot simple reports
 def simple_reports_pivot(simple_reports: DataFrame):
     grouping_cols = ("datetime", "bts_id", "distname")
@@ -274,176 +226,74 @@ def simple_reports_pivot(simple_reports: DataFrame):
 
 # raw_pm
 def raw_pm_preperation(pm_df_long: DataFrame) -> DataFrame:
-    pm_df_long = pm_df_long.withColumnsRenamed({"bts_anon": "bts_id", "distname_anon": "distname"})
     pm_df_long = pm_df_long.dropDuplicates()
     pm_df_long = pm_df_long.dropna(subset=("start_time", "bts_id", "distname"))
     return pm_df_long
 
 
-# TODO: change this function, so it sees low coverage in time, not overall
-# (rolling window coverage?)
-# Add trimming of low coverage periods to certain kpis
-def drop_low_coverage(
-    pm_df: DataFrame,
-    cell_threshold: float = 0.5,
-    kpi_threshold: float = 0.5,
-) -> DataFrame:
-    """
-    Independently compute coverage at cell and KPI level, report bad ones,
-    then drop both.
+def iqr_kpi_outlier_detection(pm_df_long: DataFrame, k: float = 1.5) -> DataFrame:
+    logger.info("IQR OUTLIERS CALCULATIONS")
 
-    Coverage definition:
-      - cell : non_null(kpi_value) / total rows  per (kpi_id, bts_id, distname)
-      - kpi  : non_null(kpi_value) / total rows  per kpi_id  (across ALL cells)
-
-    Dropping is additive — a row is removed if its cell OR its KPI is below
-    the respective threshold.
-    """
-
-    # ── Cell-level coverage ──────────────────────────────────────────────────
-    cell_stats = (
-        pm_df.groupBy("kpi_id", "bts_id", "distname")
+    # ── 1. Compute IQR bounds per (distname, kpi_id) ──────────────────────────────
+    bounds = (
+        pm_df_long.groupBy("distname", "kpi_id")
         .agg(
-            f.count("*").alias("total"),
-            f.count("kpi_value").alias("non_null"),
+            f.percentile_approx("kpi_value", 0.25).alias("kpi_value_q1"),
+            f.percentile_approx("kpi_value", 0.75).alias("kpi_value_q3"),
         )
-        .withColumn("coverage", f.col("non_null") / f.col("total"))
+        .withColumn("iqr", f.col("kpi_value_q3") - f.col("kpi_value_q1"))
+        .withColumn("lower_iqr_bound", f.col("kpi_value_q1") - k * f.col("iqr"))
+        .withColumn("upper_iqr_bound", f.col("kpi_value_q3") + k * f.col("iqr"))
+        .select("distname", "kpi_id", "lower_iqr_bound", "upper_iqr_bound")
     )
 
-    good_cells = cell_stats.filter(f.col("coverage") >= cell_threshold)
-    bad_cells = cell_stats.filter(f.col("coverage") < cell_threshold)
+    pm_df_with_bounds = pm_df_long.join(bounds, on=["distname", "kpi_id"], how="left")
 
-    n_cells = cell_stats.count()
-    n_bad_cells = bad_cells.count()
-    print(
-        f"[coverage] Cells  — dropped: {n_bad_cells:>6} / {n_cells}  "
-        f"(threshold={cell_threshold:.0%})"
-    )
-    print("[coverage] Worst offending cells:")
-    (
-        bad_cells.orderBy("coverage")
-        .select("kpi_id", "bts_id", "distname", "coverage")
-        .show(10, truncate=False)
+    # ── 2. Flag outliers ───────────────────────────────────────────────────────────
+    outlier_mask = (f.col("kpi_value") < f.col("lower_iqr_bound")) | (
+        f.col("kpi_value") > f.col("upper_iqr_bound")
     )
 
-    # ── KPI-level coverage ───────────────────────────────────────────────────
-    kpi_stats = (
-        pm_df.groupBy("kpi_id")
+    df_outliers_dropped = pm_df_with_bounds.withColumn(
+        "kpi_value", f.when(~outlier_mask, f.col("kpi_value"))
+    )
+
+    return df_outliers_dropped.drop("lower_iqr_bound", "upper_iqr_bound")
+
+
+def pop_constant_kpis(pm_df_long: DataFrame) -> tuple[DataFrame, DataFrame]:
+    """function to not include constant kpis. A constant kpi, is a kpi, which value over its whole
+    timespan is constant
+       For generating purposes, a second Dataframe is returned with information about those kpis
+       If the user would like to generate one constant kpi aswell
+
+    Args:
+        pm_df_long (DataFrame): PM data Dataframe
+
+    Returns:
+        tuple[DataFrame, DataFrame]: PM data dataframe with const kpis removed, a dataframe
+        containing information about the constant kpi_id, its constant value
+    """
+    # Cheaper than count_distinct: no HyperLogLog, just two simple aggregations
+    constant_kpis = (
+        pm_df_long.groupBy("kpi_id")
         .agg(
-            f.count("*").alias("total"),
-            f.count("kpi_value").alias("non_null"),
+            f.min("kpi_value").alias("kpi_value_min"),
+            f.max("kpi_value").alias("kpi_value_max"),
+            f.first("kpi_value").alias("kpi_value"),
         )
-        .withColumn("coverage", f.col("non_null") / f.col("total"))
+        .where(f.col("kpi_value_min") == f.col("kpi_value_max"))
+        .select("kpi_id", "kpi_value")
     )
 
-    good_kpis = kpi_stats.filter(f.col("coverage") >= kpi_threshold)
-    bad_kpis = kpi_stats.filter(f.col("coverage") < kpi_threshold)
+    # Cache to avoid recomputing the groupBy when the join triggers a second scan
+    constant_kpis.cache()
+    constant_kpis.count()  # materialize eagerly
 
-    n_kpis = kpi_stats.count()
-    n_bad_kpis = bad_kpis.count()
-    print(
-        f"[coverage] KPIs   — dropped: {n_bad_kpis:>6} / {n_kpis}  (threshold={kpi_threshold:.0%})"
-    )
-    print("[coverage] Dropped KPIs:")
-    (
-        bad_kpis.orderBy("coverage")
-        .select("kpi_id", "coverage", "total", "non_null")
-        .show(20, truncate=False)
+    pm_df_long_no_constant_kpis = pm_df_long.join(
+        constant_kpis.select("kpi_id"),  # only need kpi_id for the anti-join
+        on="kpi_id",
+        how="left_anti",
     )
 
-    # ── Drop: remove bad cells, then remove bad KPIs ─────────────────────────
-    df_clean = pm_df.join(
-        good_cells.select("kpi_id", "bts_id", "distname"),
-        on=["kpi_id", "bts_id", "distname"],
-        how="inner",
-    ).join(good_kpis.select("kpi_id"), on="kpi_id", how="inner")
-
-    return df_clean
-
-
-def save_preprocessed_data(
-    pm_df_long: DataFrame,
-    pm_df_wide: DataFrame,
-    kpi_definitions: DataFrame,
-    simple_reports: DataFrame,
-):
-    sdm.write_parquet(
-        pm_df_long,
-        PREPROCESSED_DATASET_PATH / "pm_data_long",
-        mode="overwrite",
-    )
-
-    sdm.write_parquet(
-        pm_df_wide,
-        PREPROCESSED_DATASET_PATH / "pm_data_wide",
-        mode="overwrite",
-    )
-
-    sdm.write_parquet(
-        kpi_definitions,
-        PREPROCESSED_DATASET_PATH / "kpi_definitions",
-        mode="overwrite",
-    )
-
-    sdm.write_parquet(
-        simple_reports,
-        PREPROCESSED_DATASET_PATH / "simple_reports",
-        mode="overwrite",
-    )
-
-
-def main():
-    print("RAW DATA PROCESSING")
-    print("LOADING DATA")
-
-    SAVE_RAW_DATA = False
-
-    pm_df_long_raw, kpi_definitions_df_raw, simple_reports_df_raw = load_data()
-
-    pm_df_long_raw = raw_pm_preperation(pm_df_long_raw)
-
-    if SAVE_RAW_DATA:
-        sdm.write_parquet(
-            pm_df_long_raw,
-            EDA_DATA_PATH / "raw" / "raw_pm_data",
-            mode="overwrite",
-            partitionBy="kpi_id",
-        )
-        sdm.write_parquet(
-            kpi_definitions_df_raw, EDA_DATA_PATH / "raw" / "raw_kpi_definitions", mode="overwrite"
-        )
-        sdm.write_parquet(
-            simple_reports_df_raw, EDA_DATA_PATH / "raw" / "raw_simple_reports", mode="overwrite"
-        )
-
-        # pivot raw data - EDA
-        pm_df_wide_raw = _pivot_pm_data(pm_df_long_raw)
-        sdm.write_parquet(
-            pm_df_wide_raw, EDA_DATA_PATH / "raw" / "raw_pm_data_wide", mode="overwrite"
-        )
-
-    # KPI version flattening
-    pm_df_long, kpi_definitions = coalesce_kpi_version(pm_df_long_raw, kpi_definitions_df_raw)
-
-    # Timestamp frequency uniformoty (1 hour) and KPI-bts recording range verification
-    pm_df_long = fill_missing_timestamps(pm_df_long, "start_time", ["kpi_id", "bts_id", "distname"])
-
-    pm_df_long = drop_low_coverage(pm_df_long, cell_threshold=0.5, kpi_threshold=0.5)
-
-    pm_df_long = pm_df_long.cache()
-    pm_df_long.count()
-    # Kpi wide format
-    pm_df_wide = _pivot_pm_data(pm_df_long)
-
-    simple_reports = simple_reports_pivot(simple_reports_df_raw)
-
-    save_preprocessed_data(
-        pm_df_long,
-        pm_df_wide,
-        kpi_definitions,
-        simple_reports,
-    )
-
-
-if __name__ == "__main__":
-    main()
+    return pm_df_long_no_constant_kpis, constant_kpis

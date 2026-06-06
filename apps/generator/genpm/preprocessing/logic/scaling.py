@@ -2,7 +2,6 @@ from __future__ import annotations
 
 from pyspark.sql import DataFrame, SparkSession
 from pyspark.sql import functions as f
-
 from utils.consts import SHARED_DIR_PATH, SPARK_CONFIGS
 
 cfg = SPARK_CONFIGS["WINDOW_HEAVY"]
@@ -271,17 +270,28 @@ class GroupedKPIScaler:
 
         self.params_df.write.mode(mode).parquet(resolved_path)
 
-    def load_params(self, spark: SparkSession, path: str | None = None) -> GroupedKPIScaler:
-        """
-        Load params from parquet and rebuild audit_df.
-        """
-        resolved_path = path or self.params_path
-        if not resolved_path:
-            raise ValueError("No params path provided.")
-
-        self.params_df = spark.read.parquet(resolved_path)
-        self.audit_df = self.params_df.select(*self.group_cols, *self.AUDIT_COLUMNS)
-        return self
+    @classmethod
+    def load_params_parquet(
+        cls,
+        spark: SparkSession,
+        value_col: str,
+        group_cols: list[str],
+        path: str,
+        min_valid_points: int = 4,
+        percentile_accuracy: int = 10000,
+        broadcast_params: bool = False,
+    ) -> GroupedKPIScaler:
+        instance = cls(
+            value_col=value_col,
+            group_cols=group_cols,
+            min_valid_points=min_valid_points,
+            percentile_accuracy=percentile_accuracy,
+            broadcast_params=broadcast_params,
+            params_path=path,
+        )
+        instance.params_df = spark.read.parquet(path)
+        instance.audit_df = instance.params_df.select(*instance.group_cols, *instance.AUDIT_COLUMNS)
+        return instance
 
     def _get_params_df(self) -> DataFrame:
         if self.params_df is None:
