@@ -1,15 +1,23 @@
 import getpass
+import os
 from pathlib import Path
 
-from dotenv import load_dotenv
+try:
+    from dotenv import load_dotenv
 
-load_dotenv()
+    load_dotenv()
+except ImportError:
+    pass
 
 USER = getpass.getuser()
 
-SHARED_DIR_PATH = Path(f"/home/{USER}/app/apps/apps/generator/data/shared_dir")
+SHARED_DIR_PATH = Path(
+    os.getenv("GENPM_SHARED_DIR", f"/home/{USER}/app/apps/apps/generator/data/shared_dir"),
+)
 
-SPARK_CHECKPOINT_PATH = SHARED_DIR_PATH / "tmp" / "checkpoints"
+SPARK_CHECKPOINT_PATH = Path(
+    os.getenv("GENPM_SPARK_CHECKPOINT_DIR", str(SHARED_DIR_PATH / "tmp" / "checkpoints")),
+)
 
 # /home/sparkuser/app/apps/apps/generator/data/shared_dir/tmp/checkpoints
 
@@ -65,6 +73,26 @@ SPARK_CONFIGS = {
         "spark.plugins": "",
         "spark.rapids.sql.enabled": "false",
         "spark.kryo.registrator": "",
+    },
+    # ============================================================
+    # 2b. AIRFLOW (container / spark-submit)
+    # Driver heap is set via --driver-memory in preprocessing_pipeline.py.
+    # Low storage fraction so cached stages spill to disk instead of OOM.
+    # ============================================================
+    "AIRFLOW": {
+        "spark.master": "local[4]",
+        "spark.driver.memory": "8g",
+        "spark.executor.memory": "8g",
+        "spark.memory.fraction": "0.7",
+        "spark.memory.storageFraction": "0.2",
+        "spark.sql.shuffle.partitions": "200",
+        "spark.sql.adaptive.enabled": "true",
+        "spark.sql.adaptive.coalescePartitions.enabled": "true",
+        "spark.sql.adaptive.skewJoin.enabled": "true",
+        "spark.serializer": "org.apache.spark.serializer.KryoSerializer",
+        "spark.sql.files.maxPartitionBytes": "64MB",
+        "spark.sql.autoBroadcastJoinThreshold": "25MB",
+        "spark.driver.extraJavaOptions": "-XX:+UseG1GC",
     },
     # ============================================================
     # 3. STANDARD (A FIFTH)

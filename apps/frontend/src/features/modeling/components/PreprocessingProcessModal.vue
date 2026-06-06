@@ -135,7 +135,13 @@ const sections = [
   {
     title: 'Output paths',
     fields: [
-      { key: 'output_path_prefix', label: 'Output path prefix', required: true, placeholder: '.../preprocessed_dataset' },
+      {
+        key: 'output_path_prefix',
+        label: 'Output path prefix (optional)',
+        required: false,
+        placeholder: 'auto: s3://<bucket>/preprocessed/<run_id>',
+        hint: 'Leave empty to save results on S3 under preprocessed/<run_id>.',
+      },
     ],
   },
   {
@@ -298,12 +304,15 @@ watch(
 
 function buildDagArgs() {
   return Object.fromEntries(
-    allFields.map((field) => {
-      const value = form[field.key];
-      if (field.key === 'min_joint_windows_abs') return [field.key, value === '' ? null : value];
-      if (field.type === 'checkbox' || field.valueType === 'number') return [field.key, value];
-      return [field.key, String(value).trim()];
-    }),
+    allFields
+      .map((field) => {
+        const value = form[field.key];
+        if (field.key === 'min_joint_windows_abs') return [field.key, value === '' ? null : value];
+        if (field.key === 'output_path_prefix' && !String(value).trim()) return null;
+        if (field.type === 'checkbox' || field.valueType === 'number') return [field.key, value];
+        return [field.key, String(value).trim()];
+      })
+      .filter(Boolean),
   );
 }
 

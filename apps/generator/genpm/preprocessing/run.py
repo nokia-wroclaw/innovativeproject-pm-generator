@@ -1,3 +1,4 @@
+from pyspark import StorageLevel
 from pyspark.sql import DataFrame
 from pyspark.sql import functions as f
 
@@ -53,7 +54,7 @@ def run_preprocessing(sdm: SparkDataManager, preprocessing_cfg: PreprocessingCon
     # Timestamp frequency uniformoty (1 hour)
     # Perc cell allignment to min max (window coverage handles the rest)
     pm_df_long_filled_gaps = kpi_coverage.fill_internal_gaps(pm_df_long, "start_time")
-    pm_df_long_filled_gaps.cache()
+    pm_df_long_filled_gaps.persist(StorageLevel.MEMORY_AND_DISK)
     pm_df_long_filled_gaps.count()
     logger.info("COVERAGE - gap-filled rows computed")
 
@@ -287,8 +288,6 @@ def run_preprocessing(sdm: SparkDataManager, preprocessing_cfg: PreprocessingCon
     # END OF PREPROCESSING
 
     # SAVE PREPROCESSED DATA
-
-    # TODO: Integrate this with S3
     for df, df_path in zip(list_of_dfs, preprocessed_data_filenames, strict=True):
         sdm.write_parquet(
             df,

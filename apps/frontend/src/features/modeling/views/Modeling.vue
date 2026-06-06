@@ -93,7 +93,7 @@ const processDefinitions = {
   [PREPROCESSING_PROCESS]: {
     processType: PREPROCESSING_PROCESS,
     title: 'Preprocessing + Feature Engineering',
-    dagId: 'moj_pierwszy_dag',
+    dagId: 'preprocessing_pipeline',
     description: 'Runs preprocessing and feature engineering in one asynchronous DAG.',
     emptyText: 'This process saves a preprocessed dataset and a featured dataset.',
   },

@@ -90,6 +90,7 @@ class PipelineService:
                 json={
                     "dag_run_id": logical_run_id,
                     "conf": {
+                        "genpm_run_id": logical_run_id,
                         "dataset_id": run.dataset_id,
                         "s3_key": dataset.s3_key,
                         "file_name": dataset.file_name,

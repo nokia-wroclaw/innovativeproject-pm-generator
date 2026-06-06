@@ -5,13 +5,13 @@ from pyspark.sql import SparkSession
 def main():
     print("Start")
 
-    # Fetch MinIO configuration from environment variables defined in docker-compose
-    s3_endpoint = os.environ.get("S3_URL", "http://minio:9000")
+    # Fetch S3 configuration from environment variables defined in docker-compose
+    s3_endpoint = os.environ.get("S3_URL") or os.environ.get("S3_ENDPOINT", "")
     access_key = os.environ.get("AWS_ACCESS_KEY_ID", "your_default_access_key")
     secret_key = os.environ.get("AWS_SECRET_ACCESS_KEY", "your_default_secret_key")
     bucket_name = os.environ.get("S3_BUCKET", "test-bucket")
 
-    # Initialize Spark session with appropriate parameters for MinIO
+    # Initialize Spark session with appropriate parameters for S3
     spark = SparkSession.builder \
         .appName("AirflowTestJob") \
         .config("spark.hadoop.fs.s3a.endpoint", s3_endpoint) \

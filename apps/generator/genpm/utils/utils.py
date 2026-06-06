@@ -8,16 +8,48 @@ from functools import reduce
 from pathlib import Path
 
 import yaml
-from dotenv import load_dotenv
 from pyspark.sql import Column, DataFrame, SparkSession
 from pyspark.sql import functions as f
 
 from .consts import SPARK_CHECKPOINT_PATH
 from .logger import get_logger
 
-load_dotenv()
+try:
+    from dotenv import load_dotenv
+
+    load_dotenv()
+except ImportError:
+    pass
 
 logger = get_logger()
+
+PREPROCESSED_S3_PREFIX = "preprocessed"
+
+
+def resolve_storage_path(path: Path | str) -> str:
+    """Map local paths, S3 keys and s3:// URIs to a Spark-readable location."""
+    raw = str(path).strip()
+    if not raw:
+        raise ValueError("Empty storage path")
+
+    if raw.startswith("s3a://"):
+        return raw
+    if raw.startswith("s3://"):
+        return f"s3a://{raw[5:]}"
+    if raw.startswith("file://"):
+        return raw.removeprefix("file://")
+    if raw.startswith("/"):
+        return raw
+
+    bucket = os.getenv("S3_BUCKET", "").strip()
+    if not bucket:
+        return raw
+    return f"s3a://{bucket}/{raw.lstrip('/')}"
+
+
+def default_preprocessed_output_prefix(run_id: str) -> str:
+    bucket = os.getenv("S3_BUCKET", "datasets").strip() or "datasets"
+    return f"s3a://{bucket}/{PREPROCESSED_S3_PREFIX}/{run_id}"
 
 
 class SparkDataManager:
@@ -42,6 +74,9 @@ class SparkDataManager:
             .config("spark.sql.adaptive.skewJoin.enabled", "true")
         )
 
+        for conf, val in self.s3_spark_conf().items():
+            builder = builder.config(conf, val)
+
         if spark_conf is not None:
             for conf, val in spark_conf.items():
                 builder = builder.config(conf, val)
@@ -57,8 +92,8 @@ class SparkDataManager:
 
         shared_group = os.getenv("USER")
         if shared_group:
-            subprocess.run(["chgrp", "-R", shared_group, str(checkpoint_path)], check=True)
-            subprocess.run(["chmod", "g+w", str(checkpoint_path)], check=True)
+            subprocess.run(["chgrp", "-R", shared_group, str(checkpoint_path)], check=False)
+            subprocess.run(["chmod", "g+w", str(checkpoint_path)], check=False)
 
         self.spark.sparkContext.setCheckpointDir(checkpoint_directory)
         logger.warning(f"CHECKPOINT DIR SET TO {checkpoint_directory}")
@@ -79,18 +114,31 @@ class SparkDataManager:
             self.spark = None  # type: ignore
 
     @staticmethod
-    def minio_spark_conf():
-        # TODO: MINIO setup for sparksession
-        pass
+    def s3_spark_conf() -> dict[str, str]:
+        endpoint = (os.getenv("S3_URL") or os.getenv("S3_ENDPOINT") or "").rstrip("/")
+        access_key = os.getenv("AWS_ACCESS_KEY_ID", "")
+        secret_key = os.getenv("AWS_SECRET_ACCESS_KEY", "")
+        if not endpoint or not access_key or not secret_key:
+            return {}
+
+        return {
+            "spark.hadoop.fs.s3a.endpoint": endpoint,
+            "spark.hadoop.fs.s3a.access.key": access_key,
+            "spark.hadoop.fs.s3a.secret.key": secret_key,
+            "spark.hadoop.fs.s3a.path.style.access": "true",
+            "spark.hadoop.fs.s3a.connection.ssl.enabled": "false",
+            "spark.hadoop.fs.s3a.impl": "org.apache.hadoop.fs.s3a.S3AFileSystem",
+        }
 
     def read_parquet(self, path: Path | str, **options) -> DataFrame:
-        # TODO: S3 compatability will be introduced here
-        logger.info(f"Reading Dataframe from {str(path)} ...")
-        return self.spark.read.parquet(str(path), **options)
+        resolved = resolve_storage_path(path)
+        logger.info(f"Reading Dataframe from {resolved} ...")
+        return self.spark.read.parquet(resolved, **options)
 
     def write_parquet(self, df: DataFrame, path: Path | str, mode: str = "error", **kwargs):
-        logger.info(f"Writing DataFrame to {str(path)} ...")
-        df.write.parquet(path=str(path), mode=mode, **kwargs)
+        resolved = resolve_storage_path(path)
+        logger.info(f"Writing DataFrame to {resolved} ...")
+        df.write.parquet(path=resolved, mode=mode, **kwargs)
 
     def hard_checkpoint_to_parquet(self, df: DataFrame, path: Path | str) -> DataFrame:
         self.write_parquet(df, path, mode="overwrite")
@@ -262,24 +310,24 @@ def validate_windowed_pm(
     )
     if total_rows != expected_rows:
         logger.warning(
-            f"[shape] ❌ row count mismatch: got {total_rows:,}, expected {expected_rows:,}"
+            f"[shape] FAIL row count mismatch: got {total_rows:,}, expected {expected_rows:,}"
         )
     else:
-        logger.info("[shape] ✅ row count matches expected")
+        logger.info("[shape] OK row count matches expected")
 
     # ── 2. Null check ──────────────────────────────────────────────────────
     n_null_values = df.filter(f.col("kpi_value").isNull()).count()
     n_null_flags = df.filter(f.col("imputed_flag").isNull()).count()
 
     if n_null_values > 0:
-        logger.warning(f"[nulls] ❌ kpi_value nulls: {n_null_values:,}")
+        logger.warning(f"[nulls] FAIL kpi_value nulls: {n_null_values:,}")
     else:
-        logger.info("[nulls] ✅ no kpi_value nulls")
+        logger.info("[nulls] OK no kpi_value nulls")
 
     if n_null_flags > 0:
-        logger.warning(f"[nulls] ❌ imputed_flag nulls: {n_null_flags:,}")
+        logger.warning(f"[nulls] FAIL imputed_flag nulls: {n_null_flags:,}")
     else:
-        logger.info("[nulls] ✅ no imputed_flag nulls")
+        logger.info("[nulls] OK no imputed_flag nulls")
 
     # ── 3. hour_idx range ─────────────────────────────────────────────────
     # Every (distname, window_anchor, kpi_id) must have exactly
@@ -299,16 +347,16 @@ def validate_windowed_pm(
     n_bad_range = bad_hour_range.count()
 
     if n_bad_counts > 0:
-        logger.warning(f"[hours] ❌ combos with wrong hour count: {n_bad_counts:,}")
+        logger.warning(f"[hours] FAIL combos with wrong hour count: {n_bad_counts:,}")
         bad_hour_counts.orderBy("n_hours").show(10, truncate=False)
     else:
-        logger.info(f"[hours] ✅ all combos have exactly {window_hours} hours")
+        logger.info(f"[hours] OK all combos have exactly {window_hours} hours")
 
     if n_bad_range > 0:
-        logger.warning(f"[hours] ❌ combos with wrong hour_idx range: {n_bad_range:,}")
+        logger.warning(f"[hours] FAIL combos with wrong hour_idx range: {n_bad_range:,}")
         bad_hour_range.show(10, truncate=False)
     else:
-        logger.info(f"[hours] ✅ all combos span hour_idx 0 → {window_hours - 1}")
+        logger.info(f"[hours] OK all combos span hour_idx 0 → {window_hours - 1}")
 
     # ── 4. KPI consistency across windows ─────────────────────────────────
     # Every window_anchor for a given distname should have the same set of KPIs
@@ -329,11 +377,11 @@ def validate_windowed_pm(
     n_inconsistent = kpi_count_variance.count()
     if n_inconsistent > 0:
         logger.warning(
-            f"[kpis] ❌ {n_inconsistent:,} distnames have inconsistent KPI counts across windows"
+            f"[kpis] FAIL {n_inconsistent:,} distnames have inconsistent KPI counts across windows"
         )
         kpi_count_variance.show(10, truncate=False)
     else:
-        logger.info("[kpis] ✅ all distnames have consistent KPI count across windows")
+        logger.info("[kpis] OK all distnames have consistent KPI count across windows")
 
     # ── 5. Imputation flag distribution ───────────────────────────────────
     # flag=0: real observed value
@@ -355,11 +403,11 @@ def validate_windowed_pm(
         pct_flag2 = flag2_row[0]["pct"]
         if pct_flag2 > 1.0:
             logger.warning(
-                f"[flags] ❌ {pct_flag2}% of rows are cross-KPI imputed (flag=2) "
+                f"[flags] FAIL {pct_flag2}% of rows are cross-KPI imputed (flag=2) "
                 f"— joint range trimming may not have been applied"
             )
         else:
-            logger.info(f"[flags] ✅ cross-KPI imputation (flag=2) is {pct_flag2}% — acceptable")
+            logger.info(f"[flags] OK cross-KPI imputation (flag=2) is {pct_flag2}% — acceptable")
 
     # ── 6. Windows per distname ────────────────────────────────────────────
     # Flags distnames that ended up with very few windows after alignment —
@@ -389,12 +437,12 @@ def validate_windowed_pm(
     n_sparse = sparse_distnames.count()
     if n_sparse > 0:
         logger.warning(
-            f"[windows/distname] ❌ {n_sparse:,} distnames have fewer than 30 windows "
+            f"[windows/distname] FAIL {n_sparse:,} distnames have fewer than 30 windows "
             f"— may be insufficient for CVAE training"
         )
         sparse_distnames.show(20, truncate=False)
     else:
-        logger.info("[windows/distname] ✅ all distnames have >= 30 windows")
+        logger.info("[windows/distname] OK all distnames have >= 30 windows")
 
     logger.info("=" * 60)
     logger.info("[validate] done")

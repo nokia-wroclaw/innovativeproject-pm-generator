@@ -1,3 +1,4 @@
+import os
 import uuid
 from typing import Any, Literal
 
@@ -29,7 +30,7 @@ from app.services.s3.service import S3Service
 router = APIRouter(prefix="/modeling", tags=["modeling"])
 
 DAG_ID_MAP: dict[ModelingProcessType, str] = {
-    "preprocessing_feature_engineering": "moj_pierwszy_dag",
+    "preprocessing_feature_engineering": "preprocessing_pipeline",
     "training_dataset": "moj_pierwszy_dag",
     "generate": "moj_pierwszy_dag",
 }
@@ -154,20 +155,22 @@ def _mock_artifacts(
     status: DagRunStatus, run_id: str, process_type: ModelingProcessType
 ) -> list[ModelingArtifact]:
     saved: Literal["pending", "saved"] = "saved" if status == DagRunStatus.SUCCESS else "pending"
-    base = f"s3://genpm-modeling/{run_id}"
+    bucket = os.getenv("S3_BUCKET", "datasets")
     if process_type == "preprocessing_feature_engineering":
+        base = f"s3://{bucket}/preprocessed/{run_id}"
         return [
             ModelingArtifact(
                 kind="preprocessed_dataset",
-                path=f"{base}/preprocessed_dataset.parquet",
+                path=f"{base}/pm_df_long_indexed_winds",
                 status=saved,
             ),
             ModelingArtifact(
                 kind="featured_dataset",
-                path=f"{base}/featured_dataset.parquet",
+                path=f"{base}/kpi_definitions",
                 status=saved,
             ),
         ]
+    base = f"s3://genpm-modeling/{run_id}"
     if process_type == "generate":
         return [
             ModelingArtifact(

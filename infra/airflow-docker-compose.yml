@@ -18,11 +18,19 @@ x-airflow-common:
     AIRFLOW__API_AUTH__JWT_SECRET: ${AIRFLOW__API_AUTH__JWT_SECRET:-airflow_jwt_secret}
     AIRFLOW__API_AUTH__JWT_ISSUER: ${AIRFLOW__API_AUTH__JWT_ISSUER:-airflow}
     AIRFLOW__SCHEDULER__ENABLE_HEALTH_CHECK: 'true'
+    AIRFLOW__LOGGING__WORKER_LOG_SERVER_HOST: airflow-worker
+    AIRFLOW__LOGGING__WORKER_LOG_SERVER_PORT: '8793'
     _PIP_ADDITIONAL_REQUIREMENTS: ${_PIP_ADDITIONAL_REQUIREMENTS:-apache-airflow-providers-apache-spark}
     AIRFLOW_CONN_SPARK_DEFAULT: "spark://${USER}-spark-jupyter:7077"
     AIRFLOW_CONFIG: '/opt/airflow/config/airflow.cfg'
-    PYSPARK_PYTHON: /home/${USER}/app/.venv/bin/python3.11
-    PYSPARK_DRIVER_PYTHON: /usr/bin/python3.11
+    PYSPARK_PYTHON: /opt/genpm-venv/bin/python
+    PYSPARK_DRIVER_PYTHON: /opt/genpm-venv/bin/python
+    GENPM_SPARK_CHECKPOINT_DIR: /tmp/genpm-spark-checkpoints
+    GENPM_SPARK_PROFILE: AIRFLOW
+    SPARK_LOCAL_MASTER: local[2]
+    SPARK_DRIVER_MEMORY: 16g
+    SPARK_EXECUTOR_MEMORY: 16g
+    SPARK_SQL_SHUFFLE_PARTITIONS: "200"
 
   volumes:
     - ${AIRFLOW_PROJ_DIR:-.}/dags:/opt/airflow/dags
@@ -32,6 +40,7 @@ x-airflow-common:
 
     - /home/${USER}/innovativeproject-pm-generator/apps/airflow/dags:/opt/airflow/dags/${USER}
     - /home/${USER}/innovativeproject-pm-generator/apps/generator/apps:/opt/airflow/spark-apps
+    - /home/${USER}/innovativeproject-pm-generator/apps/generator:/opt/genpm/generator
 
   user: "${AIRFLOW_UID:-50000}:0"
 
@@ -71,6 +80,8 @@ services:
       <<: *airflow-common-env
       AIRFLOW__WEBSERVER__WEB_SERVER_PORT: '9005'
       AIRFLOW__CORE__EXECUTION_API_SERVER_URL: 'http://airflow-apiserver:9005/execution/'
+      AIRFLOW__DATABASE__SQL_ALCHEMY_POOL_SIZE: 20
+      AIRFLOW__DATABASE__SQL_ALCHEMY_MAX_OVERFLOW: 30
     ports:
       - "9005:9005"
     healthcheck:
@@ -117,7 +128,10 @@ services:
 
   airflow-worker:
     <<: *airflow-common
+    hostname: airflow-worker
     command: celery worker
+    ports:
+      - "8793:8793"
     healthcheck:
       test: ["CMD-SHELL", 'celery --app airflow.providers.celery.executors.celery_executor.app inspect ping -d "celery@$${HOSTNAME}" || celery --app airflow.executors.celery_executor.app inspect ping -d "celery@$${HOSTNAME}"']
       interval: 30s
@@ -127,8 +141,14 @@ services:
     environment:
       <<: *airflow-common-env
       DUMB_INIT_SETSID: "0"
-      PYSPARK_PYTHON: /home/${USER}/app/.venv/bin/python3.11
-      PYSPARK_DRIVER_PYTHON: /usr/bin/python3.11
+      PYSPARK_PYTHON: /opt/genpm-venv/bin/python
+      PYSPARK_DRIVER_PYTHON: /opt/genpm-venv/bin/python
+      GENPM_SPARK_CHECKPOINT_DIR: /tmp/genpm-spark-checkpoints
+      GENPM_SPARK_PROFILE: AIRFLOW
+      SPARK_LOCAL_MASTER: local[30]
+      SPARK_DRIVER_MEMORY: 90g
+      SPARK_EXECUTOR_MEMORY: 90g
+      SPARK_SQL_SHUFFLE_PARTITIONS: "200"
       SPARK_HOME: /opt/spark
       PATH: /opt/spark/bin:/home/airflow/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
     restart: always

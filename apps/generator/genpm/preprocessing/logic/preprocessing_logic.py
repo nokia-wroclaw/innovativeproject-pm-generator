@@ -214,8 +214,17 @@ def coalesce_kpi_version(
     return df_result, kpi_definitions_final
 
 
+def _ensure_bts_id(df: DataFrame) -> DataFrame:
+    if "bts_id" in df.columns:
+        return df
+
+    logger.warning("bts_id column missing — deriving from distname")
+    return df.withColumn("bts_id", f.col("distname"))
+
+
 # pivot simple reports
 def simple_reports_pivot(simple_reports: DataFrame):
+    simple_reports = _ensure_bts_id(simple_reports)
     grouping_cols = ("datetime", "bts_id", "distname")
     simple_reports_pivot = (
         simple_reports.groupBy(*grouping_cols).pivot("report_name").agg(f.first("report_result"))
@@ -227,6 +236,7 @@ def simple_reports_pivot(simple_reports: DataFrame):
 # raw_pm
 def raw_pm_preperation(pm_df_long: DataFrame) -> DataFrame:
     pm_df_long = pm_df_long.dropDuplicates()
+    pm_df_long = _ensure_bts_id(pm_df_long)
     pm_df_long = pm_df_long.dropna(subset=("start_time", "bts_id", "distname"))
     return pm_df_long
 
