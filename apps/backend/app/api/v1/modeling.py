@@ -310,15 +310,17 @@ async def trigger_modeling_run(
 
     dag_id = DAG_ID_MAP[process_type]
     run_id = f"genpm_{_RUN_ID_PREFIX[process_type]}_{uuid.uuid4().hex[:12]}"
+    dag_args = {**body.dag_args, "dataset_id": dataset.id}
     conf = {
         "genpm_run_id": run_id,
         "dataset_id": dataset.id,
         "dataset_name": dataset.file_name,
         "s3_key": dataset.s3_key,
-        "dataset_type": body.dataset_type,
-        "dag_args": body.dag_args,
+        "dag_args": dag_args,
         "process_type": process_type,
     }
+    if process_type != "preprocessing_feature_engineering":
+        conf["dataset_type"] = body.dataset_type
 
     try:
         action = await airflow.trigger_dag(

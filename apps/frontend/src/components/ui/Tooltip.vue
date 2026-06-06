@@ -16,8 +16,8 @@
         <TooltipContent
           :side="side"
           :side-offset="6"
-          class="z-50 rounded-md bg-slate-900 px-2.5 py-1.5 text-xs font-medium text-white shadow-md
-                 data-[state=delayed-open]:animate-in data-[state=delayed-open]:fade-in-0
+          class="z-[1100] max-w-xs rounded-md bg-slate-900 px-2.5 py-1.5 text-xs font-medium leading-snug text-white shadow-md
+                 whitespace-normal data-[state=delayed-open]:animate-in data-[state=delayed-open]:fade-in-0
                  data-[state=closed]:animate-out data-[state=closed]:fade-out-0"
         >
           {{ content }}
