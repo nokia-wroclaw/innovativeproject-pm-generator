@@ -25,8 +25,6 @@
 <script setup>
 import { computed } from 'vue';
 
-import { computed } from 'vue';
-
 import ModelingFormHint from './ModelingFormHint.vue';
 
 const props = defineProps({

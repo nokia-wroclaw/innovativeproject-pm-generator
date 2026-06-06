@@ -28,6 +28,13 @@
         :class="phase !== 'form' && phase !== 'error' ? 'pointer-events-none opacity-60' : ''"
         @submit.prevent="submit"
       >
+        <ModelingAutofillPanel
+          :process-type="process.processType"
+          :current-values="form"
+          :disabled="phase !== 'form' && phase !== 'error'"
+          @apply="applyAutofill"
+        />
+
         <ModelingFormSelect
           v-model="form.dataset_id"
           label="Input dataset"
@@ -35,7 +42,6 @@
           placeholder="Select dataset"
           :options="rawDatasetOptions"
           value-type="number"
-          required
           required
         />
 
@@ -114,7 +120,9 @@ import { Loader2 } from 'lucide-vue-next';
 
 import BaseModal from '@/components/BaseModal.vue';
 import { Button } from '@/components/ui';
+import { applyModelingAutofillValues } from '../composables/applyModelingAutofillValues.js';
 import { useModelingProcessRun } from '../composables/useModelingProcessRun.js';
+import ModelingAutofillPanel from './ModelingAutofillPanel.vue';
 import ModelingFormCheckbox from './form-fields/ModelingFormCheckbox.vue';
 import ModelingFormInput from './form-fields/ModelingFormInput.vue';
 import ModelingFormRadioGroup from './form-fields/ModelingFormRadioGroup.vue';
@@ -329,6 +337,11 @@ watch(
   },
   { immediate: true },
 );
+
+function applyAutofill(values) {
+  applyModelingAutofillValues(form, values);
+  formError.value = '';
+}
 
 function buildDagArgs() {
   return Object.fromEntries(

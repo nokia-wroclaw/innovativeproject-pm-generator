@@ -32,6 +32,8 @@ from app.models.modeling import (
     DeleteModelResponse,
     GenerateRunRequest,
     ModelingArtifact,
+    ModelingAutofillRequest,
+    ModelingAutofillResponse,
     ModelingDatasetOption,
     ModelingFormField,
     ModelingFormOption,
@@ -50,6 +52,7 @@ from app.models.spark_jobs import PreprocessingConfigError
 from app.services.airflow.errors import AirflowIntegrationError, AirflowNotFound
 from app.services.airflow.runtime import get_airflow_service
 from app.services.airflow.service import AirflowService
+from app.services.llm.autofill import LlmAutofillError, autofill_modeling_form
 from app.services.preprocessing.conf import (
     PREPROCESSING_DAG_ID,
     preprocessing_artifact_paths,
@@ -690,6 +693,39 @@ def _validate_s3_key(key: str) -> None:
             status_code=404,
             detail=f"S3 object not found or access denied for key '{key}': {str(e)}",
         ) from e
+
+
+@router.post(
+    "/processes/{process_type}/autofill",
+    response_model=ModelingAutofillResponse,
+)
+async def autofill_process_form(
+    process_type: ModelingProcessType,
+    body: ModelingAutofillRequest,
+    user: dict[str, Any] = Depends(require_auth),
+    service: S3Service = Depends(_get_s3_service),
+) -> ModelingAutofillResponse:
+    if process_type != "generate":
+        assert_modeling_admin(user)
+
+    datasets = [
+        ModelingDatasetOption.model_validate(ds)
+        for ds in service.get_datasets()
+        if ds.status == DatasetStatus.COMPLETED
+    ]
+
+    try:
+        values = await autofill_modeling_form(
+            process_type,
+            body.instruction,
+            current_values=body.current_values,
+            datasets=datasets,
+            models=_MOCK_TRAINED_MODELS,
+        )
+    except LlmAutofillError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=exc.message) from exc
+
+    return ModelingAutofillResponse(process_type=process_type, values=values)
 
 
 @router.post(
