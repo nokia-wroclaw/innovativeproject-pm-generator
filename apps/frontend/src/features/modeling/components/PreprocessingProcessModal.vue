@@ -35,12 +35,6 @@
           required
         />
 
-        <ModelingFormRadioGroup
-          v-model="form.dataset_type"
-          label="Dataset type"
-          :options="datasetTypeOptions"
-        />
-
         <div
           v-for="section in sections"
           :key="section.title"
@@ -52,11 +46,13 @@
               v-if="field.type === 'checkbox'"
               v-model="form[field.key]"
               :label="field.label"
+              :hint="field.hint"
             />
             <ModelingFormInput
               v-else
               v-model="form[field.key]"
               :label="field.label"
+              :hint="field.hint"
               :type="field.inputType ?? 'text'"
               :placeholder="field.placeholder"
               :min="field.min"
@@ -102,7 +98,6 @@ import { Button } from '@/components/ui';
 import { useModelingProcessRun } from '../composables/useModelingProcessRun.js';
 import ModelingFormCheckbox from './form-fields/ModelingFormCheckbox.vue';
 import ModelingFormInput from './form-fields/ModelingFormInput.vue';
-import ModelingFormRadioGroup from './form-fields/ModelingFormRadioGroup.vue';
 import ModelingFormSelect from './form-fields/ModelingFormSelect.vue';
 import ModelingRunStatusPanel from './ModelingRunStatusPanel.vue';
 
@@ -126,11 +121,6 @@ const {
   reset,
 } = useModelingProcessRun(props.process.processType, props.process.title);
 
-const datasetTypeOptions = [
-  { value: 'working_days', label: 'Working days' },
-  { value: 'weekends', label: 'Weekends' },
-];
-
 const num = (extra = {}) => ({ valueType: 'number', inputType: 'number', ...extra });
 const frac = (extra = {}) => num({ step: 0.01, min: 0, max: 1, required: true, ...extra });
 
@@ -151,34 +141,97 @@ const sections = [
   {
     title: 'KPI coverage',
     fields: [
-      frac({ key: 'kpi_min_global_density', label: 'KPI min global density' }),
-      frac({ key: 'kpi_global_min_frac_cells_passing', label: 'KPI global min frac cells passing' }),
-      frac({ key: 'kpi_window_coverage_frac', label: 'KPI window coverage frac' }),
+      frac({
+        key: 'kpi_min_global_density',
+        label: 'KPI min global density',
+        hint: 'Min. share of non-null hours in a KPI series active range per cell.',
+      }),
+      frac({
+        key: 'kpi_global_min_frac_cells_passing',
+        label: 'KPI global min frac cells passing',
+        hint: 'Min. share of a KPI cells that must meet the density threshold.',
+      }),
+      frac({
+        key: 'kpi_window_coverage_frac',
+        label: 'KPI window coverage frac',
+        hint: 'Min. ratio of good windows to theoretical max windows per KPI.',
+      }),
     ],
   },
   {
     title: 'Max gap filtering',
-    fields: [frac({ key: 'min_imputable_gap_frac', label: 'Min imputable gap frac' })],
+    fields: [
+      frac({
+        key: 'min_imputable_gap_frac',
+        label: 'Min imputable gap frac',
+        hint: 'Min. share of null runs short enough to impute (≤ max gap hours).',
+      }),
+    ],
   },
   {
     title: 'Stale KPIs filtering',
     fields: [
-      num({ key: 'kpi_min_std_val', label: 'KPI min std val', min: 0, step: 0.01, required: true }),
-      frac({ key: 'max_zero_frac', label: 'Max zero frac' }),
+      num({
+        key: 'kpi_min_std_val',
+        label: 'KPI min std val',
+        min: 0,
+        step: 0.01,
+        required: true,
+        hint: 'Reject KPIs with near-zero variance in good-window values.',
+      }),
+      frac({
+        key: 'max_zero_frac',
+        label: 'Max zero frac',
+        hint: 'Reject KPIs where at least this share of values is zero.',
+      }),
     ],
   },
   {
     title: 'Training data windows',
     fields: [
-      num({ key: 'window_width_hours', label: 'Window width (hours)', min: 1, step: 1, default: 168 }),
-      num({ key: 'stride_hours', label: 'Stride (hours)', min: 1, step: 1, default: 24 }),
-      num({ key: 'max_gap_hours', label: 'Max gap (hours)', min: 1, step: 1, default: 6 }),
-      num({ key: 'min_joint_windows_abs', label: 'Min joint windows (optional)', min: 1, step: 1, placeholder: 'empty = null' }),
+      num({
+        key: 'window_width_hours',
+        label: 'Window width (hours)',
+        min: 1,
+        step: 1,
+        default: 168,
+        hint: 'Window length. Valid windows need all W contiguous hours (0..W-1).',
+      }),
+      num({
+        key: 'stride_hours',
+        label: 'Stride (hours)',
+        min: 1,
+        step: 1,
+        default: 24,
+        hint: 'Hours between stride-aligned window anchors.',
+      }),
+      num({
+        key: 'max_gap_hours',
+        label: 'Max gap (hours)',
+        min: 1,
+        step: 1,
+        default: 6,
+        hint: 'Max consecutive null hours per window and safe imputation limit.',
+      }),
+      num({
+        key: 'min_joint_windows_abs',
+        label: 'Min joint windows (optional)',
+        min: 1,
+        step: 1,
+        placeholder: 'empty = null',
+        hint: 'Min. joint (distname, anchor) pairs for the selected KPI set. Empty = elbow method.',
+      }),
     ],
   },
   {
     title: 'Imputation',
-    fields: [{ key: 'impute', label: 'Enable imputation', type: 'checkbox', default: true }],
+    fields: [{
+      key: 'impute',
+      label: 'Enable imputation',
+      type: 'checkbox',
+      default: true,
+      hint: 'Forward-fill / interpolate gaps up to max gap hours before window validation.',
+    }],
   },
 ];
 
@@ -188,7 +241,6 @@ const preprocessingDefaults = Object.fromEntries(
 
 const form = reactive({
   dataset_id: '',
-  dataset_type: 'working_days',
   ...preprocessingDefaults,
 });
 
@@ -236,7 +288,6 @@ watch(
     }
     formError.value = '';
     form.dataset_id = props.datasets[0]?.id ?? '';
-    form.dataset_type = 'working_days';
     Object.assign(form, preprocessingDefaults);
   },
   { immediate: true },
@@ -264,7 +315,7 @@ async function submit() {
   await triggerRun(
     {
       dataset_id: Number(form.dataset_id),
-      dataset_type: form.dataset_type,
+      dataset_type: 'working_days',
       dag_args: buildDagArgs(),
     },
     emit,

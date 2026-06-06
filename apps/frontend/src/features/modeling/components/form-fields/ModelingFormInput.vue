@@ -1,8 +1,9 @@
 <template>
   <label class="block space-y-2">
-    <span class="text-sm font-medium text-fg">
+    <span class="inline-flex items-center gap-1 text-sm font-medium text-fg">
       {{ label }}
-      <span v-if="required" class="ml-0.5 text-rose-600" aria-hidden="true">*</span>
+      <span v-if="required" class="text-rose-600" aria-hidden="true">*</span>
+      <ModelingFormHint v-if="hint" :text="hint" />
     </span>
     <input
       :value="modelValue"
@@ -24,9 +25,12 @@
 <script setup>
 import { computed } from 'vue';
 
+import ModelingFormHint from './ModelingFormHint.vue';
+
 const props = defineProps({
   modelValue: { type: [String, Number], default: '' },
   label: { type: String, required: true },
+  hint: { type: String, default: '' },
   type: { type: String, default: 'text' },
   placeholder: { type: String, default: '' },
   min: { type: [String, Number], default: undefined },

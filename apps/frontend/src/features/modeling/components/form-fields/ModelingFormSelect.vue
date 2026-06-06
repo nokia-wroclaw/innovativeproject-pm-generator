@@ -1,6 +1,9 @@
 <template>
   <label class="block space-y-2">
-    <span class="text-sm font-medium text-fg">{{ label }}</span>
+    <span class="inline-flex items-center gap-1 text-sm font-medium text-fg">
+      {{ label }}
+      <ModelingFormHint v-if="hint" :text="hint" />
+    </span>
     <select
       :value="modelValue"
       class="w-full rounded-md border border-border-default bg-surface px-3 py-2 text-sm text-fg"
@@ -11,11 +14,11 @@
         {{ option.label }}
       </option>
     </select>
-    <span v-if="hint" class="text-xs text-fg-subtle">{{ hint }}</span>
   </label>
 </template>
 
 <script setup>
+import ModelingFormHint from './ModelingFormHint.vue';
 const props = defineProps({
   modelValue: { type: [String, Number], default: '' },
   label: { type: String, required: true },
