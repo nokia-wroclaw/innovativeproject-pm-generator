@@ -36,6 +36,13 @@
           :options="rawDatasetOptions"
           value-type="number"
           required
+          required
+        />
+
+        <ModelingFormRadioGroup
+          v-model="form.dataset_type"
+          label="Dataset type"
+          :options="datasetTypeOptions"
         />
 
         <div
@@ -110,6 +117,7 @@ import { Button } from '@/components/ui';
 import { useModelingProcessRun } from '../composables/useModelingProcessRun.js';
 import ModelingFormCheckbox from './form-fields/ModelingFormCheckbox.vue';
 import ModelingFormInput from './form-fields/ModelingFormInput.vue';
+import ModelingFormRadioGroup from './form-fields/ModelingFormRadioGroup.vue';
 import ModelingFormSelect from './form-fields/ModelingFormSelect.vue';
 import ModelingRunStatusPanel from './ModelingRunStatusPanel.vue';
 
