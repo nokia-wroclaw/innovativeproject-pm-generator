@@ -3,35 +3,20 @@ import pandas as pd
 import ruptures as rpt
 from pyspark.sql import DataFrame
 from pyspark.sql.types import (
-    DoubleType,
     IntegerType,
-    StringType,
     StructField,
     StructType,
-    TimestampType,
 )
 
+
 # Output schema mirrors input + regime_id
-_REGIME_SCHEMA = StructType(
-    [
-        StructField("kpi_id", StringType(), True),
-        StructField("bts_id", StringType(), True),
-        StructField("distname", StringType(), True),
-        StructField("start_time", TimestampType(), True),
-        StructField("kpi_value", DoubleType(), True),
-        StructField("regime_id", IntegerType(), True),
-    ]
-)
+def build_regime_schema(pm_data: DataFrame) -> StructType:
+    return StructType(pm_data.schema.fields + [StructField("regime_id", IntegerType(), False)])
 
 
 # No decorator — plain function, (key, data) signature
 def _assign_regimes(key: tuple, group_df: pd.DataFrame) -> pd.DataFrame:
-    """
-    Applied per (kpi_id, bts_id, distname) group.
-    key is unpacked for clarity but not needed inside since
-    the columns are already present in group_df.
-    """
-    _MIN_SIZE = 24
+    _MIN_SIZE = 168
     _MIN_LENGTH = 48
 
     df = group_df.sort_values("start_time").reset_index(drop=True)
@@ -44,18 +29,18 @@ def _assign_regimes(key: tuple, group_df: pd.DataFrame) -> pd.DataFrame:
         return df
 
     filled = (
-        pd.Series(vals)
+        pd.Series(vals, index=df["start_time"])  # <-- DatetimeIndex
         .interpolate(method="time", limit=6, limit_direction="both")
         .ffill(limit=2)
         .bfill(limit=2)
-        .values
+        .values  # back to ndarray
     )
 
     n = len(filled)
-    pen = np.log(n)
+    pen = np.log(n) * np.var(filled) * 20
 
     try:
-        algo = rpt.Pelt(model="l2", min_size=_MIN_SIZE, jump=1).fit(filled.reshape(-1, 1))
+        algo = rpt.Pelt(model="rbf", min_size=_MIN_SIZE, jump=6).fit(filled.reshape(-1, 1))
         breakpoints = algo.predict(pen=pen)
     except rpt.exceptions.BadSegmentationParameters:
         return df
@@ -71,6 +56,6 @@ def _assign_regimes(key: tuple, group_df: pd.DataFrame) -> pd.DataFrame:
 
 
 def add_regime_ids(pm_data: DataFrame) -> DataFrame:
-    return pm_data.groupby("kpi_id", "bts_id", "distname").applyInPandas(
-        _assign_regimes, schema=_REGIME_SCHEMA
-    )
+    new_schema = build_regime_schema(pm_data)
+    # .repartition(200, "kpi_id", "distname")
+    return pm_data.groupby("kpi_id", "distname").applyInPandas(_assign_regimes, schema=new_schema)
