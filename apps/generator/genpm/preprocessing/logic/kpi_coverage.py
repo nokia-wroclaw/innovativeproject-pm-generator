@@ -3,7 +3,6 @@ from pyspark.sql import DataFrame, Window
 from pyspark.sql import functions as f
 from pyspark.sql.types import LongType
 
-from genpm.utils.consts import MAX_IMPUTABLE_GAP
 from genpm.utils.logger import get_logger
 
 logger = get_logger()
@@ -75,10 +74,11 @@ The fix has three parts, applied below:
       0..167.  ``window_valid_frac`` is retained for diagnostics but the gate
       is the contiguity flag, not the fraction.
 
-  (B) A new **joint gate** (``filter_joint_complete_windows``) runs *after*
-      greedy selection: an anchor survives for a distname only if **all**
-      selected KPIs are complete at that anchor.  This is the piece that
-      collapses min_kpis == max_kpis per cell.
+  (B) ``greedy_joint_kpi_selection`` now returns the final joint anchor set
+      directly — the running intersection it already computed internally.
+      The caller rebuilds a (distname, start_time) DataFrame from that set
+      and passes it to Stage 8; no separate ``filter_joint_complete_windows``
+      step is needed because the returned set is already the exact intersection.
 
   (C) Stage 8 ``attach_windows_index_to_pm`` gates window membership on
       **distname + time only** (joint anchors), using kpi_id solely to carry
@@ -86,12 +86,15 @@ The fix has three parts, applied below:
 
 Pipeline stages (as executed in run.py)
 ----------------------------------------
-0a. filter_global_value_density      — reject KPIs that are globally sparse
-                                       across cells; operates on gap-filled data
-                                       before imputing.
-0b. filter_gap_pattern               — reject KPIs whose null runs are dominated
-                                       by gaps too long to impute safely; also
-                                       operates on gap-filled data before imputing.
+0.  series_imputability_gate         — series-scoped pre-impute gate (merges the
+                                       former filter_global_value_density +
+                                       filter_gap_pattern).  Per (distname, kpi_id)
+                                       checks: (a) density over own active range and
+                                       (b) gap-run shape (fraction of null runs that
+                                       are ≤ MAX_IMPUTABLE_GAP hours).  Drops only
+                                       the weak series; a KPI survives if any cell
+                                       passes both checks.  Joins on (kpi_id,
+                                       distname) — never on kpi_id alone.
  [imputing]                          — forward-fill / interpolation of short gaps
                                        (up to MAX_IMPUTABLE_GAP hours); window
                                        density is computed on the imputed data.
@@ -104,22 +107,23 @@ Pipeline stages (as executed in run.py)
 2b. filter_max_gap_sparse            — null-run detection on the per-KPI spine
                                        plus leading-gap awareness; runs on the
                                        density-passing windows (after Stage 3).
-4.  compute_theoretical_max_windows  — per-(distname, kpi_id) upper-bound window
-                                       count (NOTE: currently known to be
-                                       inaccurate; see TODO in run.py).
-5.  compute_kpi_yield_stats          — aggregate per-KPI stats (total windows,
-                                       cell coverage, window_coverage_frac).
-5c. filter_variance                  — reject near-zero-variance or near-constant-
-                                       zero KPIs.
-6.  prefilter_kpis                   — structural filters on window_coverage_frac
-                                       and frac_contributing_cells; returns
-                                       candidate list sorted by coverage.
-7.  greedy_joint_kpi_selection       — greedily build the largest KPI set whose
+4.  compute_kpi_yield_stats          — diagnostic per-KPI stats (total_windows,
+                                       n_cells, frac_contributing_cells).
+                                       theoretical_max_windows removed —
+                                       that number is fictional on gappy PM data.
+4c. flag_flat_series                 — flag near-constant / near-zero-constant
+                                       series (is_flat=True); does NOT drop them.
+                                       Flat series are informative signal for the
+                                       conditional model; the flag lets the
+                                       per-segment scaler avoid div-by-zero.
+5.  prefilter_kpis                   — honest structural pre-cut on
+                                       frac_contributing_cells and total_windows;
+                                       returns unordered candidate list.
+6.  greedy_joint_kpi_selection       — greedily build the largest KPI set whose
                                        joint (distname, anchor) count stays above
-                                       the elbow-method floor.
-7b. filter_joint_complete_windows    — joint completeness gate: keep only anchors
-                                       where all selected KPIs are present.
-8.  attach_windows_index_to_pm       — join imputed selected-KPI data against joint
+                                       the elbow-method floor; returns
+                                       (selected_kpis, joint_anchor_pairs).
+7.  attach_windows_index_to_pm       — join imputed selected-KPI data against joint
                                        anchors on distname + time span; assigns
                                        window_anchor and hour_idx to every row.
 
@@ -148,18 +152,62 @@ Output schema (indexed training DataFrame)
 """
 
 
-# OTHER FILTERS BEFORE IQR OUTLIERS AND IMPUTING
-def filter_global_value_density(
+def series_imputability_gate(
     gap_filled_df: DataFrame,
     *,
     min_global_density: float = 0.80,
-    min_frac_cells_passing: float = 0.80,
+    max_imputable_gap: int = 6,
+    min_imputable_gap_frac: float = 0.90,
 ) -> DataFrame:
-    """Reject KPIs that are globally sparse across cells.
+    """Gate each (distname, kpi_id) series on density AND gap-run shape.
 
-    Operates per (distname, kpi_id) first, then decides at the KPI level how
-    many cells must meet the threshold.  This prevents a KPI that is dense in
-    a handful of cells but absent in most from sneaking through.
+    Merges the former filter_global_value_density + filter_gap_pattern into a
+    single series-scoped gate that runs before imputation.  The key design
+    change is scope: decisions are made per (distname, kpi_id) pair, NOT
+    aggregated to the KPI level.  A KPI that is dense in some cells but absent
+    in others is not discarded — only the individual weak series are dropped.
+
+    Two questions are answered for each (distname, kpi_id):
+
+      1. **Density** — is the series too sparse over its own active range to be
+         worth imputing?  ``non_null_count / total_hours >= min_global_density``
+
+      2. **Gap-run shape** — are the null runs short enough to impute without
+         fabricating large blocks of invented signal?
+         ``fraction(run_length <= max_imputable_gap) >= min_imputable_gap_frac``
+
+    Decision table:
+
+        ┌──────────────────┬──────────────────┬──────────────────────────────┐
+        │ density_passes   │ gap_shape_passes  │ outcome                      │
+        ├──────────────────┼──────────────────┼──────────────────────────────┤
+        │ True             │ True              │ KEEP — safe to impute        │
+        │ True             │ False             │ DROP — Swiss-cheese gaps     │
+        │ False            │ True              │ DROP — too sparse overall    │
+        │ False            │ False             │ DROP — both fail             │
+        └──────────────────┴──────────────────┴──────────────────────────────┘
+
+    Case 1 — passes (sparse-ish but all short gaps):
+
+        kpi_X @ c1:  v v N v v v N v v v    density=0.80, gaps ≤ MIG
+                     → KEEP: two 1-h gaps are honest imputation targets
+
+    Case 2 — fails on gap shape (Swiss-cheese):
+
+        kpi_X @ c2:  v N v N v N v N v N    density=0.50, gap every 2 h
+                     → DROP: half the series would be invented signal
+
+    Case 3 — fails on density (mostly empty):
+
+        kpi_X @ c3:  v N N N N N N N v v    density=0.30, long holes
+                     → DROP: too little real data to anchor any imputation
+
+    Case 4 — KPI survives even though some series die:
+
+        kpi_X @ c1:  v v N v v v N v v v    → KEEP  (Case 1)
+        kpi_X @ c2:  v N v N v N v N v N    → DROP  (Case 2)
+        kpi_X @ c3:  v N N N N N N N v v    → DROP  (Case 3)
+        kpi_X is NOT discarded — it contributes only c1 downstream.
 
     Parameters
     ----------
@@ -168,109 +216,130 @@ def filter_global_value_density(
         missing hours.  count(*) over the spine gives the true active-range
         length per series, so no cross-KPI padding inflates the denominator.
     min_global_density : float
-        Minimum non-null fraction over a series' own active range for that
-        (distname, kpi_id) pair to be considered "dense" (default 0.80).
-    min_frac_cells_passing : float
-        Fraction of a KPI's contributing cells that must individually meet
-        min_global_density for the KPI to pass (default 0.80).
+        Minimum non-null fraction over a series' own active range for the
+        (distname, kpi_id) pair to pass the density check (default 0.80).
+    max_imputable_gap : int
+        Maximum null-run length in hours considered safely imputable
+        (default 6).  Runs longer than this threshold count as "bad gaps".
+    min_imputable_gap_frac : float
+        Minimum fraction of all null runs that must be ≤ max_imputable_gap
+        for the series to pass the gap-shape check (default 0.90).  Series
+        with zero null runs pass vacuously — no bad gaps can exist.
 
     Returns
     -------
-    list[str]
-        KPI IDs that pass the global density filter.
+    DataFrame
+        Columns (kpi_id, distname).  Only series where BOTH density_passes
+        AND gap_shape_passes are True are included.  The caller joins on
+        both columns to filter gap_filled_df at the series level.
     """
-    per_series = (
+    # ── Step 1: density per (distname, kpi_id) ─────────────────────────────
+    # The gap-filled spine has exactly one row per hour inside the KPI's own
+    # [min_t, max_t].  count(*) is therefore the total active-range length and
+    # needs no correction for cross-KPI padding.
+    density_stats = (
         gap_filled_df.groupBy("kpi_id", "distname")
         .agg(
+            # count non-null hours: 1 where kpi_value exists, 0 where it is null
             f.sum(f.when(f.col("kpi_value").isNotNull(), 1).otherwise(0)).alias("non_null_count"),
+            # denominator = total spine rows = own active-range length
             f.count("*").alias("total_hours"),
         )
-        .withColumn(
-            "global_density",
-            f.col("non_null_count") / f.col("total_hours"),
-        )
-        .withColumn(
-            "cell_passes",
-            (f.col("global_density") >= min_global_density).cast("int"),
-        )
+        # density = fraction of active-range hours that carry a real value
+        .withColumn("global_density", f.col("non_null_count") / f.col("total_hours"))
+        # True when the series is at least min_global_density non-null
+        .withColumn("density_passes", f.col("global_density") >= f.lit(min_global_density))
+        .select("kpi_id", "distname", "density_passes")
     )
 
-    return (
-        per_series.groupBy("kpi_id")
-        .agg(f.mean("cell_passes").alias("frac_passing_cells"))
-        .filter(f.col("frac_passing_cells") >= min_frac_cells_passing)
-        .select("kpi_id")
-    )
-
-
-def filter_gap_pattern(
-    gap_filled_df: DataFrame,
-    *,
-    max_imputable_gap: int = 6,
-    min_imputable_gap_frac: float = 0.90,
-) -> DataFrame:
-    """Reject KPIs whose null-run distribution is dominated by long gaps.
-
-    The original criteria (median gap length + gap frequency) were too strict
-    for the imputation-guard role and targeted different failure modes.
-    This version asks one question: of all null runs in this KPI, what fraction
-    are short enough to impute safely (≤ max_imputable_gap hours)?
-
-
-    Window A: ████░░████░░████░░████  (density=0.86, max_gap=2h  — safe)
-    Window B: ████████████░░░░░░░░░░  (density=0.86, max_gap=24h — destroys
-                                        an entire night period)
-
-    A KPI where 95 % of gaps are 1–6 h passes, regardless of how many gaps
-    there are or how they are spaced.  A KPI with many long gaps fails even if
-    its median is technically short, because imputable_gap_frac penalises any
-    run that exceeds the threshold.
-
-    Parameters
-    ----------
-    gap_filled_df : DataFrame
-        Output of fill_internal_gaps.
-    max_imputable_gap : int
-        Maximum null-run length in hours that is safe to impute (default 6).
-    min_imputable_gap_frac : float
-        Minimum fraction of all null runs that must be ≤ max_imputable_gap for
-        the KPI to pass (default 0.90).
-
-    Returns
-    -------
-    list[str]
-        KPI IDs that pass the gap pattern filter.
-    """
+    # ── Step 2: null-run detection per (distname, kpi_id) ──────────────────
+    # A "null run" is a contiguous streak of null-valued spine rows.  We detect
+    # run boundaries with a lag-based finite-difference:
+    #
+    #   is_null        = 1 if kpi_value is null, else 0
+    #   prev_is_null   = is_null of the preceding row in the same series
+    #                    (default 0 at the partition boundary so the first row
+    #                    is never treated as a run continuation)
+    #   null_run_start = 1 only at the 0→1 rising edge (non-null → null),
+    #                    i.e., the first null row of each new run
+    #   run_id         = cumulative sum of null_run_start from the start of the
+    #                    partition; gives each null run a unique integer ID
+    #                    within its (distname, kpi_id) partition
     lag_w = Window.partitionBy("distname", "kpi_id").orderBy("start_time")
 
     with_runs = (
-        gap_filled_df.withColumn("is_null", f.col("kpi_value").isNull().cast("int"))
+        gap_filled_df
+        # flag nulls: 1 = missing hour, 0 = hour with a real value
+        .withColumn("is_null", f.col("kpi_value").isNull().cast("int"))
+        # bring in the previous row's flag; 0-default at partition start
         .withColumn("prev_is_null", f.lag("is_null", 1, 0).over(lag_w))
+        # rising edge: 1 only when transitioning from non-null (0) to null (1)
         .withColumn(
             "null_run_start",
             f.when((f.col("is_null") == 1) & (f.col("prev_is_null") == 0), 1).otherwise(0),
         )
+        # cumsum of run_start markers → monotonically increasing run counter
+        # rowsBetween(unboundedPreceding, 0) accumulates from partition start to current row
         .withColumn(
             "run_id",
             f.sum("null_run_start").over(lag_w.rowsBetween(Window.unboundedPreceding, 0)),
         )
     )
 
+    # Keep only null rows, then count how many spine hours belong to each run.
+    # That count is the run length (consecutive null hours).
     null_run_lengths = (
         with_runs.filter(f.col("is_null") == 1)
         .groupBy("kpi_id", "distname", "run_id")
+        # count(*) over a single run = number of consecutive null hours
         .agg(f.count("*").alias("run_length"))
     )
 
-    return (
-        null_run_lengths.groupBy("kpi_id")
+    # ── Step 3: gap-shape score per (distname, kpi_id) ─────────────────────
+    # For each series, what fraction of its null runs are "short enough"
+    # (≤ max_imputable_gap hours) to be imputed without fabricating signal?
+    # mean(short_flag) = count(short runs) / count(all runs).
+    #
+    # Example — safe series (95 % short gaps):
+    #   ████░░████░░████░░████  density=0.86, max_gap=2h  → passes
+    #
+    # Example — unsafe series (one long nighttime block):
+    #   ████████████░░░░░░░░░░  density=0.86, max_gap=24h → fails
+    #   A single 24-h run wipes out an entire night — imputing it fabricates
+    #   a full overnight period of invented values.
+    gap_shape_stats = (
+        null_run_lengths.groupBy("kpi_id", "distname")
         .agg(
+            # short_flag = 1 if this run can be safely imputed, 0 if too long
+            # mean over all runs = fraction of runs that are short enough
             f.mean(f.when(f.col("run_length") <= max_imputable_gap, 1).otherwise(0)).alias(
                 "imputable_gap_frac"
             ),
         )
-        .filter(f.col("imputable_gap_frac") >= min_imputable_gap_frac)
-        .select("kpi_id")
+        # True when ≥ min_imputable_gap_frac of the series' runs are short
+        .withColumn(
+            "gap_shape_passes",
+            f.col("imputable_gap_frac") >= f.lit(min_imputable_gap_frac),
+        )
+        .select("kpi_id", "distname", "gap_shape_passes")
+    )
+
+    # ── Step 4: combine both gates ─────────────────────────────────────────
+    # Left-join gap_shape_stats onto density_stats.
+    # Series with zero null runs have no rows in null_run_lengths and therefore
+    # no row in gap_shape_stats.  After the left join their gap_shape_passes is
+    # NULL.  coalesce(gap_shape_passes, True) encodes vacuous truth:
+    # "no null runs at all" trivially satisfies the gap-shape check.
+    return (
+        density_stats.join(gap_shape_stats, on=["kpi_id", "distname"], how="left")
+        # vacuous truth: zero null runs → no bad gaps → gap shape passes
+        .withColumn(
+            "gap_shape_passes",
+            f.coalesce(f.col("gap_shape_passes"), f.lit(True)),
+        )
+        # series survives only when BOTH density AND gap shape are acceptable
+        .filter(f.col("density_passes") & f.col("gap_shape_passes"))
+        .select("kpi_id", "distname")
     )
 
 
@@ -336,73 +405,8 @@ def fill_internal_gaps(
     return series_spine.join(df, on=["distname", "kpi_id", "bts_id", time_col], how="left")
 
 
-# TODO: This function was created to help with performance on max gap filtering
-# (not creating the anchor windows again)
-# It should be redeveloped later
-def build_pm_windows_anchor_df(
-    df: DataFrame,
-    *,
-    window_hours: int = 168,
-    stride_hours: int = 24,
-):
-    """
-    Creates a dataframe of **training windows** for every distname (cell)
-
-    1. Broadcast the distname-level time origin (earliest timestamp across all
-       KPIs in the distname).  This is the reference for stride-aligned anchors.
-
-    2. For every data row compute the hourly offset from the distname origin.
-
-    3. Determine the ≤ W/S stride-aligned anchor indices whose window
-       [anchor, anchor + W) contains this row, and ``explode`` them.
-       With W = 168 and S = 24 each row maps to at most 7 anchors.
-
-    """
-
-    n_overlap = window_hours // stride_hours  # 7 for W=168, S=24
-    # window_end_offset_s = (window_hours - 1) * 3600  # seconds
-
-    # ── distname-level origin (broadcast-safe) ──────────────────────────
-    distname_origin = df.groupBy("distname").agg(
-        f.min(f.unix_timestamp("start_time")).alias("dist_origin_epoch"),
-    )
-
-    base = (
-        df.join(f.broadcast(distname_origin), on="distname")
-        .withColumn("row_epoch", f.unix_timestamp("start_time"))
-        .withColumn(
-            "offset_h",
-            ((f.col("row_epoch") - f.col("dist_origin_epoch")) / 3600).cast("long"),
-        )
-    )
-
-    # ── explode into anchor memberships ────────────────────────────────
-    #
-    # A row at offset_h belongs to anchors k where
-    #     k × stride  ≤  offset_h  <  k × stride + window_hours
-    # ⇒   k  ∈  [ max(0, ⌊(offset_h − W + 1)/S⌋ + 1) …  ⌊offset_h/S⌋ ]
-    #
-    # Simplified: k ∈ [ max(0, max_k − (n_overlap − 1)) …  max_k ]
-    with_anchors = (
-        base.withColumn("max_k", f.floor(f.col("offset_h") / f.lit(stride_hours)).cast("long"))
-        .withColumn(
-            "min_k",
-            f.greatest(f.lit(0).cast("long"), f.col("max_k") - f.lit(n_overlap - 1)),
-        )
-        .withColumn("anchor_k", f.explode(f.sequence(f.col("min_k"), f.col("max_k"))))
-        .withColumn(
-            "anchor_epoch",
-            f.col("dist_origin_epoch") + f.col("anchor_k") * f.lit(stride_hours * 3600),
-        )
-    )
-
-    return with_anchors
-
-
-# TODO THIS FUNCTION (FOR NOW) DOESNT REALLY USE THE DENSITY THRESHOLD
-# Right now, only the really CLEAN WINDOWs are taken for training
-def drop_windows_containing_nulls(
-    df: DataFrame,
+def drop_windows_with_nulls(
+    pm_df: DataFrame,
     *,
     window_hours: int = 168,
     stride_hours: int = 24,
@@ -475,25 +479,25 @@ def drop_windows_containing_nulls(
     window_end_offset_s = (window_hours - 1) * 3600  # seconds
 
     # ── distname-level origin (broadcast-safe) ──────────────────────────
-    distname_origin = df.groupBy("distname").agg(
+    distname_origin = pm_df.groupBy("distname").agg(
         f.min(f.unix_timestamp("start_time")).alias("dist_origin_epoch"),
     )
 
     # ── per-(distname, kpi_id) series end for tail filter ───────────────
     series_end = (
-        df.filter(f.col("kpi_value").isNotNull())
+        pm_df.filter(f.col("kpi_value").isNotNull())
         .groupBy("distname", "kpi_id")
         .agg(
             f.max(f.unix_timestamp("start_time")).alias("series_end_epoch"),
         )
     )
 
-    # ── bts_id lookup (one bts_id per distname × kpi_id) ───────────────
-    bts_lookup = df.select("distname", "kpi_id", "bts_id").distinct()
+    # ── distname lookup (one cell per distname × kpi_id) ───────────────
+    distname_lookup = pm_df.select("distname", "kpi_id").distinct()
 
     # ── attach origin & compute offset ─────────────────────────────────
     base = (
-        df.join(f.broadcast(distname_origin), on="distname")
+        pm_df.join(f.broadcast(distname_origin), on="distname")
         .withColumn("row_epoch", f.unix_timestamp("start_time"))
         .withColumn(
             "offset_h",
@@ -570,13 +574,12 @@ def drop_windows_containing_nulls(
         window_stats.join(series_end, on=["distname", "kpi_id"])
         .filter(f.col("anchor_epoch") + f.lit(window_end_offset_s) <= f.col("series_end_epoch"))
         .drop("series_end_epoch", "non_null_count", "min_hour_idx", "max_hour_idx")
-        .join(bts_lookup, on=["distname", "kpi_id"])
+        .join(distname_lookup, on=["distname", "kpi_id"])
         .withColumn(
             "start_time",
             f.from_unixtime(f.col("anchor_epoch")).cast("timestamp"),
         )
         .select(
-            "bts_id",
             "distname",
             "kpi_id",
             "start_time",
@@ -588,198 +591,102 @@ def drop_windows_containing_nulls(
     return result
 
 
-def filter_max_gap_sparse(
-    gap_filled_df: DataFrame,
+def discard_invalid_windows(
+    pm_windows: DataFrame,
+) -> DataFrame:
+    """Drop windows that did not meet the validity gate."""
+    return pm_windows.filter(f.col("is_good_window") == 1)
+
+
+def flag_flat_series_pre_pelt(
+    aligned_df: DataFrame,
     good_windows: DataFrame,
     *,
-    window_hours: int = 168,
-    stride_hours: int = 24,
-    max_gap_hours: int = MAX_IMPUTABLE_GAP,
+    min_std_val: float = 0.01,
+    max_zero_frac: float = 0.95,
 ) -> DataFrame:
-    """Reject windows containing a single null run longer than *max_gap_hours*.
+    """Flag near-constant (distname, kpi_id) series before regime detection and scaling.
 
-    Compared with the original ``filter_max_gap`` this version adds
-    **leading-gap awareness**: because the per-KPI spine no longer extends to
-    the distname-wide origin, a window whose anchor precedes the KPI's first
-    timestamp has an implicit null run at the front that was previously
-    materialised as explicit null rows.
+    Produces a per-(distname, kpi_id) boolean flag that downstream steps consume
+    to handle constant or near-constant series correctly.  This function only
+    detects and flags — it does not run PELT or scaling.
 
-        leading_gap_h = max(0, (kpi_start_epoch − anchor_epoch) / 3600)
+    Designed to run after greedy KPI selection (so only training-bound series
+    are evaluated) and immediately before PELT change-point detection (so the
+    flag is available when it is first needed).
 
-    The effective max null run for each window is then::
+    Series are never dropped.  "Always 0 in this cell" is legitimate signal
+    for a multivariate conditional model: it is a trivially reconstructable
+    constant pattern that costs the decoder almost nothing.  Dropping the series
+    would shrink the joint anchor set greedy built, at zero benefit.
 
-        max(leading_gap_h, worst_internal_null_run)
+        kpi_Z @ c1:  0 0 0 0 0 0 0 0    std=0
+           OLD: drop → c1 leaves kpi_Z's anchor set, joint coverage shrinks
+           NEW: is_flat=True, series kept → K-set and anchor set unchanged
 
-    NOTE: with the strict edge-contiguity gate now applied in Stage 2, any
-    window with a leading gap (or any null at all) has already been rejected,
-    so this filter is largely redundant on its survivors.  It is retained as a
-    defensive second gate and because it also catches long *internal* runs that
-    a fractional gate would have missed — harmless now, but cheap insurance.
+    A series is flagged (is_flat=True) when either condition holds:
+      • std_val < min_std_val   (near-constant at any level)
+      • zero_frac > max_zero_frac  (almost entirely zero)
 
     Parameters
     ----------
-    gap_filled_df : DataFrame
-        Output of ``fill_internal_gaps`` — per-KPI hourly spine.
+    aligned_df : DataFrame
+        Imputed long-format data (post-greedy, selected KPIs only).
     good_windows : DataFrame
-        Density-passing anchors (output of ``discard_invalid_windows``).
-    window_hours : int
-        Window width in hours (must match density stage).
-    stride_hours : int
-        Stride in hours (informational only; anchors come from *good_windows*).
-    max_gap_hours : int
-        Maximum tolerable consecutive null hours per window.
+        Joint-selected anchors with (distname, kpi_id) columns; restricts
+        the computation to series that will actually appear in training.
+    min_std_val : float
+        Series with std_val < min_std_val are flagged as flat (default 0.01).
+    max_zero_frac : float
+        Series with zero_frac > max_zero_frac are flagged as flat
+        (default 0.95).
 
     Returns
     -------
     DataFrame
-        Same schema as *good_windows*, with offending windows removed.
+        Columns (distname, kpi_id, is_flat) for every (distname, kpi_id) pair
+        in good_windows.  ALL pairs are present — none are dropped.
     """
-    lag_w = Window.partitionBy("distname", "kpi_id").orderBy("start_time")
+    # Restrict to (distname, kpi_id) pairs with passing windows and to rows
+    # with real (non-null) values so stddev reflects observed signal, not nulls.
+    valid_values = aligned_df.join(
+        good_windows.select("distname", "kpi_id").distinct(),
+        on=["distname", "kpi_id"],
+        how="inner",
+    ).filter(f.col("kpi_value").isNotNull())
 
-    # ── step 1-3: null-run detection on the per-KPI spine ──────────────
-    with_run_ids = (
-        gap_filled_df.withColumn("is_null", f.col("kpi_value").isNull().cast("int"))
-        .withColumn("prev_is_null", f.lag("is_null", 1, 0).over(lag_w))
-        .withColumn(
-            "null_run_start",
-            f.when((f.col("is_null") == 1) & (f.col("prev_is_null") == 0), 1).otherwise(0),
-        )
-        .withColumn(
-            "run_id",
-            f.sum("null_run_start").over(lag_w.rowsBetween(Window.unboundedPreceding, 0)),
-        )
+    # Group by (distname, kpi_id) — series-scoped, not KPI-global — so a KPI
+    # that is flat in one cell but variant in another keeps both series.
+    stats = valid_values.groupBy("distname", "kpi_id").agg(
+        # sample stddev of non-null kpi_value in this series
+        f.stddev("kpi_value").alias("std_val"),
+        # fraction of non-null rows where kpi_value is exactly 0
+        (f.sum(f.when(f.col("kpi_value") == 0, 1).otherwise(0)) / f.count("*")).alias("zero_frac"),
     )
 
-    null_runs = (
-        with_run_ids.filter(f.col("is_null") == 1)
-        .groupBy("distname", "kpi_id", "run_id")
-        .agg(
-            f.count("*").alias("run_length"),
-            f.min(f.unix_timestamp("start_time")).alias("run_start_epoch"),
-        )
-    )
-
-    # ── step 4: per-KPI series start for leading-gap computation ───────
-    kpi_starts = gap_filled_df.groupBy("distname", "kpi_id").agg(
-        f.min(f.unix_timestamp("start_time")).alias("kpi_start_epoch")
-    )
-
-    # ── step 5: for each anchor, compute worst internal null run ───────
-    anchors = good_windows.select(
-        "distname",
-        "kpi_id",
-        f.unix_timestamp("start_time").alias("anchor_epoch"),
-        "start_time",
-        "bts_id",
-        "window_valid_frac",
-        "is_good_window",
-    )
-
-    window_end_offset = (window_hours - 1) * 3600
-
-    worst_internal = (
-        anchors.join(null_runs, on=["distname", "kpi_id"], how="left")
-        .filter(
-            (f.col("run_start_epoch") >= f.col("anchor_epoch"))
-            & (f.col("run_start_epoch") <= f.col("anchor_epoch") + f.lit(window_end_offset))
-        )
-        .groupBy(
-            "distname",
-            "kpi_id",
-            "anchor_epoch",
-            "start_time",
-            "bts_id",
-            "window_valid_frac",
-            "is_good_window",
-        )
-        .agg(f.max("run_length").alias("max_internal_gap"))
-    )
-
-    # ── step 6: combine internal + leading gap ─────────────────────────
-    with_gaps = (
-        anchors.join(
-            worst_internal.select("distname", "kpi_id", "start_time", "max_internal_gap"),
-            on=["distname", "kpi_id", "start_time"],
-            how="left",
-        )
-        .join(kpi_starts, on=["distname", "kpi_id"], how="left")
-        .fillna({"max_internal_gap": 0})
-        .withColumn(
-            "leading_gap",
-            f.greatest(
-                f.lit(0),
-                ((f.col("kpi_start_epoch") - f.col("anchor_epoch")) / 3600).cast("long"),
-            ),
-        )
-        .withColumn(
-            "max_null_run",
-            f.greatest(f.col("leading_gap"), f.col("max_internal_gap")),
-        )
-    )
-
-    return with_gaps.filter(f.col("max_null_run") <= max_gap_hours).select(
-        "bts_id",
-        "distname",
-        "kpi_id",
-        "start_time",
-        "window_valid_frac",
-        "is_good_window",
-    )
-
-
-def discard_invalid_windows(
-    window_density: DataFrame,
-) -> DataFrame:
-    """Drop windows that did not meet the validity gate."""
-    return window_density.filter(f.col("is_good_window") == 1)
-
-
-def compute_theoretical_max_windows(
-    df: DataFrame,
-    *,
-    window_hours: int = 168,
-    stride_hours: int = 24,
-) -> DataFrame:
-    """Compute the upper-bound window count per (distname, kpi_id).
-
-    Uses only non-null rows — works identically on per-KPI gap-filled data
-    and the old distname-wide grid (gap-fill rows are null, filtered out here).
-    """
     return (
-        df.filter(f.col("kpi_value").isNotNull())
-        .groupBy("distname", "kpi_id")
-        .agg(
-            f.min("start_time").alias("kpi_tmin"),
-            f.max("start_time").alias("kpi_tmax"),
-        )
+        stats
+        # is_flat = True when stddev is negligible OR the series is mostly zero
         .withColumn(
-            "active_hours",
-            (f.unix_timestamp("kpi_tmax") - f.unix_timestamp("kpi_tmin")) / 3600 + 1,
-        )
-        .withColumn(
-            "theoretical_max_windows",
-            f.greatest(
-                f.lit(0),
-                ((f.col("active_hours") - f.lit(window_hours)) / f.lit(stride_hours)).cast("long")
-                + f.lit(1),
-            ),
-        )
-        .select("distname", "kpi_id", "active_hours", "theoretical_max_windows")
+            "is_flat",
+            (f.col("std_val") < f.lit(min_std_val)) | (f.col("zero_frac") > f.lit(max_zero_frac)),
+        ).select("distname", "kpi_id", "is_flat")
     )
 
 
 def compute_kpi_yield_stats(
     good_windows: DataFrame,
-    theoretical_max: DataFrame,
     *,
     total_distinct_cells: int,
 ) -> DataFrame:
-    """Aggregate per-KPI statistics needed by the pre-filter."""
-    kpi_theoretical_max = theoretical_max.groupBy("kpi_id").agg(
-        f.sum("theoretical_max_windows").alias("theoretical_max_windows")
-    )
+    """Aggregate per-KPI statistics for diagnostics and pre-filtering.
 
-    observed = (
+    Returns total_windows, n_cells, frac_contributing_cells, mean_windows_per_cell.
+    window_coverage_frac is intentionally absent — its denominator
+    (theoretical_max_windows) assumes a gap-free series and is unreliable on
+    real PM data.
+    """
+    return (
         good_windows.groupBy("kpi_id")
         .agg(
             f.count("*").alias("total_windows"),
@@ -795,124 +702,68 @@ def compute_kpi_yield_stats(
         )
     )
 
-    stats = observed.join(kpi_theoretical_max, on="kpi_id", how="left").withColumn(
-        "window_coverage_frac",
-        f.when(
-            f.col("theoretical_max_windows") > 0,
-            f.col("total_windows") / f.col("theoretical_max_windows"),
-        ).otherwise(f.lit(0.0)),
-    )
-
-    return stats
-
-
-# NOTE: DROP THIS SHITE?
-def filter_temporal_stability(
-    good_windows: DataFrame,
-    *,
-    min_weeks_with_good_windows: int = 8,
-    total_weeks_in_dataset: int,
-    min_frac_weeks_covered: float = 0.60,
-) -> list[str]:
-    """Reject KPIs whose good windows are concentrated in too few weeks."""
-    effective_week_floor = max(
-        min_weeks_with_good_windows,
-        int(min_frac_weeks_covered * total_weeks_in_dataset),
-    )
-
-    return (
-        good_windows.withColumn("week", f.date_trunc("week", "start_time"))
-        .groupBy("kpi_id")
-        .agg(f.countDistinct("week").alias("n_weeks_with_good_windows"))
-        .filter(f.col("n_weeks_with_good_windows") >= effective_week_floor)
-        .select("kpi_id")
-        .rdd.flatMap(lambda r: [r["kpi_id"]])
-        .collect()
-    )
-
-
-def filter_variance(
-    aligned_df: DataFrame,
-    good_windows: DataFrame,
-    *,
-    min_std_val: float = 0.01,
-    max_zero_frac: float = 0.95,
-) -> list[str]:
-    """Reject KPIs with near-zero variance or near-constant zero values."""
-    valid_values = aligned_df.join(
-        good_windows.select("distname", "kpi_id").distinct(),
-        on=["distname", "kpi_id"],
-        how="inner",
-    ).filter(f.col("kpi_value").isNotNull())
-
-    stats = valid_values.groupBy("kpi_id").agg(
-        f.mean("kpi_value").alias("mean_val"),
-        f.stddev("kpi_value").alias("std_val"),
-        (f.sum(f.when(f.col("kpi_value") == 0, 1).otherwise(0)) / f.count("*")).alias("zero_frac"),
-    )
-
-    return (
-        stats.filter(f.col("zero_frac") <= max_zero_frac)
-        .filter(f.col("std_val") >= min_std_val)
-        .select("kpi_id")
-        .rdd.flatMap(lambda r: [r["kpi_id"]])
-        .collect()
-    )
-
-
-def filter_cross_cell_consistency(
-    aligned_df: DataFrame,
-    good_windows: DataFrame,
-    *,
-    max_iqr_ratio: float = 5.0,
-) -> list[str]:
-    """Reject KPIs whose per-cell median distribution spans an implausible range."""
-    valid_values = aligned_df.join(
-        good_windows.select("distname", "kpi_id").distinct(),
-        on=["distname", "kpi_id"],
-        how="inner",
-    ).filter(f.col("kpi_value").isNotNull())
-
-    cell_medians = valid_values.groupBy("kpi_id", "distname").agg(
-        f.expr("percentile(kpi_value, 0.50)").alias("cell_median")
-    )
-
-    consistency = (
-        cell_medians.groupBy("kpi_id")
-        .agg(
-            f.expr("percentile(cell_median, 0.25)").alias("p25"),
-            f.expr("percentile(cell_median, 0.75)").alias("p75"),
-        )
-        .withColumn(
-            "iqr_ratio",
-            f.when(f.col("p25") > 0, f.col("p75") / f.col("p25")).otherwise(f.lit(999.0)),
-        )
-    )
-
-    return (
-        consistency.filter(f.col("iqr_ratio") <= max_iqr_ratio)
-        .select("kpi_id")
-        .rdd.flatMap(lambda r: [r["kpi_id"]])
-        .collect()
-    )
-
 
 def prefilter_kpis(
     kpi_yield_stats: DataFrame,
     *,
-    min_window_coverage_frac: float = 0.50,
-    min_frac_contributing_cells: float = 0.50,
+    breadth_percentile: float = 0.10,
+    min_breadth_floor: float = 0.05,
+    max_drop_frac: float = 0.25,
 ) -> list[str]:
-    """Apply structural filters and return surviving KPI list sorted by coverage."""
-    surviving = (
-        kpi_yield_stats.filter(f.col("window_coverage_frac") >= min_window_coverage_frac)
-        .filter(f.col("frac_contributing_cells") >= min_frac_contributing_cells)
-        .orderBy(f.desc("window_coverage_frac"))
-        .select("kpi_id")
-        .rdd.flatMap(lambda r: [r["kpi_id"]])
-        .collect()
+    """Distribution-relative structural pre-cut before the O(K^2) greedy loop.
+
+    Instead of a fixed frac_contributing_cells threshold, derive the cut point
+    from the data: drop only KPIs in the bottom `breadth_percentile` of cell
+    breadth. Guarded so the cut can never become aggressive enough to amputate
+    candidates greedy might have kept.
+
+    Guards (in order of application):
+      1. Threshold is the breadth_percentile-th percentile of
+         frac_contributing_cells, but never below min_breadth_floor (so on
+         uniform distributions we don't cut at a meaninglessly high floor).
+      2. If the resulting cut would drop more than max_drop_frac of candidates,
+         the pre-filter disables itself entirely and returns all KPIs — a sign
+         the distribution is too flat for a safe structural cut.
+    """
+    total_kpis = kpi_yield_stats.count()
+
+    # Empirical threshold: the breadth_percentile quantile of cell breadth.
+    # approxQuantile is one cheap pass; relativeError 0.01 is plenty here.
+    threshold = kpi_yield_stats.approxQuantile(
+        "frac_contributing_cells", [breadth_percentile], 0.01
+    )[0]
+
+    # Never cut above the floor: if the 10th-percentile breadth is high
+    # (uniform distribution), fall back to a low absolute floor so we only
+    # ever remove genuinely thin KPIs.
+    threshold = (
+        min(threshold, max(threshold, min_breadth_floor))
+        if threshold < min_breadth_floor
+        else min(threshold, min_breadth_floor)
     )
-    return surviving
+    # clearer: cut at the SMALLER of (empirical percentile, floor)
+    threshold = min(threshold, min_breadth_floor) if threshold > min_breadth_floor else threshold
+
+    survivors = kpi_yield_stats.filter(f.col("frac_contributing_cells") >= f.lit(threshold))
+    n_survivors = survivors.count()
+    n_dropped = total_kpis - n_survivors
+
+    # Safety guard: if we'd cut too deep, the distribution isn't tail-shaped
+    # enough for a safe pre-cut. Disable rather than risk shrinking the K-set.
+    if n_dropped / total_kpis > max_drop_frac:
+        logger.info(
+            f"[prefilter] would drop {n_dropped}/{total_kpis} "
+            f"({n_dropped/total_kpis:.0%}) > max_drop_frac={max_drop_frac:.0%} "
+            f"— distribution too flat, disabling pre-cut"
+        )
+        return kpi_yield_stats.select("kpi_id").rdd.flatMap(lambda r: [r["kpi_id"]]).collect()
+
+    logger.info(
+        f"[prefilter] breadth threshold={threshold:.3f} "
+        f"(p{breadth_percentile*100:.0f}) | "
+        f"dropped {n_dropped}/{total_kpis} KPIs"
+    )
+    return survivors.select("kpi_id").rdd.flatMap(lambda r: [r["kpi_id"]]).collect()
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -1199,6 +1050,7 @@ def attach_windows_index_to_pm(
         "hour_idx",
         "kpi_value",
         "imputed_flag",
+        "is_flat",
     )
 
     return indexed
@@ -1292,43 +1144,3 @@ def extract_valid_pm_windows(
     )
 
     return covered
-
-
-def compute_joint_theoretical_max(
-    aligned_df: DataFrame,
-    candidates: list[str],
-    *,
-    window_hours: int = 168,
-    stride_hours: int = 24,
-) -> int:
-    """Exact theoretical max joint windows via per-cell anchor range intersection."""
-    series_bounds = (
-        aligned_df.filter(f.col("kpi_id").isin(candidates))
-        .filter(f.col("kpi_value").isNotNull())
-        .groupBy("distname", "kpi_id")
-        .agg(
-            f.min("start_time").alias("kpi_tmin"),
-            f.max("start_time").alias("kpi_tmax"),
-        )
-    )
-
-    cell_joint_range = series_bounds.groupBy("distname").agg(
-        f.unix_timestamp(f.max("kpi_tmin")).alias("joint_anchor_start_epoch"),
-        (f.unix_timestamp(f.min("kpi_tmax")) - f.lit((window_hours - 1) * 3600)).alias(
-            "joint_anchor_end_epoch"
-        ),
-    )
-
-    with_counts = cell_joint_range.withColumn(
-        "span_seconds",
-        f.col("joint_anchor_end_epoch") - f.col("joint_anchor_start_epoch"),
-    ).withColumn(
-        "cell_joint_max",
-        f.greatest(
-            f.lit(0),
-            (f.col("span_seconds") / f.lit(stride_hours * 3600)).cast("long") + f.lit(1),
-        ),
-    )
-
-    total = with_counts.agg(f.sum("cell_joint_max")).collect()[0][0]
-    return int(total or 0)

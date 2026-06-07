@@ -30,6 +30,7 @@ cfg = PreprocessingConfig(
     stride_hours=24,
     max_gap_hours=24,
     min_joint_windows_abs=None,
+    greedy_min_coverage_frac=0.5,
     impute=True,
 )
 
