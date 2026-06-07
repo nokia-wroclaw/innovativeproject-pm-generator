@@ -5,6 +5,7 @@ import { useRoute, useRouter } from 'vue-router';
 import BaseModal from '../components/BaseModal.vue';
 import S3StorageTabBody from '../components/S3StorageTabBody.vue';
 import DeleteAction from '../components/DeleteAction.vue';
+import DatasetPreviewContent from '../features/storage/components/DatasetPreviewContent.vue';
 import { Tabs } from '@/components/ui';
 import {
   fetchS3DatasetsPage,
@@ -225,6 +226,21 @@ function closePreviewModal() {
   previewData.value = null;
 }
 
+function openDatasetDetail(row) {
+  if (!row?.id || row.status !== DatasetStatus.COMPLETED) return;
+  router.push({
+    path: `/s3/datasets/${row.id}`,
+    query: { tab: activeTab.value },
+  });
+}
+
+function openFullViewFromPreview() {
+  if (!activeRow.value?.id) return;
+  const row = activeRow.value;
+  closePreviewModal();
+  openDatasetDetail(row);
+}
+
 async function openDatasetPreview(row) {
   activeRow.value = row;
   isPreviewModalOpen.value = true;
@@ -239,12 +255,6 @@ async function openDatasetPreview(row) {
   } finally {
     isPreviewLoading.value = false;
   }
-}
-
-function formatPreviewValue(value) {
-  if (value === null || value === undefined) return '—';
-  if (typeof value === 'object') return JSON.stringify(value);
-  return String(value);
 }
 
 function handleRowAction({ type, row }) {
@@ -335,6 +345,11 @@ async function processUploadLoop(file, uploadState, uploadTask) {
     }, 1500);
   } catch (error) {
     console.error('Multipart upload failed:', error);
+    try {
+      await updateS3Status(uploadState.datasetId, DatasetStatus.FAILED);
+    } catch (statusError) {
+      console.error('Failed to mark dataset as FAILED:', statusError);
+    }
     uploadTask.status = DatasetStatus.FAILED;
   }
 }
@@ -356,7 +371,7 @@ async function startMultipartUpload(file, fileName, s3Key, type) {
   persistUploadState(uploadState);
 
   const uploadTask = createUploadTask({
-    id: `upload_${Date.now()}`,
+    id: dataset.id,
     file_name: fileName,
     s3_key: initResponse.s3_key,
     type,
@@ -411,7 +426,7 @@ async function confirmResume() {
   isResumeModalOpen.value = false;
 
   const uploadTask = createUploadTask({
-    id: `upload_resumed_${Date.now()}`,
+    id: datasetId,
     file_name: fileName,
     s3_key,
     type: type || DatasetType.RAW,
@@ -441,8 +456,11 @@ async function cancelResumeUpload() {
   refreshActiveTable();
 }
 
-function onDeleteSuccess() {
+function onDeleteSuccess(item) {
   showDeleteModal.value = false;
+  if (item?.id != null) {
+    activeUploads.value = activeUploads.value.filter((task) => task.id !== item.id);
+  }
   refreshActiveTable();
 }
 
@@ -507,8 +525,11 @@ onBeforeUnmount(() => {
           :row-actions="rowActions"
           :uploading-status="DatasetStatus.UPLOADING"
           :completed-status="DatasetStatus.COMPLETED"
+          :failed-status="DatasetStatus.FAILED"
+          :allow-failed-delete="isAdmin"
           @add-dataset="openAddModal"
           @row-action="handleRowAction"
+          @open-dataset="openDatasetDetail"
         />
       </template>
 
@@ -552,7 +573,10 @@ onBeforeUnmount(() => {
           :row-actions="rowActions"
           :uploading-status="DatasetStatus.UPLOADING"
           :completed-status="DatasetStatus.COMPLETED"
+          :failed-status="DatasetStatus.FAILED"
+          :allow-failed-delete="isAdmin"
           @row-action="handleRowAction"
+          @open-dataset="openDatasetDetail"
         />
       </template>
 
@@ -566,7 +590,10 @@ onBeforeUnmount(() => {
           :row-actions="rowActions"
           :uploading-status="DatasetStatus.UPLOADING"
           :completed-status="DatasetStatus.COMPLETED"
+          :failed-status="DatasetStatus.FAILED"
+          :allow-failed-delete="isAdmin"
           @row-action="handleRowAction"
+          @open-dataset="openDatasetDetail"
         />
       </template>
     </Tabs>
@@ -714,54 +741,23 @@ onBeforeUnmount(() => {
       width="900px"
       @close="closePreviewModal"
     >
-      <div class="s3-preview-content">
-        <p v-if="isPreviewLoading" class="s3-preview-status">Loading preview...</p>
-        <p v-else-if="previewError" class="s3-preview-error">{{ previewError }}</p>
-
-        <template v-else-if="previewData">
-          <p class="s3-preview-meta">
-            Tables found: <strong>{{ previewData.tables?.length || 0 }}</strong>
-          </p>
-
-          <section
-            v-for="table in previewData.tables"
-            :key="table.name"
-            class="s3-preview-table-section"
-          >
-            <h3 class="s3-preview-table-title">{{ table.name }}</h3>
-            <p class="s3-preview-columns">
-              Columns:
-              <span>{{ table.columns?.join(', ') || '—' }}</span>
-            </p>
-
-            <div class="s3-preview-table-wrap">
-              <table class="s3-preview-table">
-                <thead>
-                  <tr>
-                    <th v-for="column in table.columns" :key="column">{{ column }}</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  <tr v-for="(row, rowIndex) in table.rows" :key="rowIndex">
-                    <td v-for="column in table.columns" :key="column">
-                      {{ formatPreviewValue(row[column]) }}
-                    </td>
-                  </tr>
-                  <tr v-if="!table.rows?.length">
-                    <td :colspan="table.columns?.length || 1" class="s3-preview-empty">
-                      No rows available
-                    </td>
-                  </tr>
-                </tbody>
-              </table>
-            </div>
-          </section>
-        </template>
-      </div>
+      <DatasetPreviewContent
+        :loading="isPreviewLoading"
+        :error="previewError"
+        :preview-data="previewData"
+      />
 
       <template #footer>
         <button type="button" class="btn-secondary" @click="closePreviewModal">
           Close
+        </button>
+        <button
+          v-if="previewData && !previewError"
+          type="button"
+          class="btn-primary"
+          @click="openFullViewFromPreview"
+        >
+          Full view
         </button>
       </template>
     </BaseModal>
@@ -770,6 +766,7 @@ onBeforeUnmount(() => {
       v-if="showDeleteModal && isAdmin"
       :item="activeRow"
       :delete-service="deleteS3Dataset"
+      :ask-storage-scope="activeRow?.status === DatasetStatus.COMPLETED"
       @success="onDeleteSuccess"
       @close="showDeleteModal = false"
     />

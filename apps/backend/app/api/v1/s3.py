@@ -13,7 +13,7 @@ from app.core.storage_access import (
     require_storage_admin,
 )
 from app.db.database import db_manager
-from app.db.schemas import DatasetType
+from app.db.schemas import DatasetStatus, DatasetType
 from app.models.s3 import (
     AbortMultipartRequest,
     CompleteMultipartRequest,
@@ -22,10 +22,22 @@ from app.models.s3 import (
     DatasetRead,
     DatasetRegisterRequest,
     DatasetStatusUpdate,
+    DatasetVisualizationResponse,
+    DatasetVisualizationStatusResponse,
     MultipartInitiateResponse,
     PartUrlResponse,
 )
+from app.services.airflow.errors import AirflowIntegrationError, AirflowNotFound
+from app.services.airflow.runtime import get_airflow_service
+from app.services.airflow.service import AirflowService
 from app.services.s3.service import S3Service
+from app.services.s3.visualization import (
+    DATASET_VISUALIZATION_DAG_ID,
+    VisualizationSchemaError,
+    get_dataset_visualization_status,
+    trigger_dataset_visualization,
+    trigger_dataset_visualization_on_raw_completed,
+)
 
 router = APIRouter(dependencies=[Depends(require_auth)])
 
@@ -34,6 +46,14 @@ def get_s3_service(
     db: Session = Depends(db_manager.get_db),
 ) -> S3Service:
     return S3Service(db=db)
+
+
+def _airflow_service() -> AirflowService:
+    return get_airflow_service()
+
+
+def _identity(payload: dict[str, Any]) -> str | None:
+    return payload.get("preferred_username") or payload.get("email") or payload.get("sub")
 
 
 @router.post("/datasets", response_model=DatasetRead)
@@ -120,6 +140,12 @@ async def register_s3_dataset(
         type=request.type,
     )
 
+    await trigger_dataset_visualization_on_raw_completed(
+        s3_dataset,
+        s3_service=service,
+        triggered_by=_identity(token_payload),
+    )
+
     return DatasetRead.model_validate(s3_dataset)
 
 
@@ -149,9 +175,15 @@ async def confirm_s3_dataset(
     dataset = service.get_dataset(dataset_status.dataset_id)
     assert_dataset_accessible(token_payload, dataset)
     assert_raw_dataset(dataset, context="status")
-    return DatasetRead.model_validate(
-        service.change_dataset_status(dataset_status.dataset_id, dataset_status.status)
-    )
+    was_completed = dataset.status == DatasetStatus.COMPLETED
+    updated = service.change_dataset_status(dataset_status.dataset_id, dataset_status.status)
+    if dataset_status.status == DatasetStatus.COMPLETED and not was_completed:
+        await trigger_dataset_visualization_on_raw_completed(
+            updated,
+            s3_service=service,
+            triggered_by=_identity(token_payload),
+        )
+    return DatasetRead.model_validate(updated)
 
 
 @router.get("/datasets", response_model=list[DatasetRead])
@@ -175,13 +207,87 @@ def preview_s3_dataset(
     return DatasetPreviewResponse.model_validate(service.preview_dataset(dataset_id))
 
 
+@router.post(
+    "/datasets/{dataset_id}/visualization",
+    response_model=DatasetVisualizationResponse,
+)
+async def request_dataset_visualization(
+    dataset_id: int,
+    service: S3Service = Depends(get_s3_service),
+    airflow: AirflowService = Depends(_airflow_service),
+    token_payload: dict[str, typing.Any] = Depends(require_auth),
+) -> DatasetVisualizationResponse:
+    dataset = service.get_dataset(dataset_id)
+    assert_dataset_accessible(token_payload, dataset)
+
+    try:
+        return await trigger_dataset_visualization(
+            dataset,
+            airflow=airflow,
+            s3_service=service,
+            triggered_by=_identity(token_payload),
+        )
+    except VisualizationSchemaError as exc:
+        raise HTTPException(status_code=422, detail=exc.payload) from exc
+    except AirflowNotFound as exc:
+        raise HTTPException(
+            status_code=404,
+            detail=(
+                f"DAG '{DATASET_VISUALIZATION_DAG_ID}' is not registered in Airflow. "
+                "Ensure apps/airflow/dags is mounted and the scheduler has parsed the DAG."
+            ),
+        ) from exc
+    except AirflowIntegrationError as exc:
+        raise HTTPException(status_code=exc.http_status, detail=exc.message) from exc
+
+
+@router.get(
+    "/datasets/{dataset_id}/visualization/status",
+    response_model=DatasetVisualizationStatusResponse,
+)
+async def get_dataset_visualization_status_endpoint(
+    dataset_id: int,
+    service: S3Service = Depends(get_s3_service),
+    airflow: AirflowService = Depends(_airflow_service),
+    token_payload: dict[str, typing.Any] = Depends(require_auth),
+) -> DatasetVisualizationStatusResponse:
+    dataset = service.get_dataset(dataset_id)
+    assert_dataset_accessible(token_payload, dataset)
+    try:
+        return await get_dataset_visualization_status(
+            dataset_id,
+            dataset,
+            airflow=airflow,
+            s3_service=service,
+        )
+    except AirflowNotFound as exc:
+        raise HTTPException(
+            status_code=404,
+            detail=(
+                f"DAG '{DATASET_VISUALIZATION_DAG_ID}' is not registered in Airflow. "
+                "Ensure apps/airflow/dags is mounted and the scheduler has parsed the DAG."
+            ),
+        ) from exc
+    except AirflowIntegrationError as exc:
+        raise HTTPException(status_code=exc.http_status, detail=exc.message) from exc
+
+
 @router.delete("/datasets/{dataset_id}")
 def delete_s3_dataset(
     dataset_id: int,
+    delete_from_s3: bool = Query(
+        False,
+        description="When true, also remove the object from S3/MinIO.",
+    ),
     service: S3Service = Depends(get_s3_service),
     token_payload: dict[str, typing.Any] = Depends(require_admin),
 ) -> dict:
     dataset = service.get_dataset(dataset_id)
     assert_dataset_accessible(token_payload, dataset)
-    service.delete_dataset(dataset_id)
-    return {"message": "dataset deleted successfully", "dataset_id": dataset_id}
+    service.delete_dataset(dataset_id, delete_from_s3=delete_from_s3)
+    scope = "database and S3" if delete_from_s3 else "database only"
+    return {
+        "message": f"Dataset deleted successfully ({scope})",
+        "dataset_id": dataset_id,
+        "deleted_from_s3": delete_from_s3,
+    }

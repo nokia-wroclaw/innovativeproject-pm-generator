@@ -7,6 +7,7 @@ services:
       - "${FRONTEND_PORT:-5173}:5173"
     volumes:
       - ../apps/frontend:/app
+      - ../shared:/app/shared:ro
       - frontend_node_modules:/app/node_modules
     environment:
       VITE_API_BASE_URL: http://localhost:${FASTAPI_PORT:-8000}
@@ -36,8 +37,9 @@ services:
       - "${SPARK_UI_PORT}:4040"
       - "${SPARK_MASTER}:7077"
     volumes:
-      - ../apps/generator:/home/sparkuser/app/apps/generator
-      - /home/shared_dir:/home/sparkuser/app/apps/generator/data/shared_dir
+      - ../apps/generator:/home/${USER:-hostuser}/app/apps/generator
+      - ../shared:/app/shared:ro
+      - /home/shared_dir:/home/${USER:-hostuser}/app/apps/generator/data/shared_dir
       - ../apps/generator/apps:/opt/airflow/spark-apps
     env_file:
       - ../.env
@@ -45,9 +47,12 @@ services:
       - AWS_ACCESS_KEY_ID=${AWS_ACCESS_KEY_ID}
       - AWS_SECRET_ACCESS_KEY=${AWS_SECRET_ACCESS_KEY}
       - S3_ENDPOINT=${S3_URL}
+      - GENPM_SCHEMA_PATH=/app/shared/pm_schema_columns.json
     networks:
-      - default
-      - shared-network
+      default:
+      shared-network:
+        aliases:
+          - ${USER}-spark-jupyter
     deploy:
       resources:
         reservations:
@@ -68,9 +73,11 @@ services:
       - "${FASTAPI_PORT}:8000"
     volumes:
       - ../apps/backend/app:/app/app
+      - ../shared:/app/shared:ro
     env_file:
       - ../.env
     environment:
+      GENPM_SCHEMA_PATH: /app/shared/pm_schema_columns.json
       DATABASE_URL: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
       AIRFLOW_URL: ${AIRFLOW_URL}
       AIRFLOW_API_PREFIX: ${AIRFLOW_API_PREFIX:-/api/v2}
@@ -125,8 +132,10 @@ services:
       MINIO_API_CORS_ALLOW_ORIGIN: "*"
     command: server /data --console-address ":9001"
     networks:
-      - default
-      - shared-network
+      default:
+      shared-network:
+        aliases:
+          - minio
     volumes:
       - /${S3_DIRECTORY}/data:/data
 

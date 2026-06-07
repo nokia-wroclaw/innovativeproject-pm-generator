@@ -37,6 +37,17 @@ const routes = [
     },
   },
   {
+    path: '/s3/datasets/:datasetId',
+    name: 'Storage dataset',
+    component: () => import('../features/storage/views/S3DatasetDetail.vue'),
+    props: (route) => ({
+      datasetId: Number(route.params.datasetId),
+    }),
+    meta: {
+      description: 'Full dataset preview and visualizations.',
+    },
+  },
+  {
     path: '/modeling',
     name: 'Modeling',
     component: () => import('../features/modeling/views/Modeling.vue'),

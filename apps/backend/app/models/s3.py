@@ -1,4 +1,5 @@
 import uuid
+from typing import Any
 
 from pydantic import BaseModel, ConfigDict
 
@@ -71,4 +72,22 @@ class DatasetPreviewResponse(BaseModel):
     dataset_id: int
     file_name: str
     s3_key: str
+    type: DatasetType
     tables: list[TablePreview]
+
+
+class DatasetVisualizationResponse(BaseModel):
+    message: str
+    dag_id: str
+    airflow_run_id: str
+
+
+class DatasetVisualizationStatusResponse(BaseModel):
+    dataset_id: int
+    dag_id: str
+    run_id: str | None = None
+    status: str
+    spark_version: str | None = None
+    message: str | None = None
+    summary: dict[str, Any] | None = None
+    kpi_analysis: dict[str, Any] | None = None

@@ -1,4 +1,5 @@
 import os
+
 from pyspark.sql import SparkSession
 
 
@@ -12,21 +13,22 @@ def main():
     bucket_name = os.environ.get("S3_BUCKET", "test-bucket")
 
     # Initialize Spark session with appropriate parameters for MinIO
-    spark = SparkSession.builder \
-        .appName("AirflowTestJob") \
-        .config("spark.hadoop.fs.s3a.endpoint", s3_endpoint) \
-        .config("spark.hadoop.fs.s3a.access.key", access_key) \
-        .config("spark.hadoop.fs.s3a.secret.key", secret_key) \
-        .config("spark.hadoop.fs.s3a.path.style.access", "true") \
-        .config("spark.hadoop.fs.s3a.connection.ssl.enabled", "false") \
-        .config("spark.hadoop.fs.s3a.impl", "org.apache.hadoop.fs.s3a.S3AFileSystem") \
+    spark = (
+        SparkSession.builder.appName("AirflowTestJob")
+        .config("spark.hadoop.fs.s3a.endpoint", s3_endpoint)
+        .config("spark.hadoop.fs.s3a.access.key", access_key)
+        .config("spark.hadoop.fs.s3a.secret.key", secret_key)
+        .config("spark.hadoop.fs.s3a.path.style.access", "true")
+        .config("spark.hadoop.fs.s3a.connection.ssl.enabled", "false")
+        .config("spark.hadoop.fs.s3a.impl", "org.apache.hadoop.fs.s3a.S3AFileSystem")
         .getOrCreate()
+    )
 
     data = [
         ("Anna", "IT", 15000),
         ("Jan", "HR", 9000),
         ("Tomasz", "IT", 18000),
-        ("Kasia", "Marketing", 12000)
+        ("Kasia", "Marketing", 12000),
     ]
     df = spark.createDataFrame(data, ["Name", "Department", "Salary"])
 
@@ -46,7 +48,9 @@ def main():
     it_df.write.mode("overwrite").parquet(output_path)
 
     # --- NEW SECTION: PARQUET READ TEST ---
-    read_path = f"s3a://{bucket_name}/dummy/dummy/fbe3cdab-52d6-45f5-a98e-195d51349e8d_dummy.parquet"
+    read_path = (
+        f"s3a://{bucket_name}/dummy/dummy/fbe3cdab-52d6-45f5-a98e-195d51349e8d_dummy.parquet"
+    )
     print(f"\nAttempting to read file from: {read_path}")
 
     try:

@@ -8,6 +8,7 @@ RUN apt-get update \
   && apt-get clean \
   && rm -rf /var/lib/apt/lists/*
 
+# Must match build/Spark.Dockerfile (PySpark 3.13 on driver and executors).
 ENV SPARK_VERSION=3.5.2
 ENV HADOOP_VERSION=3
 
@@ -24,10 +25,16 @@ RUN curl -O https://archive.apache.org/dist/spark/spark-${SPARK_VERSION}/spark-$
   && chmod -R 755 /opt/spark-${SPARK_VERSION}-bin-hadoop${HADOOP_VERSION} \
   && chmod +x /opt/spark-${SPARK_VERSION}-bin-hadoop${HADOOP_VERSION}/bin/*
 
-RUN apt-get update && apt-get install -y python3.11 python3.11-venv python3.11-dev \
+RUN apt-get update && apt-get install -y procps \
   && apt-get clean && rm -rf /var/lib/apt/lists/*
 
-
 USER airflow
+RUN pip install --no-cache-dir \
+    numpy pandas scipy plotly boto3 pyarrow \
+    && python -c "import numpy"
+
+ENV GENPM_PYSPARK_PYTHON=/usr/python/bin/python3.13
 ENV JAVA_HOME=/usr/lib/jvm/java-17-openjdk-amd64
 ENV SPARK_HOME=/opt/spark
+ENV PYSPARK_PYTHON=/usr/python/bin/python3.13
+ENV PYSPARK_DRIVER_PYTHON=/usr/python/bin/python3.13

@@ -14,6 +14,18 @@
       :provider="provider"
       :per-page="10"
     >
+      <template #cell-file_name="{ row }">
+        <button
+          v-if="linkableName && row.status === completedStatus"
+          type="button"
+          class="s3-dataset-link"
+          @click="$emit('open-dataset', row)"
+        >
+          {{ row.file_name }}
+        </button>
+        <span v-else>{{ row.file_name }}</span>
+      </template>
+
       <template #cell-status="{ row }">
         <div v-if="row.status === uploadingStatus" class="s3-upload-cell">
           <div class="s3-progress-bar">
@@ -39,7 +51,18 @@
           :actions="rowActions"
           @action="$emit('row-action', $event)"
         />
-        <span v-else class="s3-status-waiting">Uploading...</span>
+        <button
+          v-else-if="row.status === failedStatus && allowFailedDelete"
+          type="button"
+          class="s3-failed-delete-btn"
+          @click="$emit('row-action', { type: 'delete', row })"
+        >
+          Delete
+        </button>
+        <span v-else-if="row.status === uploadingStatus" class="s3-status-waiting">
+          Uploading...
+        </span>
+        <span v-else class="s3-status-waiting">—</span>
       </template>
     </DataTable>
   </div>
@@ -59,9 +82,12 @@ defineProps({
   rowActions: { type: Array, required: true },
   uploadingStatus: { type: String, required: true },
   completedStatus: { type: String, required: true },
+  failedStatus: { type: String, required: true },
+  allowFailedDelete: { type: Boolean, default: false },
+  linkableName: { type: Boolean, default: true },
 });
 
-defineEmits(['add-dataset', 'row-action']);
+defineEmits(['add-dataset', 'row-action', 'open-dataset']);
 
 const tableRef = ref(null);
 

@@ -2,7 +2,7 @@
 name = "genpm-generator"
 version = "0.1.0"
 description = "Data pipeline processing for GenPM"
-requires-python = ">=3.11, <3.13"
+requires-python = ">=3.11"
 dependencies = [
     "findspark>=2.0.1",
     "ipykernel>=7.2.0",
@@ -17,6 +17,7 @@ dependencies = [
     "scipy>=1.17.1",
     "dotenv>=0.9.9",
     "ruptures>=1.1.10",
+    "boto3>=1.35.0",
 ]
 
 

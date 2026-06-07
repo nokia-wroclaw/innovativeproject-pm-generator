@@ -58,3 +58,10 @@ check_untyped_defs = true
 disallow_incomplete_defs = true
 ignore_missing_imports = true
 files = ["app"]
+
+[[tool.mypy.overrides]]
+module = [
+    "app.services.s3.service",
+    "app.services.s3.visualization",
+]
+disable_error_code = ["import-untyped"]

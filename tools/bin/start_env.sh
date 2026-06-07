@@ -103,6 +103,24 @@ grep -q "^export USER=" ~/.bashrc                || echo "export USER=$USER" >> 
 
 echo "Starting environment for $USER-$USER_UID on ports: Frontend=$FRONTEND_PORT, Jupyter=$JUPYTER_PORT, SparkUI=$SPARK_UI_PORT, SparkMaster=$SPARK_MASTER_PORT, MinIO_API=$S3_API_PORT, MinIO_UI=$MINIO_WEBCONSOLE_PORT, FastAPI=$FASTAPI_PORT, Keycloak=$KEYCLOAK_PORT, Postgres=$POSTGRES_PORT"
 
+# .venv is gitignored but may be copied via `cp -r` from another user's tree.
+# Its Python symlinks often point at the source user's ~/.local/share/uv and break here.
+if [ -d .venv ]; then
+  venv_python=".venv/bin/python3"
+  venv_ok=true
+  if [ ! -e "$venv_python" ]; then
+    venv_ok=false
+  elif ! readlink -f "$venv_python" >/dev/null 2>&1; then
+    venv_ok=false
+  elif ! "$venv_python" -c "import sys" >/dev/null 2>&1; then
+    venv_ok=false
+  fi
+  if [ "$venv_ok" = false ]; then
+    echo "Removing unusable .venv (likely copied from another account); uv will recreate it."
+    rm -rf .venv
+  fi
+fi
+
 uv sync --quiet
 
 if command -v nvidia-smi &> /dev/null; then
