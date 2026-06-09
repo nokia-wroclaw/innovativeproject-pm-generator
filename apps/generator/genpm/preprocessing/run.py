@@ -115,7 +115,7 @@ def run_preprocessing(sdm: SparkDataManager, preprocessing_cfg: PreprocessingCon
     pm_df_long_filled_gaps_filtered = pm_df_long_filled_gaps_filtered.join(
         kpi_coverage.filter_gap_pattern(
             pm_df_long_filled_gaps_filtered,
-            max_imputable_gap=24,
+            max_imputable_gap=preprocessing_cfg.max_gap_hours,  # THIS PARAMETER IS VERY AGGRESIVE
             min_imputable_gap_frac=preprocessing_cfg.min_imputable_gap_frac,
         ),
         on="kpi_id",
@@ -268,21 +268,17 @@ def run_preprocessing(sdm: SparkDataManager, preprocessing_cfg: PreprocessingCon
     _log_pm_diag("pm_df_long_imputed_selected (post greedy)", pm_df_long_imputed_selected)
     _log_window_diag("good_windows_selected (post greedy)", good_windows_selected)
 
-    # TODO: PELT changepoint detection WITH STANDARDIZATION PER SEGMENT
+    # TODO: CHANGEPOINT DETECTION DEVELOPMENT HOLD !!!
     # pm_df_long_segmented = changepoint_detection.add_regime_ids(pm_df_long_imputed_selected)
     # [VERBOSE_DIAGNOSTICS] _log_pm_diag("after add_regime_ids", pm_df_long_segmented)
 
     # pm_df_long_segmented = pm_df_long_segmented.cache()
 
-    # standardize per given segment
-
-    # ADD AFTER KPI SEGMANTATION SCALING
-
     # pm_df_long_imputed_selected = pm_df_long_imputed_selected.localCheckpoint()
     # sdm.write_parquet(pm_df_long_imputed_selected, PREPROCESSED_DATASET_PATH / "intermediate" / "pm_df_long_imputed_selected_lol", mode="overwrite")
-    pm_df_long_imputed_selected = sdm.read_parquet(
-        PREPROCESSED_DATASET_PATH / "intermediate" / "pm_df_long_imputed_selected_lol"
-    )
+    # pm_df_long_imputed_selected = sdm.read_parquet(
+    #     PREPROCESSED_DATASET_PATH / "intermediate" / "pm_df_long_imputed_selected_lol"
+    # )
     _log_pm_diag("pm_df_long_imputed_selected (read back)", pm_df_long_imputed_selected)
 
     print("intermediate")
@@ -293,16 +289,19 @@ def run_preprocessing(sdm: SparkDataManager, preprocessing_cfg: PreprocessingCon
         group_cols=["kpi_id", "bts_id", "distname"],
         min_valid_points=4,
         percentile_accuracy=10_000,
-        broadcast_params=True,
-        params_path=str(PREPROCESSED_DATASET_PATH / "final_scaled" / "scaling_params_df"),
     )
 
-    audit_df = scaler.fit(pm_df_long_imputed_selected)
+    params_df = scaler.fit(pm_df_long_imputed_selected)
+    sdm.write_parquet(
+        params_df,
+        PREPROCESSED_DATASET_PATH / "final_scaled" / "scaling_params_df",
+        mode="overwrite",
+    )
     pm_df_long_scaled = scaler.transform(pm_df_long_imputed_selected)
 
     # TODO: FIX
     # temporary for excluding SKIP kpi-cells
-    clean_audit_df = audit_df.filter(f.col("scaler") != f.lit("SKIP"))
+    clean_audit_df = scaler.summary().filter(f.col("scaler") != f.lit("SKIP"))
 
     pm_df_long_scaled = pm_df_long_scaled.join(
         f.broadcast(clean_audit_df.select("kpi_id", "distname").distinct()),

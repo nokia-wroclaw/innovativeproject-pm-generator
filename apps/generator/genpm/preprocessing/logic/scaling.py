@@ -1,4 +1,4 @@
-from pyspark.sql import DataFrame, SparkSession
+from pyspark.sql import DataFrame
 from pyspark.sql import functions as f
 
 
@@ -37,15 +37,11 @@ class GroupedKPIScaler:
         group_cols: list[str],
         min_valid_points: int = 4,
         percentile_accuracy: int = 10000,
-        broadcast_params: bool = False,
-        params_path: str | None = None,
     ):
         self.value_col = value_col
         self.group_cols = group_cols
         self.min_valid_points = min_valid_points
         self.percentile_accuracy = percentile_accuracy
-        self.broadcast_params = broadcast_params
-        self.params_path = params_path
 
         self.params_df: DataFrame | None = None
         self.audit_df: DataFrame | None = None
@@ -190,18 +186,14 @@ class GroupedKPIScaler:
     def fit(
         self,
         df: DataFrame,
-        params_path: str | None = None,
-        write_mode: str = "overwrite",
         cache_params: bool = False,
     ) -> DataFrame:
         """
         Fit scaling parameters per group.
 
-        If params_path is provided, writes params_df to parquet immediately.
-        Returns a lean audit dataframe.
+        Returns params_df so the caller can persist it as needed.
+        Audit dataframe is also available via self.audit_df / summary().
         """
-        resolved_path = params_path or self.params_path
-
         self.params_df = self._build_params_df(df)
 
         if cache_params:
@@ -209,52 +201,40 @@ class GroupedKPIScaler:
 
         self.audit_df = self.params_df.select(*self.group_cols, *self.AUDIT_COLUMNS)
 
-        if resolved_path:
-            self.params_df.write.mode(write_mode).parquet(resolved_path)
+        return self.params_df
 
-        return self.audit_df
-
-    def save_params(self, path: str | None = None, mode: str = "overwrite") -> None:
+    def get_params(self) -> DataFrame:
         """
-        Persist fitted params to parquet.
+        Return fitted params. Call fit() or load_params() first.
         """
         if self.params_df is None:
-            raise ValueError("Call fit() before save_params().")
-
-        resolved_path = path or self.params_path
-        if not resolved_path:
-            raise ValueError("No params path provided.")
-
-        self.params_df.write.mode(mode).parquet(resolved_path)
+            raise ValueError("Call fit() or load_params() before get_params().")
+        return self.params_df
 
     @classmethod
-    def load_params_parquet(
+    def load_params(
         cls,
-        spark: SparkSession,
+        params_df: DataFrame,
         value_col: str,
         group_cols: list[str],
-        path: str,
         min_valid_points: int = 4,
         percentile_accuracy: int = 10000,
-        broadcast_params: bool = False,
     ):
         instance = cls(
             value_col=value_col,
             group_cols=group_cols,
             min_valid_points=min_valid_points,
             percentile_accuracy=percentile_accuracy,
-            broadcast_params=broadcast_params,
-            params_path=path,
         )
-        instance.params_df = spark.read.parquet(path)
-        instance.audit_df = instance.params_df.select(*instance.group_cols, *instance.AUDIT_COLUMNS)
+        instance.params_df = params_df
+        instance.audit_df = params_df.select(*group_cols, *cls.AUDIT_COLUMNS)
         return instance
 
     def _get_params_df(self) -> DataFrame:
         if self.params_df is None:
             raise ValueError("Params are not available. Call fit() or load_params() first.")
 
-        return f.broadcast(self.params_df) if self.broadcast_params else self.params_df
+        return f.broadcast(self.params_df)
 
     def transform(self, df: DataFrame) -> DataFrame:
         """
@@ -304,13 +284,11 @@ class GroupedKPIScaler:
 
     def inverse_transform(self, df: DataFrame, keep_params: bool = False) -> DataFrame:
         """
-        Restore original-scale value_col using fitted group params.
+        Restore original-scale value_col using pre-loaded group params.
 
-        This assumes the incoming df was previously transformed by this scaler
-        design, or otherwise contains values already in scaled space.
+        Params must be loaded via fit() or load_params_parquet() before calling.
         """
-        params_df = self._get_params_df()
-        joined = df.join(params_df, on=self.group_cols, how="left")
+        joined = df.join(self._get_params_df(), on=self.group_cols, how="left")
 
         x = f.col(self.value_col).cast("double")
         scaler = f.col("scaler")
@@ -355,3 +333,33 @@ class GroupedKPIScaler:
         if self.audit_df is None:
             raise ValueError("Call fit() or load_params() first.")
         return self.audit_df
+
+
+# ---------------------------------------------------------------------------
+# Usage example
+# ---------------------------------------------------------------------------
+
+# scaler = GroupedKPIScaler(
+#     value_col="kpi_value",
+#     group_cols=["kpi_id", "bts_id", "distname"],
+#     min_valid_points=4,
+#     percentile_accuracy=5000,
+# )
+
+# --- fit & scale ---
+# params_df = scaler.fit(df_imputed)                 # returns params_df, caller owns persistence
+# params_df.write.mode("overwrite").parquet(params_path)
+#
+# df_scaled = scaler.transform(df_imputed)
+
+# --- inverse transform in the same session ---
+# df_restored = scaler.inverse_transform(df_scaled)
+
+# --- inverse transform in a new session ---
+# params_df = spark.read.parquet(params_path)
+# scaler = GroupedKPIScaler.load_params(
+#     params_df=params_df,
+#     value_col="kpi_value",
+#     group_cols=["kpi_id", "bts_id", "distname"],
+# )
+# df_restored = scaler.inverse_transform(df_scaled)

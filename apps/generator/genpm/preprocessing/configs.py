@@ -15,8 +15,6 @@ class PreprocessingConfig:
     # KPI global density threshold
     kpi_min_global_density: float
     kpi_global_min_frac_cells_passing: float
-    # KPI in Window coverage threshold
-    kpi_window_coverage_frac: float
     # Max gap filtering
     min_imputable_gap_frac: float
     # Stale kpis filtering
