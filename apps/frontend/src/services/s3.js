@@ -43,6 +43,8 @@ export const DatasetType = {
     RAW: "RAW",
     PREPROCESSED: "PREPROCESSED",
     GENERATED: "GENERATED",
+    KPI_DEFINITIONS: "KPI_DEFINITIONS",
+    SIMPLE_REPORTS: "SIMPLE_REPORTS",
 }
 
 export const updateS3Status = async (datasetId, status) => {

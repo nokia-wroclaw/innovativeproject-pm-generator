@@ -48,6 +48,7 @@ async def create_s3_dataset(
         user_uuid=user_uuid,
         file_name=dataset.file_name,
         s3_key=dataset.s3_key,
+        type=dataset.type,
     )
 
     return DatasetRead.model_validate(s3_dataset)
@@ -116,6 +117,7 @@ async def register_s3_dataset(
         user_uuid=user_uuid,
         s3_key=request.s3_key,
         file_name=request.file_name,
+        type=request.type,
     )
 
     return DatasetRead.model_validate(s3_dataset)

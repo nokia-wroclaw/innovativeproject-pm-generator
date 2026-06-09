@@ -3,7 +3,7 @@ import enum
 import uuid
 from typing import Literal
 
-from sqlalchemy import DateTime, ForeignKey, Integer, String, Uuid
+from sqlalchemy import DateTime, ForeignKey, Integer, String, UniqueConstraint, Uuid
 from sqlalchemy import Enum as SQLEnum
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -21,6 +21,8 @@ class DatasetType(enum.StrEnum):
     RAW = "RAW"
     PREPROCESSED = "PREPROCESSED"
     GENERATED = "GENERATED"
+    KPI_DEFINITIONS = "KPI_DEFINITIONS"
+    SIMPLE_REPORTS = "SIMPLE_REPORTS"
 
 
 class PipelineType(enum.Enum):
@@ -74,10 +76,10 @@ class Generation(Base):
 class Dataset(Base):
     __tablename__ = "datasets"
 
-    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, unique=True, autoincrement=True)
     user_uuid: Mapped[uuid.UUID] = mapped_column(Uuid, index=True)
 
-    s3_key: Mapped[str] = mapped_column(String, nullable=False, unique=True)
+    s3_key: Mapped[str] = mapped_column(String, nullable=False)
     file_name: Mapped[str] = mapped_column(String, nullable=False)
 
     status: Mapped[DatasetStatus] = mapped_column(default=DatasetStatus.PENDING)
@@ -86,6 +88,11 @@ class Dataset(Base):
         default=DatasetType.RAW,
         nullable=False,
         index=True,
+        primary_key=True,
+    )
+
+    __table_args__ = (
+        UniqueConstraint("s3_key", "type", name="uq_dataset_s3_key_type"),
     )
 
 

@@ -30,7 +30,7 @@
           label="Input dataset"
           hint="Only datasets with COMPLETED status are shown."
           placeholder="Select dataset"
-          :options="datasetOptions"
+          :options="rawDatasetOptions"
           value-type="number"
           required
         />
@@ -47,6 +47,15 @@
               v-model="form[field.key]"
               :label="field.label"
               :hint="field.hint"
+            />
+            <ModelingFormSelect
+              v-else-if="field.type === 'select'"
+              v-model="form[field.key]"
+              :label="field.label"
+              :hint="field.hint"
+              :placeholder="field.placeholder"
+              :options="field.key === 'kpi_definitions_raw_path' ? kpiDefinitionsOptions : simpleReportsOptions"
+              :required="field.required"
             />
             <ModelingFormInput
               v-else
@@ -128,8 +137,8 @@ const sections = [
   {
     title: 'RAW paths',
     fields: [
-      { key: 'kpi_definitions_raw_path', label: 'KPI definitions raw path', required: true, placeholder: '.../raw_data/kpis_definitions.parquet' },
-      { key: 'simple_reports_raw_path', label: 'Simple reports raw path', required: true, placeholder: '.../raw_data/simple_reports.parquet' },
+      { key: 'kpi_definitions_raw_path', label: 'KPI definitions raw path', type: 'select', required: true, placeholder: 'Select KPI definitions parquet' },
+      { key: 'simple_reports_raw_path', label: 'Simple reports raw path', type: 'select', required: true, placeholder: 'Select simple reports parquet' },
     ],
   },
   {
@@ -144,16 +153,19 @@ const sections = [
       frac({
         key: 'kpi_min_global_density',
         label: 'KPI min global density',
+        default: 0.5,
         hint: 'Min. share of non-null hours in a KPI series active range per cell.',
       }),
       frac({
         key: 'kpi_global_min_frac_cells_passing',
         label: 'KPI global min frac cells passing',
+        default: 0.8,
         hint: 'Min. share of a KPI cells that must meet the density threshold.',
       }),
       frac({
         key: 'kpi_window_coverage_frac',
         label: 'KPI window coverage frac',
+        default: 0.917,
         hint: 'Min. ratio of good windows to theoretical max windows per KPI.',
       }),
     ],
@@ -164,6 +176,7 @@ const sections = [
       frac({
         key: 'min_imputable_gap_frac',
         label: 'Min imputable gap frac',
+        default: 0.8,
         hint: 'Min. share of null runs short enough to impute (≤ max gap hours).',
       }),
     ],
@@ -176,12 +189,14 @@ const sections = [
         label: 'KPI min std val',
         min: 0,
         step: 0.01,
+        default: 0.01,
         required: true,
         hint: 'Reject KPIs with near-zero variance in good-window values.',
       }),
       frac({
         key: 'max_zero_frac',
         label: 'Max zero frac',
+        default: 0.95,
         hint: 'Reject KPIs where at least this share of values is zero.',
       }),
     ],
@@ -249,11 +264,31 @@ const form = reactive({
 
 const allFields = sections.flatMap((section) => section.fields);
 
-const datasetOptions = computed(() =>
-  props.datasets.map((dataset) => ({
-    value: dataset.id,
-    label: `#${dataset.id} · ${dataset.file_name} · ${dataset.type} · ${dataset.status}`,
-  })),
+const rawDatasetOptions = computed(() =>
+  props.datasets
+    .filter((dataset) => dataset.type === 'RAW')
+    .map((dataset) => ({
+      value: dataset.id,
+      label: `#${dataset.id} · ${dataset.file_name} · ${dataset.status}`,
+    })),
+);
+
+const kpiDefinitionsOptions = computed(() =>
+  props.datasets
+    .filter((dataset) => dataset.type === 'KPI_DEFINITIONS')
+    .map((dataset) => ({
+      value: dataset.s3_key,
+      label: `#${dataset.id} · ${dataset.file_name} · ${dataset.s3_key}`,
+    })),
+);
+
+const simpleReportsOptions = computed(() =>
+  props.datasets
+    .filter((dataset) => dataset.type === 'SIMPLE_REPORTS')
+    .map((dataset) => ({
+      value: dataset.s3_key,
+      label: `#${dataset.id} · ${dataset.file_name} · ${dataset.s3_key}`,
+    })),
 );
 
 function getFormError() {

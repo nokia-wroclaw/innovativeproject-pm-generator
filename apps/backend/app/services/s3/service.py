@@ -64,7 +64,9 @@ class S3Service:
         self.s3_client_internal = s3_client_internal
         self.s3_client_external = s3_client_external
 
-    def create_dataset(self, user_uuid: uuid.UUID, file_name: str, s3_key: str) -> Dataset:
+    def create_dataset(
+        self, user_uuid: uuid.UUID, file_name: str, s3_key: str, type: DatasetType = DatasetType.RAW
+    ) -> Dataset:
         unique_id = str(uuid.uuid4())
 
         name = Path(file_name).name
@@ -77,7 +79,7 @@ class S3Service:
             user_uuid=user_uuid,
             file_name=name,
             s3_key=final_s3_key,
-            type=DatasetType.RAW,
+            type=type,
         )
         self._db.add(dataset)
         self._db.commit()
@@ -85,7 +87,7 @@ class S3Service:
         return dataset
 
     def register_existing_dataset(
-        self, user_uuid: uuid.UUID, s3_key: str, file_name: str | None = None
+        self, user_uuid: uuid.UUID, s3_key: str, file_name: str | None = None, type: DatasetType = DatasetType.RAW
     ) -> Dataset:
         try:
             self.s3_client_internal.head_object(Bucket=S3_BUCKET, Key=s3_key)
@@ -106,7 +108,7 @@ class S3Service:
             file_name=name,
             s3_key=s3_key,
             status=DatasetStatus.COMPLETED,
-            type=DatasetType.RAW,
+            type=type,
         )
         self._db.add(dataset)
         self._db.commit()

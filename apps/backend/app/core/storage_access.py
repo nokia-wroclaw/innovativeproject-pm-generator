@@ -17,7 +17,13 @@ def is_storage_admin(payload: dict[str, Any]) -> bool:
 
 def visible_storage_types(payload: dict[str, Any]) -> set[DatasetType]:
     if is_storage_admin(payload):
-        return {DatasetType.RAW, DatasetType.PREPROCESSED, DatasetType.GENERATED}
+        return {
+            DatasetType.RAW,
+            DatasetType.KPI_DEFINITIONS,
+            DatasetType.SIMPLE_REPORTS,
+            DatasetType.PREPROCESSED,
+            DatasetType.GENERATED,
+        }
     return {DatasetType.GENERATED}
 
 
@@ -27,7 +33,7 @@ def assert_storage_type_allowed(payload: dict[str, Any], dataset_type: DatasetTy
 
 
 def assert_raw_dataset(dataset: Dataset, *, context: Literal["upload", "status"]) -> None:
-    if dataset.type != DatasetType.RAW:
+    if dataset.type not in {DatasetType.RAW, DatasetType.KPI_DEFINITIONS, DatasetType.SIMPLE_REPORTS}:
         detail = _ERR_RAW_STATUS if context == "status" else _ERR_RAW_UPLOAD
         raise HTTPException(status_code=403, detail=detail)
 
