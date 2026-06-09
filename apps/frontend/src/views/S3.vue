@@ -26,17 +26,23 @@ const CHUNK_SIZE = 5 * 1024 * 1024;
 const STORAGE_KEY = 's3_pending_upload';
 
 const TAB_RAW = 'raw';
+const TAB_KPI_DEFINITIONS = 'kpi_definitions';
+const TAB_SIMPLE_REPORTS = 'simple_reports';
 const TAB_PREPROCESSED = 'preprocessed';
 const TAB_GENERATED = 'generated';
 
 const TAB_TO_DATASET_TYPE = {
   [TAB_RAW]: DatasetType.RAW,
+  [TAB_KPI_DEFINITIONS]: DatasetType.KPI_DEFINITIONS,
+  [TAB_SIMPLE_REPORTS]: DatasetType.SIMPLE_REPORTS,
   [TAB_PREPROCESSED]: DatasetType.PREPROCESSED,
   [TAB_GENERATED]: DatasetType.GENERATED,
 };
 
 const ADMIN_TABS = [
   { value: TAB_RAW, label: 'Raw' },
+  { value: TAB_KPI_DEFINITIONS, label: 'KPI Definitions' },
+  { value: TAB_SIMPLE_REPORTS, label: 'Simple Reports' },
   { value: TAB_PREPROCESSED, label: 'Preprocessed' },
   { value: TAB_GENERATED, label: 'Generated' },
 ];
@@ -45,6 +51,8 @@ const USER_TABS = [{ value: TAB_GENERATED, label: 'Generated' }];
 
 const TAB_DESCRIPTIONS = {
   [TAB_RAW]: 'Upload and manage raw datasets before preprocessing.',
+  [TAB_KPI_DEFINITIONS]: 'Upload and manage KPI definition parquet files.',
+  [TAB_SIMPLE_REPORTS]: 'Upload and manage simple report parquet files.',
   [TAB_PREPROCESSED]: 'Datasets produced by preprocessing pipelines.',
   [TAB_GENERATED]: 'Synthetic event logs available for download and preview.',
 };
@@ -70,7 +78,13 @@ const activeTab = ref(
     : defaultTab.value,
 );
 
-const canAddDataset = computed(() => isAdmin.value && activeTab.value === TAB_RAW);
+const canAddDataset = computed(
+  () =>
+    isAdmin.value &&
+    (activeTab.value === TAB_RAW ||
+      activeTab.value === TAB_KPI_DEFINITIONS ||
+      activeTab.value === TAB_SIMPLE_REPORTS),
+);
 
 const rowActions = computed(() => {
   const actions = [
@@ -83,11 +97,15 @@ const rowActions = computed(() => {
 });
 
 const rawTabBodyRef = ref(null);
+const kpiDefinitionsTabBodyRef = ref(null);
+const simpleReportsTabBodyRef = ref(null);
 const preprocessedTabBodyRef = ref(null);
 const generatedTabBodyRef = ref(null);
 
 const tabBodyRefs = {
   [TAB_RAW]: rawTabBodyRef,
+  [TAB_KPI_DEFINITIONS]: kpiDefinitionsTabBodyRef,
+  [TAB_SIMPLE_REPORTS]: simpleReportsTabBodyRef,
   [TAB_PREPROCESSED]: preprocessedTabBodyRef,
   [TAB_GENERATED]: generatedTabBodyRef,
 };
@@ -176,13 +194,14 @@ function closeAddModal() {
   resetForm();
 }
 
-function createUploadTask({ id, file_name, s3_key }) {
+function createUploadTask({ id, file_name, s3_key, type }) {
   return reactive({
     id,
     file_name,
     s3_key,
     status: DatasetStatus.UPLOADING,
     progress: 0,
+    type,
   });
 }
 
@@ -320,8 +339,8 @@ async function processUploadLoop(file, uploadState, uploadTask) {
   }
 }
 
-async function startMultipartUpload(file, fileName, s3Key) {
-  const dataset = await createS3Dataset({ file_name: fileName, s3_key: s3Key });
+async function startMultipartUpload(file, fileName, s3Key, type) {
+  const dataset = await createS3Dataset({ file_name: fileName, s3_key: s3Key, type });
   const initResponse = await initiateMultipartUpload(dataset.id);
 
   const uploadState = {
@@ -331,6 +350,7 @@ async function startMultipartUpload(file, fileName, s3Key) {
     fileName: file.name,
     fileSize: file.size,
     uploadedParts: [],
+    type,
   };
 
   persistUploadState(uploadState);
@@ -339,6 +359,7 @@ async function startMultipartUpload(file, fileName, s3Key) {
     id: `upload_${Date.now()}`,
     file_name: fileName,
     s3_key: initResponse.s3_key,
+    type,
   });
 
   activeUploads.value.unshift(uploadTask);
@@ -357,8 +378,9 @@ async function submitDataset() {
   isPreparing.value = true;
 
   try {
+    const type = TAB_TO_DATASET_TYPE[activeTab.value];
     if (isRegisterMode.value) {
-      await registerExistingS3Dataset({ file_name, s3_key });
+      await registerExistingS3Dataset({ file_name, s3_key, type });
       closeAddModal();
       refreshActiveTable();
       return;
@@ -366,7 +388,7 @@ async function submitDataset() {
 
     if (!file_name || !file) return;
 
-    await startMultipartUpload(file, file_name, s3_key);
+    await startMultipartUpload(file, file_name, s3_key, type);
   } catch (error) {
     console.error('Failed to process dataset:', error);
     alert(error.message || 'Error processing dataset');
@@ -378,7 +400,7 @@ async function submitDataset() {
 async function confirmResume() {
   if (!isAdmin.value || !resumeFile.value || !pendingResumeState.value) return;
 
-  const { fileName, fileSize, datasetId, s3_key } = pendingResumeState.value;
+  const { fileName, fileSize, datasetId, s3_key, type } = pendingResumeState.value;
 
   if (resumeFile.value.name !== fileName || resumeFile.value.size !== fileSize) {
     resumeError.value =
@@ -392,6 +414,7 @@ async function confirmResume() {
     id: `upload_resumed_${Date.now()}`,
     file_name: fileName,
     s3_key,
+    type: type || DatasetType.RAW,
   });
 
   activeUploads.value.unshift(uploadTask);
@@ -432,8 +455,9 @@ function makeTableProvider(tabKey) {
       : serverData.data || serverData.items || [];
 
     const filteredItems = items.filter((item) => item.status !== DatasetStatus.PENDING);
-    const uploadsForTab =
-      tabKey === TAB_RAW && isAdmin.value ? activeUploads.value : [];
+    const uploadsForTab = isAdmin.value
+      ? activeUploads.value.filter((task) => task.type === datasetType)
+      : [];
     const mergedItems = [...uploadsForTab, ...filteredItems];
 
     if (Array.isArray(serverData)) return mergedItems;
@@ -443,6 +467,8 @@ function makeTableProvider(tabKey) {
 
 const tableProviders = {
   [TAB_RAW]: makeTableProvider(TAB_RAW),
+  [TAB_KPI_DEFINITIONS]: makeTableProvider(TAB_KPI_DEFINITIONS),
+  [TAB_SIMPLE_REPORTS]: makeTableProvider(TAB_SIMPLE_REPORTS),
   [TAB_PREPROCESSED]: makeTableProvider(TAB_PREPROCESSED),
   [TAB_GENERATED]: makeTableProvider(TAB_GENERATED),
 };
@@ -478,6 +504,36 @@ onBeforeUnmount(() => {
           :show-add-button="canAddDataset"
           :columns="TABLE_COLUMNS"
           :provider="tableProviders[TAB_RAW]"
+          :row-actions="rowActions"
+          :uploading-status="DatasetStatus.UPLOADING"
+          :completed-status="DatasetStatus.COMPLETED"
+          @add-dataset="openAddModal"
+          @row-action="handleRowAction"
+        />
+      </template>
+
+      <template #kpi_definitions>
+        <S3StorageTabBody
+          ref="kpiDefinitionsTabBodyRef"
+          :description="TAB_DESCRIPTIONS[TAB_KPI_DEFINITIONS]"
+          :show-add-button="canAddDataset"
+          :columns="TABLE_COLUMNS"
+          :provider="tableProviders[TAB_KPI_DEFINITIONS]"
+          :row-actions="rowActions"
+          :uploading-status="DatasetStatus.UPLOADING"
+          :completed-status="DatasetStatus.COMPLETED"
+          @add-dataset="openAddModal"
+          @row-action="handleRowAction"
+        />
+      </template>
+
+      <template #simple_reports>
+        <S3StorageTabBody
+          ref="simpleReportsTabBodyRef"
+          :description="TAB_DESCRIPTIONS[TAB_SIMPLE_REPORTS]"
+          :show-add-button="canAddDataset"
+          :columns="TABLE_COLUMNS"
+          :provider="tableProviders[TAB_SIMPLE_REPORTS]"
           :row-actions="rowActions"
           :uploading-status="DatasetStatus.UPLOADING"
           :completed-status="DatasetStatus.COMPLETED"

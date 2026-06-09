@@ -19,6 +19,7 @@ class DatasetRead(BaseModel):
 class DatasetCreate(BaseModel):
     s3_key: str
     file_name: str
+    type: DatasetType = DatasetType.RAW
 
 
 class UploadUrlResponse(BaseModel):
@@ -39,6 +40,7 @@ class PartInfo(BaseModel):
 class DatasetRegisterRequest(BaseModel):
     s3_key: str
     file_name: str | None = None
+    type: DatasetType = DatasetType.RAW
 
 
 class CompleteMultipartRequest(BaseModel):
