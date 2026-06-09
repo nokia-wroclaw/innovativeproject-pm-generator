@@ -9,12 +9,12 @@ from pathlib import Path
 from typing import Any, cast
 from urllib.parse import urlparse
 
-import boto3
-import pandas as pd
-import pyarrow.fs as pafs
-import pyarrow.parquet as pq
-from botocore.client import Config
-from botocore.exceptions import ClientError
+import boto3  # type: ignore[import-untyped]
+import pandas as pd  # type: ignore[import-untyped]
+import pyarrow.fs as pafs  # type: ignore[import-untyped]
+import pyarrow.parquet as pq  # type: ignore[import-untyped]
+from botocore.client import Config  # type: ignore[import-untyped]
+from botocore.exceptions import ClientError  # type: ignore[import-untyped]
 from fastapi import HTTPException
 from sqlalchemy.orm import Session
 

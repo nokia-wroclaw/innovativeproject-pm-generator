@@ -17,11 +17,12 @@ from app.services.s3.pm_schema import (
 )
 from app.services.s3.service import S3Service
 from app.services.s3.visualization_artifacts import (
-    GENPM_VIZ_PREFIX,
+    VisualizationStorageError,
     load_kpi_analysis_artifact,
     load_visualization_artifact,
     persist_unsupported_schema_artifact,
     status_from_artifact,
+    visualization_artifact_key,
 )
 
 DATASET_VISUALIZATION_DAG_ID = "dataset_visualization_spark"
@@ -93,7 +94,7 @@ async def trigger_dataset_visualization(
     if s3_service is not None:
         schema_error = check_dataset_pm_schema(s3_service, dataset)
         if schema_error is not None:
-            persist_unsupported_schema_artifact(dataset.id, schema_error)
+            persist_unsupported_schema_artifact(dataset.s3_key, schema_error)
             raise VisualizationSchemaError(schema_error)
 
     service = airflow or get_airflow_service()
@@ -133,7 +134,15 @@ async def trigger_dataset_visualization_on_raw_completed(
     if s3_service is not None:
         schema_error = check_dataset_pm_schema(s3_service, dataset)
         if schema_error is not None:
-            persist_unsupported_schema_artifact(dataset.id, schema_error)
+            try:
+                persist_unsupported_schema_artifact(dataset.s3_key, schema_error)
+            except VisualizationStorageError as exc:
+                logger.warning(
+                    "Skipped visualization for dataset_id=%s: %s",
+                    dataset.id,
+                    exc,
+                )
+                return
             logger.info(
                 "Skipped visualization for dataset_id=%s: unsupported PM schema",
                 dataset.id,
@@ -150,6 +159,12 @@ async def trigger_dataset_visualization_on_raw_completed(
             "Triggered dataset visualization for raw dataset_id=%s run=%s",
             dataset.id,
             result.airflow_run_id,
+        )
+    except VisualizationStorageError as exc:
+        logger.warning(
+            "Skipped visualization for dataset_id=%s: %s",
+            dataset.id,
+            exc,
         )
     except VisualizationSchemaError:
         return
@@ -289,8 +304,9 @@ async def _failed_run_response(
 
 
 def _missing_artifact_response(
-    *, dataset_id: int, run_id: str
+    *, dataset_id: int, dataset_s3_key: str, run_id: str
 ) -> DatasetVisualizationStatusResponse:
+    expected_key = visualization_artifact_key(dataset_s3_key, "summary.json")
     return DatasetVisualizationStatusResponse(
         dataset_id=dataset_id,
         dag_id=DATASET_VISUALIZATION_DAG_ID,
@@ -298,7 +314,7 @@ def _missing_artifact_response(
         status="failed",
         message=(
             "The Airflow run finished but no visualization file exists in S3 "
-            f"({GENPM_VIZ_PREFIX.strip('/')}/{dataset_id}/summary.json). "
+            f"({expected_key}). "
             "Nothing is running now — use Retry to start a new pipeline run."
         ),
     )
@@ -397,11 +413,20 @@ async def get_dataset_visualization_status(
     run = await service.get_dag_run(DATASET_VISUALIZATION_DAG_ID, run_id)
     status = run.status.value if hasattr(run.status, "value") else str(run.status)
 
-    artifact = load_visualization_artifact(dataset_id)
+    try:
+        artifact = load_visualization_artifact(dataset.s3_key)
+    except VisualizationStorageError as exc:
+        return DatasetVisualizationStatusResponse(
+            dataset_id=dataset_id,
+            dag_id=DATASET_VISUALIZATION_DAG_ID,
+            status="unavailable",
+            message=str(exc),
+        )
+
     if artifact is not None:
         kpi_analysis = None
         if artifact.get("status") == "success":
-            kpi_analysis = load_kpi_analysis_artifact(dataset_id)
+            kpi_analysis = load_kpi_analysis_artifact(dataset.s3_key)
         return await _response_from_artifact(
             dataset_id=dataset_id,
             run_id=run_id,
@@ -426,10 +451,18 @@ async def get_dataset_visualization_status(
                     base_message="Spark visualization task failed in Airflow.",
                 )
             if task_status == TaskStatus.SUCCESS.value:
-                return _missing_artifact_response(dataset_id=dataset_id, run_id=run_id)
+                return _missing_artifact_response(
+                    dataset_id=dataset_id,
+                    dataset_s3_key=dataset.s3_key,
+                    run_id=run_id,
+                )
 
         if run.end_date is not None:
-            return _missing_artifact_response(dataset_id=dataset_id, run_id=run_id)
+            return _missing_artifact_response(
+                dataset_id=dataset_id,
+                dataset_s3_key=dataset.s3_key,
+                run_id=run_id,
+            )
 
         return DatasetVisualizationStatusResponse(
             dataset_id=dataset_id,
@@ -457,4 +490,8 @@ async def get_dataset_visualization_status(
             message=f"Visualization pipeline finished with state: {run.raw_state}.",
         )
 
-    return _missing_artifact_response(dataset_id=dataset_id, run_id=run_id)
+    return _missing_artifact_response(
+        dataset_id=dataset_id,
+        dataset_s3_key=dataset.s3_key,
+        run_id=run_id,
+    )

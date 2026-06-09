@@ -25,6 +25,8 @@ set -a
 source "$REPO_ROOT/.env"
 set +a
 
+export GENPM_SPARK_EXECUTOR_PYTHON="${GENPM_SPARK_EXECUTOR_PYTHON:-/home/${USER}/app/.venv/bin/python3}"
+
 if [ -z "${FERNET_KEY:-}" ]; then
   export FERNET_KEY="$(python3 -c 'from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())')"
   echo "FERNET_KEY=$FERNET_KEY" >> "$REPO_ROOT/.env"

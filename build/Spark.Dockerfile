@@ -81,9 +81,9 @@ COPY --chown=$USERNAME:$USERNAME apps/generator/ ./apps/generator/
 COPY --chown=$USERNAME:$USERNAME apps/backend/pyproject.toml ./apps/backend/pyproject.toml
 
 # PySpark requires the same minor Python on driver (Airflow) and executors (this venv).
-RUN uv python install 3.13 \
-    && uv sync --frozen --python 3.13 \
-    && $APP_HOME/.venv/bin/python -c "import sys; assert sys.version_info[:2] == (3, 13), sys.version"
+RUN uv python install 3.12 \
+    && uv sync --frozen --python 3.12 \
+    && $APP_HOME/.venv/bin/python -c "import sys; assert sys.version_info[:2] == (3, 12), sys.version"
 RUN $APP_HOME/.venv/bin/python -m ipykernel install --prefix=$APP_HOME/.venv --name=spark-env --display-name "Python (Spark Project)"
 
 ENV PATH="$APP_HOME/.venv/bin:$PATH"

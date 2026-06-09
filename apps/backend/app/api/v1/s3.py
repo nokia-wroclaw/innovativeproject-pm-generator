@@ -38,6 +38,7 @@ from app.services.s3.visualization import (
     trigger_dataset_visualization,
     trigger_dataset_visualization_on_raw_completed,
 )
+from app.services.s3.visualization_artifacts import VisualizationStorageError
 
 router = APIRouter(dependencies=[Depends(require_auth)])
 
@@ -229,6 +230,8 @@ async def request_dataset_visualization(
         )
     except VisualizationSchemaError as exc:
         raise HTTPException(status_code=422, detail=exc.payload) from exc
+    except VisualizationStorageError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
     except AirflowNotFound as exc:
         raise HTTPException(
             status_code=404,

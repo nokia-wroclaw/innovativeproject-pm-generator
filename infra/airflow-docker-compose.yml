@@ -22,9 +22,8 @@ x-airflow-common:
     _PIP_ADDITIONAL_REQUIREMENTS: ${_PIP_ADDITIONAL_REQUIREMENTS:-apache-airflow-providers-apache-spark}
     AIRFLOW_CONN_SPARK_DEFAULT: "spark://${USER}-genpm-spark:7077"
     AIRFLOW_CONFIG: '/opt/airflow/config/airflow.cfg'
-    PYSPARK_PYTHON: /usr/python/bin/python3.13
-    PYSPARK_DRIVER_PYTHON: /usr/python/bin/python3.13
-    GENPM_PYSPARK_PYTHON: /usr/python/bin/python3.13
+    PYSPARK_DRIVER_PYTHON: /opt/airflow/genpm-venv/bin/python
+    GENPM_PYSPARK_PYTHON: /opt/airflow/genpm-venv/bin/python
     GENPM_SPARK_EXECUTOR_PYTHON: ${GENPM_SPARK_EXECUTOR_PYTHON:-/home/${USER:-hostuser}/app/.venv/bin/python3}
     GENPM_SCHEMA_PATH: /opt/airflow/shared/pm_schema_columns.json
 

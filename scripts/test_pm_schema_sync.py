@@ -37,8 +37,8 @@ def _load_frontend() -> tuple[str, ...]:
     if not match:
         raise RuntimeError("Could not find pmSchemaColumns import in pmSchema.js")
     import_spec = match.group(1)
-    if import_spec == "@genpm/pm-schema":
-        json_path = SCHEMA_JSON
+    if import_spec in {"@genpm/pm-schema", "../../../pm_schema_columns.json"}:
+        json_path = REPO_ROOT / "apps" / "frontend" / "pm_schema_columns.json"
     else:
         rel = import_spec
         json_path = (
@@ -49,8 +49,16 @@ def _load_frontend() -> tuple[str, ...]:
 
 
 def main() -> int:
+    frontend_json = tuple(
+        json.loads(
+            (REPO_ROOT / "apps" / "frontend" / "pm_schema_columns.json").read_text(
+                encoding="utf-8"
+            )
+        )["required_columns"]
+    )
     checks = {
         "shared/pm_schema_columns.json": EXPECTED,
+        "frontend pm_schema_columns.json": frontend_json,
         "backend pm_schema.py": _load_backend(),
         "generator pm_schema.py": _load_generator(),
         "frontend pmSchema.js": _load_frontend(),

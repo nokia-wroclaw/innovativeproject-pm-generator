@@ -1,32 +1,63 @@
 import json
 import logging
-import os
+from pathlib import PurePosixPath
 from typing import Any
 
-from botocore.exceptions import ClientError
+from botocore.exceptions import ClientError  # type: ignore[import-untyped]
 
 logger = logging.getLogger(__name__)
 
-GENPM_VIZ_PREFIX = os.getenv("GENPM_VIZ_PREFIX", "genpm/visualizations")
+
+class VisualizationStorageError(RuntimeError):
+    """S3 is not configured for visualization artifact storage."""
 
 
-def visualization_artifact_keys(dataset_id: int) -> tuple[str, str]:
-    base = f"{GENPM_VIZ_PREFIX.strip('/')}/{dataset_id}"
-    return f"{base}/summary.json", f"{base}/summary_error.json"
+def _require_s3_bucket() -> str:
+    from app.services.s3.service import S3_BUCKET
+
+    if not S3_BUCKET:
+        raise VisualizationStorageError(
+            "S3_BUCKET is not configured; cannot read or write visualization artifacts."
+        )
+    return S3_BUCKET
 
 
-def kpi_analysis_artifact_key(dataset_id: int) -> str:
-    base = f"{GENPM_VIZ_PREFIX.strip('/')}/{dataset_id}"
-    return f"{base}/kpi_analysis.json"
+def dataset_visualization_prefix(dataset_s3_key: str) -> str:
+    """Parent prefix of the dataset object — same tree the user chose at upload.
+
+    Keep in sync with genpm.raw_vis.s3_layout (Spark writer).
+    """
+    key = (dataset_s3_key or "").strip().lstrip("/")
+    if not key:
+        raise ValueError("dataset s3_key is empty")
+    parent = PurePosixPath(key).parent.as_posix()
+    if parent and parent != ".":
+        return parent
+    return PurePosixPath(key).stem
+
+
+def visualization_artifact_key(dataset_s3_key: str, filename: str) -> str:
+    base = dataset_visualization_prefix(dataset_s3_key).strip("/")
+    return f"{base}/{filename.lstrip('/')}"
+
+
+def visualization_artifact_keys(dataset_s3_key: str) -> tuple[str, str]:
+    return (
+        visualization_artifact_key(dataset_s3_key, "summary.json"),
+        visualization_artifact_key(dataset_s3_key, "summary_error.json"),
+    )
+
+
+def kpi_analysis_artifact_key(dataset_s3_key: str) -> str:
+    return visualization_artifact_key(dataset_s3_key, "kpi_analysis.json")
 
 
 def read_s3_json_artifact(key: str) -> dict[str, Any] | None:
-    from app.services.s3.service import S3_BUCKET, s3_client_internal
+    from app.services.s3.service import s3_client_internal
 
-    if not S3_BUCKET:
-        return None
+    bucket = _require_s3_bucket()
     try:
-        response = s3_client_internal.get_object(Bucket=S3_BUCKET, Key=key)
+        response = s3_client_internal.get_object(Bucket=bucket, Key=key)
         body = response["Body"].read()
         payload = json.loads(body.decode("utf-8"))
         if isinstance(payload, dict):
@@ -40,12 +71,12 @@ def read_s3_json_artifact(key: str) -> dict[str, Any] | None:
     return None
 
 
-def load_kpi_analysis_artifact(dataset_id: int) -> dict[str, Any] | None:
-    return read_s3_json_artifact(kpi_analysis_artifact_key(dataset_id))
+def load_kpi_analysis_artifact(dataset_s3_key: str) -> dict[str, Any] | None:
+    return read_s3_json_artifact(kpi_analysis_artifact_key(dataset_s3_key))
 
 
-def load_visualization_artifact(dataset_id: int) -> dict[str, Any] | None:
-    summary_key, error_key = visualization_artifact_keys(dataset_id)
+def load_visualization_artifact(dataset_s3_key: str) -> dict[str, Any] | None:
+    summary_key, error_key = visualization_artifact_keys(dataset_s3_key)
     for key in (summary_key, error_key):
         payload = read_s3_json_artifact(key)
         if payload is not None:
@@ -53,25 +84,23 @@ def load_visualization_artifact(dataset_id: int) -> dict[str, Any] | None:
     return None
 
 
-def persist_unsupported_schema_artifact(dataset_id: int, payload: dict[str, Any]) -> None:
-    from app.services.s3.service import S3_BUCKET, s3_client_internal
+def persist_unsupported_schema_artifact(dataset_s3_key: str, payload: dict[str, Any]) -> None:
+    from app.services.s3.service import s3_client_internal
 
-    if not S3_BUCKET:
-        return
-
-    _, error_key = visualization_artifact_keys(dataset_id)
+    bucket = _require_s3_bucket()
+    _, error_key = visualization_artifact_keys(dataset_s3_key)
     body = json.dumps(payload, ensure_ascii=False, default=str).encode("utf-8")
     try:
         s3_client_internal.put_object(
-            Bucket=S3_BUCKET,
+            Bucket=bucket,
             Key=error_key,
             Body=body,
             ContentType="application/json",
         )
     except ClientError as exc:
         logger.warning(
-            "Failed to write unsupported_schema artifact for dataset_id=%s: %s",
-            dataset_id,
+            "Failed to write unsupported_schema artifact for s3_key=%s: %s",
+            dataset_s3_key,
             exc,
         )
 

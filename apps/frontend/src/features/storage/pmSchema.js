@@ -1,4 +1,4 @@
-import pmSchemaColumns from '@genpm/pm-schema';
+import pmSchemaColumns from '../../../pm_schema_columns.json';
 
 export const PM_REQUIRED_COLUMNS = pmSchemaColumns.required_columns;
 
