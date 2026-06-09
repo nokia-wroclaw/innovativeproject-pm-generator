@@ -8,7 +8,7 @@
     <div class="space-y-4">
       <p class="text-sm text-fg-muted">
         Process configuration
-        <span class="font-mono text-fg">preprocessing_feature_engineering</span>.
+        <span class="font-mono text-fg">generate</span>.
       </p>
 
       <ModelingRunStatusPanel
@@ -19,6 +19,13 @@
         :status-data="statusData"
         :status-error="statusQuery.error.value?.message ?? ''"
       />
+
+      <div
+        v-if="modelsError"
+        class="flex items-start gap-3 rounded-md border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-700"
+      >
+        <p>Failed to load trained models: {{ modelsError.message }}</p>
+      </div>
 
       <form
         class="space-y-4"
@@ -39,8 +46,7 @@
           hint="Models from completed training runs."
           placeholder="Select model"
           :options="modelOptions"
-
-        <!-- KPI selection (appears after model is selected) -->
+        />
         <ModelingFormKpiSelector
           v-if="false"
           v-model="form.selected_kpis"
@@ -130,39 +136,6 @@
           placeholder="e.g. models/my_config.json"
           required
         />
-
-        <ModelingFormRadioGroup
-          v-model="form.dataset_type"
-          label="Dataset type"
-          :options="datasetTypeOptions"
-        />
-
-        <div
-          v-for="section in sections"
-          :key="section.title"
-          class="space-y-4 rounded-lg border border-border-default bg-surface-muted p-4"
-        >
-          <h3 class="text-sm font-semibold text-fg">{{ section.title }}</h3>
-          <template v-for="field in section.fields" :key="field.key">
-            <ModelingFormCheckbox
-              v-if="field.type === 'checkbox'"
-              v-model="form[field.key]"
-              :label="field.label"
-            />
-            <ModelingFormInput
-              v-else
-              v-model="form[field.key]"
-              :label="field.label"
-              :type="field.inputType ?? 'text'"
-              :placeholder="field.placeholder"
-              :min="field.min"
-              :max="field.max"
-              :step="field.step"
-              :value-type="field.valueType"
-              :required="field.required"
-            />
-          </template>
-        </div>
 
         <div
           v-if="formError"

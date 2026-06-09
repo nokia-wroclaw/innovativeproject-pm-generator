@@ -23,22 +23,22 @@ _PROCESS_ROLES: dict[ModelingProcessType, str] = {
 
 _FIELD_SPECS: dict[ModelingProcessType, dict[str, str]] = {
     "preprocessing_feature_engineering": {
-        "dataset_id": "integer; must match one of the available dataset ids",
-        "dataset_type": '"working_days" or "weekends"',
-        "kpi_definitions_raw_path": "string; path to KPI definitions parquet",
-        "simple_reports_raw_path": "string; path to simple reports parquet",
-        "output_path_prefix": "string; output directory prefix",
-        "kpi_min_global_density": "float between 0 and 1",
-        "kpi_global_min_frac_cells_passing": "float between 0 and 1",
-        "kpi_window_coverage_frac": "float between 0 and 1",
-        "min_imputable_gap_frac": "float between 0 and 1",
-        "kpi_min_std_val": "float >= 0",
-        "max_zero_frac": "float between 0 and 1",
-        "window_width_hours": "integer >= 1",
-        "stride_hours": "integer >= 1",
-        "max_gap_hours": "integer >= 1",
-        "min_joint_windows_abs": "integer >= 1 or null",
-        "impute": "boolean",
+        "dataset_id": "integer; must match one of the available dataset ids. Represents the input dataset.",
+        "dataset_type": '"working_days" or "weekends". Represents the dataset type (e.g. for separating weekdays vs weekend data).',
+        "kpi_definitions_raw_path": "string; path to KPI definitions parquet. Represents the raw path of KPI definitions.",
+        "simple_reports_raw_path": "string; path to simple reports parquet. Represents the raw path of simple reports.",
+        "output_path_prefix": "string; output directory prefix. Default is '.../preprocessed_dataset'.",
+        "kpi_min_global_density": "float between 0 and 1. Minimum share of non-null hours in a KPI series active range per cell.",
+        "kpi_global_min_frac_cells_passing": "float between 0 and 1. Minimum share of a KPI's cells that must meet the density threshold.",
+        "kpi_window_coverage_frac": "float between 0 and 1. Minimum ratio of good windows to theoretical max windows per KPI.",
+        "min_imputable_gap_frac": "float between 0 and 1. Minimum share of null runs short enough to impute (<= max gap hours). Used for filtering max gaps.",
+        "kpi_min_std_val": "float >= 0. Reject KPIs with near-zero variance in good-window values (minimum standard deviation threshold).",
+        "max_zero_frac": "float between 0 and 1. Reject KPIs where at least this share of values is zero.",
+        "window_width_hours": "integer >= 1. Window length. Valid windows need all W contiguous hours (0..W-1).",
+        "stride_hours": "integer >= 1. Hours between stride-aligned window anchors.",
+        "max_gap_hours": "integer >= 1. Maximum consecutive null hours per window and safe imputation limit.",
+        "min_joint_windows_abs": "integer >= 1 or null. Minimum joint (distname, anchor) pairs for the selected KPI set. Empty/null means elbow method.",
+        "impute": "boolean. Enable imputation: forward-fill / interpolate gaps up to max gap hours before window validation.",
     },
     "training_dataset": {
         "dataset_id": "integer; must match one of the available dataset ids",
@@ -334,7 +334,44 @@ def _build_system_prompt(process_type: ModelingProcessType) -> str:
         "Respond with a JSON object containing ONLY the fields the user instruction explicitly "
         "mentions or clearly implies should change. "
         "Omit every other field — unchanged values are kept as-is. "
-        "Use exact enum values where specified.\n"
+        "Use exact enum values where specified.\n\n"
+        "CRITICAL: The user might describe fields or columns contextually, using synonyms, describing "
+        "their purpose, or writing at a HIGH LEVEL OF ABSTRACTION (e.g., mentioning real-world events, scenarios, "
+        "or goals, like a football match, holiday, storm, or maintenance window). You MUST extract the context "
+        "from the user's utterance, interpret their intent, and map it to the correct available field names and "
+        "values. Do not expect exact 1:1 matching.\n\n"
+        "GUIDELINE FOR MAGNITUDES (UNDERSTANDING 'LARGE' VS 'SMALL' / 'STRICT' VS 'LENIENT'):\n"
+        "Use user adjectives and context to scale values correctly relative to their default or current values:\n"
+        "- 'High/strict/large density' -> increase 'kpi_min_global_density' (closer to 1.0); 'low/lenient/small density' -> decrease it.\n"
+        "- 'More cells passing', 'high cell pass threshold' -> increase 'kpi_global_min_frac_cells_passing'; 'less cells passing' -> decrease it.\n"
+        "- 'High/strict window coverage' -> increase 'kpi_window_coverage_frac'; 'low coverage' -> decrease it.\n"
+        "- 'Allow larger gaps', 'lenient gaps', 'big gaps' -> increase 'max_gap_hours' (e.g., to 12 or 24 hours) and increase 'min_imputable_gap_frac'.\n"
+        "- 'Allow small gaps', 'strict gaps', 'no gaps' -> decrease 'max_gap_hours' (e.g., to 1 or 2 hours) and decrease 'min_imputable_gap_frac'.\n"
+        "- 'Strict standard deviation', 'high variance requirement' -> increase 'kpi_min_std_val'.\n"
+        "- 'Allow lots of zeros', 'lenient zero threshold' -> increase 'max_zero_frac' (closer to 1.0); 'allow few zeros', 'strict zeros' -> decrease it.\n"
+        "- 'Large/long window width' -> increase 'window_width_hours'; 'small/short window width' -> decrease it.\n"
+        "- 'Large stride' -> increase 'stride_hours'; 'small stride', 'frequent windows' -> decrease 'stride_hours'.\n"
+        "- 'Large test split', 'more validation data' -> increase 'test_size'; 'small test split' -> decrease it.\n\n"
+        "Abstraction & Synonym Examples:\n"
+        "- If they mention 'there is a football match this weekend', you should set 'dataset_type': 'weekends' based on the context.\n"
+        "- 'minimum density', 'density limit', or 'global density' maps to 'kpi_min_global_density'\n"
+        "- 'percentage of cells passing', 'cells passing threshold', or 'passing cell fraction' maps to 'kpi_global_min_frac_cells_passing'\n"
+        "- 'window coverage' or 'coverage percentage' maps to 'kpi_window_coverage_frac'\n"
+        "- 'minimum gap for imputation' or 'min gap to impute' maps to 'min_imputable_gap_frac'\n"
+        "- 'standard deviation', 'minimum std', 'std dev threshold' maps to 'kpi_min_std_val'\n"
+        "- 'zero fraction', 'maximum zero percentage', or 'max zeros' maps to 'max_zero_frac'\n"
+        "- 'window width', 'width of window', or 'hours per window' maps to 'window_width_hours'\n"
+        "- 'stride', 'stride length', or 'step hours' maps to 'stride_hours'\n"
+        "- 'max gap', 'gap threshold', or 'allow gaps up to' maps to 'max_gap_hours'\n"
+        "- 'dataset id', 'input dataset', 'dataset select' maps to 'dataset_id'\n"
+        "- 'working days' or 'weekends' maps to 'dataset_type'\n"
+        "- 'target', 'column to predict', 'target label' maps to 'target_column'\n"
+        "- 'test size', 'validation split fraction' maps to 'test_size'\n"
+        "- 'random seed', 'seed' maps to 'random_seed'\n"
+        "- 'split date', 'date for split' maps to 'split_date'\n"
+        "- 'shuffle', 'shuffle rows' maps to 'shuffle'\n"
+        "- 'stratification', 'stratify' maps to 'stratify'\n\n"
+        "Analyze the user's request carefully, interpret high-level abstractions, and use semantic matching to select the correct fields and assign reasonable values.\n\n"
         f"Available fields:\n{field_lines}"
     )
 

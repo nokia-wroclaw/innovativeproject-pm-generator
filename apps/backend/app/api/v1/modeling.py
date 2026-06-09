@@ -704,6 +704,7 @@ async def autofill_process_form(
     body: ModelingAutofillRequest,
     user: dict[str, Any] = Depends(require_auth),
     service: S3Service = Depends(_get_s3_service),
+    db: Session = Depends(db_manager.get_db),
 ) -> ModelingAutofillResponse:
     if process_type != "generate":
         assert_modeling_admin(user)
@@ -714,13 +715,27 @@ async def autofill_process_form(
         if ds.status == DatasetStatus.COMPLETED
     ]
 
+    db_models = db.query(TrainedModel).all()
+    trained_models = [
+        ModelingTrainedModelOption(
+            id=str(db_m.id),
+            name=db_m.name,
+            path=f"s3://{get_settings().s3_bucket}/{db_m.s3_key}",
+            encoder_s3_key=db_m.encoder_s3_key,
+            config_s3_key=db_m.config_s3_key,
+            dataset_id=db_m.dataset_id,
+            created_at=db_m.created_at.isoformat() + "Z" if db_m.created_at else None,
+        )
+        for db_m in db_models
+    ]
+
     try:
         values = await autofill_modeling_form(
             process_type,
             body.instruction,
             current_values=body.current_values,
             datasets=datasets,
-            models=_MOCK_TRAINED_MODELS,
+            models=trained_models,
         )
     except LlmAutofillError as exc:
         raise HTTPException(status_code=exc.status_code, detail=exc.message) from exc
