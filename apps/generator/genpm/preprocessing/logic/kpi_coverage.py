@@ -401,12 +401,11 @@ def build_pm_windows_anchor_df(
 
 # TODO THIS FUNCTION (FOR NOW) DOESNT REALLY USE THE DENSITY THRESHOLD
 # Right now, only the really CLEAN WINDOWs are taken for training
-def compute_window_density_sparse(
+def drop_windows_containing_nulls(
     df: DataFrame,
     *,
     window_hours: int = 168,
     stride_hours: int = 24,
-    density_threshold: float = 0.917,
 ) -> DataFrame:
     """Compute per-anchor window validity **without** a distname-wide dense grid.
 
