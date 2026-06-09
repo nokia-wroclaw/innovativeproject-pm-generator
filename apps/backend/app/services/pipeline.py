@@ -2,7 +2,7 @@ import datetime
 import os
 import uuid
 
-import requests
+import requests  # type: ignore[import-untyped]
 from fastapi import HTTPException
 from sqlalchemy.orm import Session
 

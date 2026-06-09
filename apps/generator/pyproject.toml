@@ -17,6 +17,7 @@ dependencies = [
     "scipy>=1.17.1",
     "dotenv>=0.9.9",
     "ruptures>=1.1.10",
+    "boto3>=1.35.0",
 ]
 
 

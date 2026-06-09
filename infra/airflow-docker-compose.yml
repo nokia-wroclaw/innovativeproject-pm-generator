@@ -4,7 +4,8 @@ x-airflow-common:
     context: ..
     dockerfile: build/Airflow.Dockerfile
   env_file:
-    - ${ENV_FILE_PATH:-.env}
+    # Relative to this compose file (infra/): repo root .env
+    - ${ENV_FILE_PATH:-../.env}
   environment:
     &airflow-common-env
     AIRFLOW__CORE__EXECUTOR: CeleryExecutor
@@ -19,10 +20,12 @@ x-airflow-common:
     AIRFLOW__API_AUTH__JWT_ISSUER: ${AIRFLOW__API_AUTH__JWT_ISSUER:-airflow}
     AIRFLOW__SCHEDULER__ENABLE_HEALTH_CHECK: 'true'
     _PIP_ADDITIONAL_REQUIREMENTS: ${_PIP_ADDITIONAL_REQUIREMENTS:-apache-airflow-providers-apache-spark}
-    AIRFLOW_CONN_SPARK_DEFAULT: "spark://${USER}-spark-jupyter:7077"
+    AIRFLOW_CONN_SPARK_DEFAULT: "spark://${USER}-genpm-spark:7077"
     AIRFLOW_CONFIG: '/opt/airflow/config/airflow.cfg'
-    PYSPARK_PYTHON: /home/${USER}/app/.venv/bin/python3.11
-    PYSPARK_DRIVER_PYTHON: /usr/bin/python3.11
+    PYSPARK_DRIVER_PYTHON: /opt/airflow/genpm-venv/bin/python
+    GENPM_PYSPARK_PYTHON: /opt/airflow/genpm-venv/bin/python
+    GENPM_SPARK_EXECUTOR_PYTHON: ${GENPM_SPARK_EXECUTOR_PYTHON:-/home/${USER:-hostuser}/app/.venv/bin/python3}
+    GENPM_SCHEMA_PATH: /opt/airflow/shared/pm_schema_columns.json
 
   volumes:
     - ${AIRFLOW_PROJ_DIR:-.}/dags:/opt/airflow/dags
@@ -30,8 +33,10 @@ x-airflow-common:
     - ${AIRFLOW_PROJ_DIR:-.}/config:/opt/airflow/config
     - ${AIRFLOW_PROJ_DIR:-.}/plugins:/opt/airflow/plugins
 
-    - /home/${USER}/innovativeproject-pm-generator/apps/airflow/dags:/opt/airflow/dags/${USER}
-    - /home/${USER}/innovativeproject-pm-generator/apps/generator/apps:/opt/airflow/spark-apps
+    - ../apps/airflow/dags:/opt/airflow/dags/${USER}
+    - ../apps/generator:/opt/airflow/generator
+    - ../shared:/opt/airflow/shared:ro
+    - ../apps/generator/apps:/opt/airflow/spark-apps
 
   user: "${AIRFLOW_UID:-50000}:0"
 
@@ -127,8 +132,6 @@ services:
     environment:
       <<: *airflow-common-env
       DUMB_INIT_SETSID: "0"
-      PYSPARK_PYTHON: /home/${USER}/app/.venv/bin/python3.11
-      PYSPARK_DRIVER_PYTHON: /usr/bin/python3.11
       SPARK_HOME: /opt/spark
       PATH: /opt/spark/bin:/home/airflow/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
     restart: always

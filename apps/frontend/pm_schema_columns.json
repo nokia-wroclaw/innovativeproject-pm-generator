@@ -1,0 +1,10 @@
+{
+  "required_columns": [
+    "kpi_id",
+    "bts_id",
+    "start_time",
+    "kpi_value",
+    "start_date",
+    "distname"
+  ]
+}

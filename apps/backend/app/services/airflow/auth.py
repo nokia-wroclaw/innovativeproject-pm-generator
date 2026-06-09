@@ -56,14 +56,10 @@ class AirflowAuth:
             "password": self._settings.password,
         }
         try:
-            async with httpx.AsyncClient(
-                timeout=self._settings.http_timeout_seconds
-            ) as client:
+            async with httpx.AsyncClient(timeout=self._settings.http_timeout_seconds) as client:
                 response = await client.post(url, json=payload)
         except httpx.HTTPError as exc:
-            raise AirflowUnavailable(
-                f"Cannot reach Airflow auth endpoint ({url}): {exc}"
-            ) from exc
+            raise AirflowUnavailable(f"Cannot reach Airflow auth endpoint ({url}): {exc}") from exc
 
         if response.status_code == 401:
             raise AirflowAuthFailed(
@@ -71,21 +67,16 @@ class AirflowAuth:
                 "(AIRFLOW_USERNAME / AIRFLOW_PASSWORD)."
             )
         if response.status_code >= 500:
-            raise AirflowUnavailable(
-                f"Airflow auth endpoint returned {response.status_code}"
-            )
+            raise AirflowUnavailable(f"Airflow auth endpoint returned {response.status_code}")
         if response.status_code >= 400:
             raise AirflowAuthFailed(
-                f"Airflow auth endpoint returned {response.status_code}: "
-                f"{response.text[:200]}"
+                f"Airflow auth endpoint returned {response.status_code}: " f"{response.text[:200]}"
             )
 
         try:
             body = response.json()
         except ValueError as exc:
-            raise AirflowAuthFailed(
-                "Airflow auth endpoint returned non-JSON body"
-            ) from exc
+            raise AirflowAuthFailed("Airflow auth endpoint returned non-JSON body") from exc
 
         token = self._extract_token(body)
         expires_at = self._extract_expiry(token)
@@ -103,8 +94,7 @@ class AirflowAuth:
             if isinstance(value, str) and value:
                 return value
         raise AirflowAuthFailed(
-            f"Airflow auth response did not contain a token field "
-            f"(keys={list(body)[:5]})"
+            f"Airflow auth response did not contain a token field " f"(keys={list(body)[:5]})"
         )
 
     @staticmethod
@@ -114,6 +104,6 @@ class AirflowAuth:
         except jwt.PyJWTError:
             return time.time() + _FALLBACK_TTL_SECONDS
         exp = unverified.get("exp")
-        if isinstance(exp, (int, float)) and exp > 0:
+        if isinstance(exp, int | float) and exp > 0:
             return float(exp)
         return time.time() + _FALLBACK_TTL_SECONDS

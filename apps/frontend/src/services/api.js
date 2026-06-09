@@ -48,6 +48,23 @@ async function parseErrorBody(response) {
   }
 
   let message = `API ${status}`;
+  if (
+    body?.detail &&
+    typeof body.detail === 'object' &&
+    !Array.isArray(body.detail)
+  ) {
+    const detail = body.detail;
+    return new ApiError({
+      code:
+        detail.status === 'unsupported_schema'
+          ? 'UNSUPPORTED_SCHEMA'
+          : `HTTP_${status}`,
+      message: detail.message ?? message,
+      status,
+      requestId,
+      details: detail,
+    });
+  }
   if (typeof body?.detail === 'string') {
     message = body.detail;
   } else if (Array.isArray(body?.detail)) {

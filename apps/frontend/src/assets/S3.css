@@ -155,6 +155,21 @@
   font-style: italic;
 }
 
+.s3-failed-delete-btn {
+  background-color: #ef4444;
+  color: #fff;
+  border: none;
+  padding: 4px 12px;
+  border-radius: 6px;
+  font-size: 0.875rem;
+  font-weight: 500;
+  cursor: pointer;
+}
+
+.s3-failed-delete-btn:hover {
+  background-color: #dc2626;
+}
+
 /* Row actions dropdown */
 .dropdown-item.s3-action-analyze {
   color: #2563eb;
@@ -272,4 +287,18 @@
 .s3-preview-empty {
   text-align: center;
   color: #6b7280;
+}
+
+.s3-dataset-link {
+  padding: 0;
+  border: none;
+  background: none;
+  color: #005aff;
+  font-weight: 500;
+  cursor: pointer;
+  text-align: left;
+}
+
+.s3-dataset-link:hover {
+  text-decoration: underline;
 }

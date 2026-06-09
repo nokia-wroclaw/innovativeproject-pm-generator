@@ -92,6 +92,7 @@ export KEYCLOAK_PORT=$((8080 + PORT_OFFSET))
 export DEVCONTAINER_SSH_PORT=$((2222 + PORT_OFFSET))
 export SPARK_MASTER=$((7077 + PORT_OFFSET))
 export FRONTEND_ORIGIN="http://localhost:${FRONTEND_PORT}"
+export GENPM_SPARK_EXECUTOR_PYTHON="${GENPM_SPARK_EXECUTOR_PYTHON:-/home/${USER}/app/.venv/bin/python3}"
 
 
 # Write devcontainer env vars to .bashrc (run only once and reenter VS code process)
@@ -102,6 +103,22 @@ grep -q "^export USER_GID=" ~/.bashrc            || echo 'export USER_GID=$(id -
 grep -q "^export USER=" ~/.bashrc                || echo "export USER=$USER" >> ~/.bashrc
 
 echo "Starting environment for $USER-$USER_UID on ports: Frontend=$FRONTEND_PORT, Jupyter=$JUPYTER_PORT, SparkUI=$SPARK_UI_PORT, SparkMaster=$SPARK_MASTER_PORT, MinIO_API=$S3_API_PORT, MinIO_UI=$MINIO_WEBCONSOLE_PORT, FastAPI=$FASTAPI_PORT, Keycloak=$KEYCLOAK_PORT, Postgres=$POSTGRES_PORT"
+
+if [ -d .venv ]; then
+  venv_python=".venv/bin/python3"
+  venv_ok=true
+  if [ ! -e "$venv_python" ]; then
+    venv_ok=false
+  elif ! readlink -f "$venv_python" >/dev/null 2>&1; then
+    venv_ok=false
+  elif ! "$venv_python" -c "import sys" >/dev/null 2>&1; then
+    venv_ok=false
+  fi
+  if [ "$venv_ok" = false ]; then
+    echo "Removing unusable .venv (likely copied from another account); uv will recreate it."
+    rm -rf .venv
+  fi
+fi
 
 uv sync --quiet
 

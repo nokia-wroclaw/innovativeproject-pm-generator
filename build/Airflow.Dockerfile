@@ -4,10 +4,14 @@ RUN apt-get update \
   && apt-get install -y --no-install-recommends \
          openjdk-17-jre-headless \
          curl \
+         procps \
   && apt-get autoremove -yqq --purge \
   && apt-get clean \
   && rm -rf /var/lib/apt/lists/*
 
+COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /bin/
+
+# Must match build/Spark.Dockerfile (PySpark 3.12 on driver and executors).
 ENV SPARK_VERSION=3.5.2
 ENV HADOOP_VERSION=3
 
@@ -24,10 +28,22 @@ RUN curl -O https://archive.apache.org/dist/spark/spark-${SPARK_VERSION}/spark-$
   && chmod -R 755 /opt/spark-${SPARK_VERSION}-bin-hadoop${HADOOP_VERSION} \
   && chmod +x /opt/spark-${SPARK_VERSION}-bin-hadoop${HADOOP_VERSION}/bin/*
 
-RUN apt-get update && apt-get install -y python3.11 python3.11-venv python3.11-dev \
-  && apt-get clean && rm -rf /var/lib/apt/lists/*
+# genpm is installed as a package; runtime mount overlays /opt/airflow/generator for dev.
+COPY apps/generator /opt/airflow/generator
+RUN chown -R airflow:root /opt/airflow/generator
 
-
+# Venv must be created as the airflow runtime user — root-owned uv Python is not executable
+# by AIRFLOW_UID (50000), which causes "Permission denied" in Spark PythonRunner.
 USER airflow
+RUN uv venv /opt/airflow/genpm-venv --python 3.12 \
+    && uv pip install --python /opt/airflow/genpm-venv/bin/python --no-cache \
+        numpy pandas scipy plotly boto3 pyarrow python-dotenv setuptools \
+    && uv pip install --python /opt/airflow/genpm-venv/bin/python --no-cache \
+        -e /opt/airflow/generator --no-deps \
+    && PYTHONPATH="/opt/spark/python:/opt/spark/python/lib/py4j-0.10.9.7-src.zip" \
+        /opt/airflow/genpm-venv/bin/python -c "import distutils; import genpm.utils.spark_session"
+
+ENV GENPM_PYSPARK_PYTHON=/opt/airflow/genpm-venv/bin/python
 ENV JAVA_HOME=/usr/lib/jvm/java-17-openjdk-amd64
 ENV SPARK_HOME=/opt/spark
+ENV PYSPARK_DRIVER_PYTHON=/opt/airflow/genpm-venv/bin/python

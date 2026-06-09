@@ -2,7 +2,8 @@ FROM nvidia/cuda:12.2.2-runtime-ubuntu22.04
 
 ENV RAPIDS_VERSION=24.08.0
 ENV JAVA_VERSION=17
-ENV SPARK_VERSION=3.5.1
+# Must match build/Airflow.Dockerfile (driver/executor serialization).
+ENV SPARK_VERSION=3.5.2
 ENV HADOOP_VERSION=3
 ENV SPARK_HOME=/home/spark
 
@@ -79,7 +80,10 @@ COPY --chown=$USERNAME:$USERNAME pyproject.toml uv.lock ./
 COPY --chown=$USERNAME:$USERNAME apps/generator/ ./apps/generator/
 COPY --chown=$USERNAME:$USERNAME apps/backend/pyproject.toml ./apps/backend/pyproject.toml
 
-RUN uv sync --frozen
+# PySpark requires the same minor Python on driver (Airflow) and executors (this venv).
+RUN uv python install 3.12 \
+    && uv sync --frozen --python 3.12 \
+    && $APP_HOME/.venv/bin/python -c "import sys; assert sys.version_info[:2] == (3, 12), sys.version"
 RUN $APP_HOME/.venv/bin/python -m ipykernel install --prefix=$APP_HOME/.venv --name=spark-env --display-name "Python (Spark Project)"
 
 ENV PATH="$APP_HOME/.venv/bin:$PATH"

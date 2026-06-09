@@ -16,7 +16,11 @@
         <span v-if="!isCollapsed">DAGs</span>
       </router-link>
 
-      <router-link to="/s3" class="menu-item">
+      <router-link
+        to="/s3"
+        class="menu-item"
+        :class="{ 'router-link-active': isStorageSection }"
+      >
         <Database class="icon" :size="20" />
         <span v-if="!isCollapsed">Storage</span>
       </router-link>
@@ -43,6 +47,7 @@ import SidebarToggleButton from './ToggleButton.vue';
 
 const route = useRoute();
 const isDagsSection = computed(() => route.path.startsWith('/dags'));
+const isStorageSection = computed(() => route.path.startsWith('/s3'));
 
 const isCollapsed = ref(false);
 const toggleSidebar = () => {

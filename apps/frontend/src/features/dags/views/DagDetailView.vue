@@ -219,10 +219,24 @@ const recentRuns = computed(() => detailsQuery.data.value?.recent_runs ?? []);
 // ─── Run selection ──────────────────────────────────────────────────────────
 const selectedRunId = ref(null);
 
+function runIdFromRouteQuery() {
+  const raw = route.query.run;
+  const id = Array.isArray(raw) ? raw[0] : raw;
+  return id ? String(id) : null;
+}
+
 watch(
-  recentRuns,
+  [recentRuns, () => route.query.run],
   (runs) => {
-    if (!selectedRunId.value && runs.length) selectedRunId.value = runs[0].run_id;
+    const fromQuery = runIdFromRouteQuery();
+    if (fromQuery && runs.find((r) => r.run_id === fromQuery)) {
+      selectedRunId.value = fromQuery;
+      return;
+    }
+    if (!selectedRunId.value && runs.length) {
+      selectedRunId.value = runs[0].run_id;
+      return;
+    }
     if (selectedRunId.value && !runs.find((r) => r.run_id === selectedRunId.value)) {
       selectedRunId.value = runs[0]?.run_id ?? null;
     }

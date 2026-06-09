@@ -89,12 +89,28 @@ export const registerExistingS3Dataset = async (datasetData) => {
 };
 
 
-export const deleteS3Dataset = async (datasetID) => {
-  return await authorizedRequest(`/api/v1/datasets/${datasetID}`, {
+export const deleteS3Dataset = async (datasetId, { deleteFromS3 = false } = {}) => {
+  const params = new URLSearchParams();
+  if (deleteFromS3) {
+    params.set('delete_from_s3', 'true');
+  }
+  const query = params.toString();
+  const path = `/api/v1/datasets/${datasetId}${query ? `?${query}` : ''}`;
+  return await authorizedRequest(path, {
     method: 'DELETE',
   });
 };
 
 export const fetchDatasetPreview = async (datasetId) => {
   return await authorizedRequest(`/api/v1/datasets/${datasetId}/preview`);
+};
+
+export const fetchDatasetVisualizationStatus = async (datasetId) => {
+  return await authorizedRequest(`/api/v1/datasets/${datasetId}/visualization/status`);
+};
+
+export const requestDatasetVisualization = async (datasetId) => {
+  return await authorizedRequest(`/api/v1/datasets/${datasetId}/visualization`, {
+    method: 'POST',
+  });
 };

@@ -9,12 +9,12 @@ from pathlib import Path
 from typing import Any, cast
 from urllib.parse import urlparse
 
-import boto3
-import pandas as pd
-import pyarrow.fs as pafs
-import pyarrow.parquet as pq
-from botocore.client import Config
-from botocore.exceptions import ClientError
+import boto3  # type: ignore[import-untyped]
+import pandas as pd  # type: ignore[import-untyped]
+import pyarrow.fs as pafs  # type: ignore[import-untyped]
+import pyarrow.parquet as pq  # type: ignore[import-untyped]
+from botocore.client import Config  # type: ignore[import-untyped]
+from botocore.exceptions import ClientError  # type: ignore[import-untyped]
 from fastapi import HTTPException
 from sqlalchemy.orm import Session
 
@@ -173,16 +173,17 @@ class S3Service:
                 status_code=400, detail=f"[S3] Cancel upload error: {str(e)}"
             ) from e
 
-    def delete_dataset(self, dataset_id: int) -> None:
+    def delete_dataset(self, dataset_id: int, *, delete_from_s3: bool = False) -> None:
         dataset = self.get_dataset(dataset_id)
 
-        try:
-            self.s3_client_internal.delete_object(Bucket=S3_BUCKET, Key=dataset.s3_key)
-        except Exception as e:
-            raise HTTPException(
-                status_code=400,
-                detail=f"[S3] Error deleting file from S3: {str(e)}",
-            ) from e
+        if delete_from_s3:
+            try:
+                self.s3_client_internal.delete_object(Bucket=S3_BUCKET, Key=dataset.s3_key)
+            except Exception as e:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"[S3] Error deleting file from S3: {str(e)}",
+                ) from e
 
         self._db.delete(dataset)
         self._db.commit()
@@ -199,6 +200,49 @@ class S3Service:
         if dataset_type is not None:
             query = query.filter(Dataset.type == dataset_type)
         return query.all()
+
+    def read_primary_column_names(self, dataset: Dataset) -> list[str]:
+        """Column names from the first previewable file (parquet schema or CSV header)."""
+        tables = self._discover_preview_objects(dataset.s3_key)
+        if not tables:
+            raise HTTPException(
+                status_code=404,
+                detail="No previewable data files found for this dataset",
+            )
+
+        _, object_key = tables[0]
+        extension = Path(object_key).suffix.lower()
+
+        if extension == ".parquet":
+            s3_path = self._s3_object_path(object_key)
+            parquet_file = pq.ParquetFile(s3_path, filesystem=_get_s3_filesystem())
+            return [field.name for field in parquet_file.schema_arrow]
+
+        if extension == ".csv":
+            try:
+                head = self.s3_client_internal.head_object(Bucket=S3_BUCKET, Key=object_key)
+                content_length = head.get("ContentLength", CSV_PREVIEW_RANGE_BYTES)
+                range_end = max(0, min(content_length, CSV_PREVIEW_RANGE_BYTES) - 1)
+                response = self.s3_client_internal.get_object(
+                    Bucket=S3_BUCKET,
+                    Key=object_key,
+                    Range=f"bytes=0-{range_end}",
+                )
+                body = response["Body"].read()
+            except ClientError as exc:
+                error_code = exc.response.get("Error", {}).get("Code", "")
+                if error_code in {"InvalidRange", "416"}:
+                    response = self.s3_client_internal.get_object(Bucket=S3_BUCKET, Key=object_key)
+                    body = response["Body"].read()
+                else:
+                    raise
+            dataframe = pd.read_csv(io.BytesIO(body), nrows=0)
+            return list(dataframe.columns)
+
+        raise HTTPException(
+            status_code=400,
+            detail="Unsupported file format for visualization schema check.",
+        )
 
     def preview_dataset(self, dataset_id: int) -> dict:
         dataset = self.get_dataset(dataset_id)
@@ -219,10 +263,15 @@ class S3Service:
             columns, rows = self._preview_object(object_key)
             tables.append({"name": table_name, "columns": columns, "rows": rows})
 
+        dataset_type = (
+            dataset.type.value if isinstance(dataset.type, DatasetType) else str(dataset.type)
+        )
+
         return {
             "dataset_id": dataset.id,
             "file_name": dataset.file_name,
             "s3_key": dataset.s3_key,
+            "type": dataset_type,
             "tables": tables,
         }
 

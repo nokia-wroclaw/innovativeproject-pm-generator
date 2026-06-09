@@ -14,6 +14,7 @@ from pyspark.sql import functions as f
 
 from .consts import SPARK_CHECKPOINT_PATH
 from .logger import get_logger
+from .spark_session import minio_spark_conf
 
 load_dotenv()
 
@@ -41,6 +42,9 @@ class SparkDataManager:
             .config("spark.sql.adaptive.enabled", "true")
             .config("spark.sql.adaptive.skewJoin.enabled", "true")
         )
+
+        for conf, val in minio_spark_conf().items():
+            builder = builder.config(conf, val)
 
         if spark_conf is not None:
             for conf, val in spark_conf.items():
@@ -79,9 +83,8 @@ class SparkDataManager:
             self.spark = None  # type: ignore
 
     @staticmethod
-    def minio_spark_conf():
-        # TODO: MINIO setup for sparksession
-        pass
+    def minio_spark_conf() -> dict[str, str]:
+        return minio_spark_conf()
 
     def read_parquet(self, path: Path | str, **options) -> DataFrame:
         # TODO: S3 compatability will be introduced here
