@@ -22,7 +22,7 @@ SPARK_CONFIGS = {
     # ============================================================
     "FULL_RESOURCES": {
         "spark.master": "local[30]",
-        "spark.driver.memory": "110g",
+        "spark.driver.memory": "80g",
         "spark.memory.fraction": "0.80",
         "spark.memory.storageFraction": "0.30",
         "spark.sql.shuffle.partitions": "512",

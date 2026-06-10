@@ -3,7 +3,7 @@ from pyspark.sql import functions as f
 
 from genpm.preprocessing.configs import PreprocessingConfig
 from genpm.preprocessing.logic import imputing, kpi_coverage, preprocessing_logic
-from genpm.preprocessing.logic.scaling import GroupedKPIScaler
+from genpm.preprocessing.logic.scaling import SimpleMinMaxScaler
 from genpm.utils.consts import MAX_IMPUTABLE_GAP, SHARED_DIR_PATH
 from genpm.utils.logger import get_logger
 from genpm.utils.utils import SparkDataManager
@@ -64,17 +64,17 @@ def run_preprocessing(sdm: SparkDataManager, preprocessing_cfg: PreprocessingCon
         sdm, preprocessing_cfg
     )
 
-    pm_df_long_raw = preprocessing_logic.raw_pm_preperation(pm_df_long_raw)
-    # [VERBOSE_DIAGNOSTICS] _log_pm_diag("after raw_pm_preperation", pm_df_long_raw)
+    # pm_df_long_raw = preprocessing_logic.raw_pm_preperation(pm_df_long_raw)
+    # # [VERBOSE_DIAGNOSTICS] _log_pm_diag("after raw_pm_preperation", pm_df_long_raw)
 
-    # # KPI version flattening
-    pm_df_long, kpi_definitions = preprocessing_logic.coalesce_kpi_version(
-        pm_df_long_raw, kpi_definitions_df_raw
-    )
-    # [VERBOSE_DIAGNOSTICS] _log_pm_diag("after coalesce_kpi_version", pm_df_long)
+    # # # KPI version flattening
+    # pm_df_long, kpi_definitions = preprocessing_logic.coalesce_kpi_version(
+    #     pm_df_long_raw, kpi_definitions_df_raw
+    # )
+    # # [VERBOSE_DIAGNOSTICS] _log_pm_diag("after coalesce_kpi_version", pm_df_long)
 
-    pm_df_long, pm_df_const_kpi = preprocessing_logic.pop_constant_kpis(pm_df_long)
-    # [VERBOSE_DIAGNOSTICS] _log_pm_diag("after pop_constant_kpis", pm_df_long)
+    # pm_df_long, pm_df_const_kpi = preprocessing_logic.pop_constant_kpis(pm_df_long)
+    # # [VERBOSE_DIAGNOSTICS] _log_pm_diag("after pop_constant_kpis", pm_df_long)
 
     # # NOTE: INTERMEDIATE SAVES - FOR DEBUGGING AND QUICKER RUNS
 
@@ -82,14 +82,14 @@ def run_preprocessing(sdm: SparkDataManager, preprocessing_cfg: PreprocessingCon
     # sdm.write_parquet(kpi_definitions, PREPROCESSED_DATASET_PATH / "intermediate" / "kpi_definitions", mode="overwrite")
     # sdm.write_parquet(pm_df_const_kpi, PREPROCESSED_DATASET_PATH / "intermediate" / "pm_df_const_kpi", mode="overwrite")
 
-    # pm_df_long = sdm.read_parquet(PREPROCESSED_DATASET_PATH / "intermediate" / "pm_df_long")
-    # kpi_definitions = sdm.read_parquet(
-    #     PREPROCESSED_DATASET_PATH / "intermediate" / "kpi_definitions"
-    # )
+    pm_df_long = sdm.read_parquet(PREPROCESSED_DATASET_PATH / "intermediate" / "pm_df_long")
+    kpi_definitions = sdm.read_parquet(
+        PREPROCESSED_DATASET_PATH / "intermediate" / "kpi_definitions"
+    )
 
-    # pm_df_const_kpi = sdm.read_parquet(
-    #     PREPROCESSED_DATASET_PATH / "intermediate" / "pm_df_const_kpi"
-    # )
+    pm_df_const_kpi = sdm.read_parquet(
+        PREPROCESSED_DATASET_PATH / "intermediate" / "pm_df_const_kpi"
+    )
 
     # STAGE: COVERAGE ANALYSIS
     # Timestamp frequency uniformoty (1 hour)
@@ -254,6 +254,28 @@ def run_preprocessing(sdm: SparkDataManager, preprocessing_cfg: PreprocessingCon
     good_windows_candidates.count()
     _log_window_diag("good_windows_candidates (post prefilter)", good_windows_candidates)
 
+    # SCALING HERE
+
+    # --- old GroupedKPIScaler (commented out) ---
+    # scaler = GroupedKPIScaler(
+    #     value_col="kpi_value",
+    #     group_cols=["kpi_id", "bts_id", "distname"],
+    #     min_valid_points=4,
+    #     percentile_accuracy=10_000,
+    # )
+    # params_df = scaler.fit(pm_df_long_imputed)
+    # pm_df_long_scaled = scaler.transform(pm_df_long_imputed)
+    # clean_audit_df = scaler.summary().filter(f.col("scaler") != f.lit("SKIP"))
+    # pm_df_long_scaled = pm_df_long_scaled.join(
+    #     f.broadcast(clean_audit_df.select("kpi_id", "distname").distinct()),
+    #     on=["kpi_id", "distname"],
+    #     how="inner",
+    # )
+
+    scaler = SimpleMinMaxScaler(value_col="kpi_value", group_cols=["kpi_id", "distname"])
+    params_df = scaler.fit(pm_df_long_imputed)
+    pm_df_long_scaled = scaler.transform(pm_df_long_imputed)
+
     # Greedy joint KPI selection
     selected_kpis = kpi_coverage.greedy_joint_kpi_selection(
         good_windows_candidates,
@@ -264,72 +286,48 @@ def run_preprocessing(sdm: SparkDataManager, preprocessing_cfg: PreprocessingCon
     logger.info(f"Selected {len(selected_kpis)} KPIs from {len(candidates)} candidates.")
 
     good_windows_selected = good_windows_candidates.filter(f.col("kpi_id").isin(selected_kpis))
-    pm_df_long_imputed_selected = pm_df_long_imputed.filter(f.col("kpi_id").isin(selected_kpis))
-    _log_pm_diag("pm_df_long_imputed_selected (post greedy)", pm_df_long_imputed_selected)
+    pm_df_long_scaled = pm_df_long_scaled.filter(f.col("kpi_id").isin(selected_kpis))
+    _log_pm_diag("pm_df_long_imputed_selected (post greedy)", pm_df_long_scaled)
     _log_window_diag("good_windows_selected (post greedy)", good_windows_selected)
 
     # TODO: CHANGEPOINT DETECTION DEVELOPMENT HOLD !!!
     # pm_df_long_segmented = changepoint_detection.add_regime_ids(pm_df_long_imputed_selected)
     # [VERBOSE_DIAGNOSTICS] _log_pm_diag("after add_regime_ids", pm_df_long_segmented)
 
-    # pm_df_long_segmented = pm_df_long_segmented.cache()
-
     # pm_df_long_imputed_selected = pm_df_long_imputed_selected.localCheckpoint()
     # sdm.write_parquet(pm_df_long_imputed_selected, PREPROCESSED_DATASET_PATH / "intermediate" / "pm_df_long_imputed_selected_lol", mode="overwrite")
     # pm_df_long_imputed_selected = sdm.read_parquet(
     #     PREPROCESSED_DATASET_PATH / "intermediate" / "pm_df_long_imputed_selected_lol"
     # )
-    _log_pm_diag("pm_df_long_imputed_selected (read back)", pm_df_long_imputed_selected)
+    # selected_kpis = [
+    #     r["kpi_id"] for r in pm_df_long_imputed_selected.select("kpi_id").distinct().collect()
+    # ]
+    # _log_pm_diag("pm_df_long_imputed_selected (read back)", pm_df_long_imputed_selected)
 
-    print("intermediate")
+    # print("intermediate")
     # Scaling
-
-    scaler = GroupedKPIScaler(
-        value_col="kpi_value",
-        group_cols=["kpi_id", "bts_id", "distname"],
-        min_valid_points=4,
-        percentile_accuracy=10_000,
-    )
-
-    params_df = scaler.fit(pm_df_long_imputed_selected)
-    sdm.write_parquet(
-        params_df,
-        PREPROCESSED_DATASET_PATH / "final_scaled" / "scaling_params_df",
-        mode="overwrite",
-    )
-    pm_df_long_scaled = scaler.transform(pm_df_long_imputed_selected)
-
-    # TODO: FIX
-    # temporary for excluding SKIP kpi-cells
-    clean_audit_df = scaler.summary().filter(f.col("scaler") != f.lit("SKIP"))
-
-    pm_df_long_scaled = pm_df_long_scaled.join(
-        f.broadcast(clean_audit_df.select("kpi_id", "distname").distinct()),
-        on=["kpi_id", "distname"],
-        how="inner",
-    )
 
     # COMBINE SCALED SEGMENTS TO ONE KPIS AGAIN
     # TODO: SAVING FOR VISUALS DATAFRAMES and DATA OVERALL
 
     # NOTE: INTERMEDIATE SAVE
-    # sdm.write_parquet(
-    #     pm_df_long_imputed_selected,
-    #     PREPROCESSED_DATASET_PATH / "intermediate" / "pm_df_long_imputed_selected",
-    #     mode="overwrite",
-    # )
-    # sdm.write_parquet(
-    #     good_windows_selected,
-    #     PREPROCESSED_DATASET_PATH / "intermediate" / "good_windows_selected",
-    #     mode="overwrite",
-    # )
+    sdm.write_parquet(
+        pm_df_long_scaled,
+        PREPROCESSED_DATASET_PATH / "intermediate" / "pm_df_long_imputed_selected",
+        mode="overwrite",
+    )
+    sdm.write_parquet(
+        good_windows_selected,
+        PREPROCESSED_DATASET_PATH / "intermediate" / "good_windows_selected",
+        mode="overwrite",
+    )
 
-    # pm_df_long_imputed_selected = sdm.read_parquet(
-    #     PREPROCESSED_DATASET_PATH / "intermediate" / "pm_df_long_imputed_selected"
-    # )
-    # good_windows_selected = sdm.read_parquet(
-    #     PREPROCESSED_DATASET_PATH / "intermediate" / "good_windows_selected"
-    # )
+    pm_df_long_scaled = sdm.read_parquet(
+        PREPROCESSED_DATASET_PATH / "intermediate" / "pm_df_long_imputed_selected"
+    )
+    good_windows_selected = sdm.read_parquet(
+        PREPROCESSED_DATASET_PATH / "intermediate" / "good_windows_selected"
+    )
 
     # print(
     #     pm_df_long_imputed_selected.select("kpi_id").distinct().rdd.flatMap(lambda x: x).collect()
@@ -362,7 +360,7 @@ def run_preprocessing(sdm: SparkDataManager, preprocessing_cfg: PreprocessingCon
     simple_reports = preprocessing_logic.simple_reports_pivot(simple_reports_df_raw)
 
     # TODO: FIX PIVOT NOT THIS:
-    wide = (
+    pm_df_wide_indexed_winds = (
         pm_df_long_indexed_winds.groupBy("distname", "bts_id", "window_anchor", "hour_idx")
         .pivot("kpi_id")
         .agg(f.first("kpi_value"))
@@ -377,32 +375,24 @@ def run_preprocessing(sdm: SparkDataManager, preprocessing_cfg: PreprocessingCon
     # [VERBOSE_DIAGNOSTICS] _log_pm_diag("after join with simple_reports", pm_df_long_indexed_winds_with_simple_reports)
 
     # Save preprocessed data
-    list_of_dfs = [
-        # pm_df_long_indexed_winds_with_simple_reports,
-        pm_df_long_indexed_winds,
-        wide,
-        pm_df_const_kpi,
-        kpi_definitions,
-        simple_reports,
-    ]
 
-    preprocessed_data_filenames = [
-        # "pm_data_dataset_preprocessed",
-        "pm_df_long_indexed_winds",
-        "pm_df_wide_indexed_winds",
-        "pm_data_const_kpi",
-        "kpi_definitions",
-        "simple_reports",
-    ]
+    dataset_paths_and_dfs: dict[str, DataFrame] = {
+        "pm_df_long_indexed_winds": pm_df_long_indexed_winds,
+        "pm_df_wide_indexed_winds": pm_df_wide_indexed_winds,
+        "scaling_params_df": params_df,
+        "pm_data_const_kpi": pm_df_const_kpi,
+        "kpi_definitions": kpi_definitions,
+        "simple_reports": simple_reports,
+    }
 
     # END OF PREPROCESSING
 
     # SAVE PREPROCESSED DATA
 
     # TODO: Integrate this with S3
-    for df, df_path in zip(list_of_dfs, preprocessed_data_filenames, strict=True):
+    for df_path, df in dataset_paths_and_dfs.items():
         sdm.write_parquet(
             df,
-            "/".join([str(PREPROCESSED_DATASET_PATH / "final_scaled"), df_path]),
+            "/".join([preprocessing_cfg.output_path_prefix, df_path]),
             mode="overwrite",
         )

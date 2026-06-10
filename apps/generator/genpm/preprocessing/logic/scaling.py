@@ -109,6 +109,10 @@ class GroupedKPIScaler:
             (q25 - q01) / iqr,
         )
 
+        zero_inflated = (f.col("mean_raw") / (f.col("max_raw") + f.lit(1e-8)) < f.lit(0.01)) & (
+            f.col("min_raw") >= f.lit(0.0)  # only for non-negative KPIs
+        )
+
         return stats_df.withColumns(
             {
                 "iqr_raw": q75 - q25,
@@ -117,12 +121,14 @@ class GroupedKPIScaler:
                 "scaler": (
                     f.when(f.col("n_valid") < f.lit(self.min_valid_points), f.lit("SKIP"))
                     .when(f.col("constant_raw") == f.lit(1), f.lit("const_val"))
-                    .when(outlier_score > f.lit(3.0), f.lit("robust"))
+                    .when(zero_inflated, f.lit("SKIP"))  # <-- add this
                     .when(
                         (f.abs(f.col("skew_raw")) > f.lit(2.0)) & (f.col("min_raw") > f.lit(0)),
                         f.lit("log_standard"),
                     )
+                    .when(outlier_score > f.lit(3.0), f.lit("robust"))
                     .when(f.col("kurt_raw") < f.lit(-0.8), f.lit("minmax"))
+                    .when(f.col("kurt_raw") > f.lit(3.0), f.lit("robust"))  # heavy tails → robust
                     .otherwise(f.lit("standard"))
                 ),
             }
@@ -147,6 +153,9 @@ class GroupedKPIScaler:
         base_df = choice_df.join(log_stats_df, on=self.group_cols, how="left")
 
         scaler = f.col("scaler")
+        zero_inflated = (f.col("mean_raw") / (f.col("max_raw") + f.lit(1e-8)) < f.lit(0.01)) & (
+            f.col("min_raw") >= f.lit(0.0)  # only for non-negative KPIs
+        )
 
         params_df = (
             base_df.withColumns(
@@ -155,7 +164,9 @@ class GroupedKPIScaler:
                         f.when(
                             f.col("n_valid") < f.lit(self.min_valid_points),
                             f.lit("too_few_valid_points"),
-                        ).otherwise(f.lit("ok"))
+                        )
+                        .when(zero_inflated, f.lit("zero_inflated_spike_kpi"))
+                        .otherwise(f.lit("ok"))
                     ),
                 }
             )
@@ -172,7 +183,16 @@ class GroupedKPIScaler:
                     "param_b": (
                         f.when(f.col("scaler") == "standard", f.col("std_raw") + f.lit(1e-8))
                         .when(f.col("scaler") == "const_val", f.lit(1))
-                        .when(f.col("scaler") == "robust", f.col("iqr_raw") + f.lit(1e-8))
+                        .when(
+                            f.col("scaler")
+                            == "robust",  # fall back to (q99-q01)/2 when IQR is tiny
+                            f.greatest(
+                                f.col("iqr_raw"),
+                                (f.col("q99") - f.col("q01")) / f.lit(2.0),
+                                f.lit(1e-3),  # absolute floor
+                            )
+                            + f.lit(1e-8),
+                        )
                         .when(f.col("scaler") == "minmax", f.col("range_raw") + f.lit(1e-8))
                         .when(f.col("scaler") == "log_standard", f.col("log_std") + f.lit(1e-8))
                     ),
@@ -275,8 +295,17 @@ class GroupedKPIScaler:
             )
             .otherwise(x)
         )
+        CLIP_BOUND = 10.0  # tunable
 
-        out = joined.withColumns({self.value_col: scaled_value})
+        # TODO: FIX THIS WITH FLAG
+        # hard clip for all scalers except minmax and const_val
+        # THIS ONLY AFFECTS 500 KPI CELLS ONLY
+        clipped_value = f.when(
+            scaler.isin("standard", "robust", "log_standard"),
+            f.least(f.greatest(scaled_value, f.lit(-CLIP_BOUND)), f.lit(CLIP_BOUND)),
+        ).otherwise(scaled_value)
+
+        out = joined.withColumns({self.value_col: clipped_value})
 
         out = out.drop(*self.PARAM_COLUMNS)
 
@@ -333,6 +362,52 @@ class GroupedKPIScaler:
         if self.audit_df is None:
             raise ValueError("Call fit() or load_params() first.")
         return self.audit_df
+
+
+class SimpleMinMaxScaler:
+    """MinMax scaler per group: x → (x - min) / (max - min + ε). Params saved as mm_min/mm_max."""
+
+    def __init__(self, value_col: str, group_cols: list[str]):
+        self.value_col = value_col
+        self.group_cols = group_cols
+        self.params_df: DataFrame | None = None
+
+    def fit(self, df: DataFrame) -> DataFrame:
+        v = f.col(self.value_col).cast("double")
+        self.params_df = df.groupBy(*self.group_cols).agg(
+            f.min(v).alias("mm_min"),
+            f.max(v).alias("mm_max"),
+        )
+        return self.params_df
+
+    @classmethod
+    def load_params(cls, params_df: DataFrame, value_col: str, group_cols: list[str]):
+        instance = cls(value_col=value_col, group_cols=group_cols)
+        instance.params_df = params_df
+        return instance
+
+    def _get_params_df(self) -> DataFrame:
+        if self.params_df is None:
+            raise ValueError("Params are not available. Call fit() or load_params() first.")
+        return f.broadcast(self.params_df)
+
+    def transform(self, df: DataFrame) -> DataFrame:
+        x = f.col(self.value_col).cast("double")
+        scaled = (x - f.col("mm_min")) / (f.col("mm_max") - f.col("mm_min") + f.lit(1e-8))
+        return (
+            df.join(self._get_params_df(), on=self.group_cols, how="left")
+            .withColumn(self.value_col, scaled)
+            .drop("mm_min", "mm_max")
+        )
+
+    def inverse_transform(self, df: DataFrame) -> DataFrame:
+        x = f.col(self.value_col).cast("double")
+        restored = x * (f.col("mm_max") - f.col("mm_min") + f.lit(1e-8)) + f.col("mm_min")
+        return (
+            df.join(self._get_params_df(), on=self.group_cols, how="left")
+            .withColumn(self.value_col, restored)
+            .drop("mm_min", "mm_max")
+        )
 
 
 # ---------------------------------------------------------------------------
