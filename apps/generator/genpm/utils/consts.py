@@ -76,10 +76,6 @@ SPARK_CONFIGS = {
         "spark.sql.autoBroadcastJoinThreshold": "25MB",
         "spark.driver.extraJavaOptions": "-XX:+UseG1GC",
         "spark.sql.execution.arrow.pyspark.enabled": "true",
-        # Disable RAPIDS
-        "spark.plugins": "",
-        "spark.rapids.sql.enabled": "false",
-        "spark.kryo.registrator": "",
     },
     # ============================================================
     # 4. WINDOW HEAVY (Full Resources Tuned)
