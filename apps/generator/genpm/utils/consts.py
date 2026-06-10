@@ -34,11 +34,6 @@ SPARK_CONFIGS = {
         "spark.sql.autoBroadcastJoinThreshold": "100MB",
         "spark.driver.extraJavaOptions": "-XX:+UseG1GC",
         "spark.sql.execution.arrow.pyspark.enabled": "true",
-
-        # Disable RAPIDS
-        "spark.plugins": "",
-        "spark.rapids.sql.enabled": "false",
-        "spark.kryo.registrator": "",
     },
     # ============================================================
     # 2. ONLY HALF
@@ -60,11 +55,6 @@ SPARK_CONFIGS = {
         "spark.sql.autoBroadcastJoinThreshold": "50MB",
         "spark.driver.extraJavaOptions": "-XX:+UseG1GC",
         "spark.sql.execution.arrow.pyspark.enabled": "true",
-
-        # Disable RAPIDS
-        "spark.plugins": "",
-        "spark.rapids.sql.enabled": "false",
-        "spark.kryo.registrator": "",
     },
     # ============================================================
     # 3. STANDARD (A FIFTH)
@@ -105,11 +95,6 @@ SPARK_CONFIGS = {
         "spark.sql.files.maxPartitionBytes": "128MB",
         "spark.driver.extraJavaOptions": "-XX:+UseG1GC",
         "spark.sql.execution.arrow.pyspark.enabled": "true",
-
-        # Disable RAPIDS
-        "spark.plugins": "",
-        "spark.rapids.sql.enabled": "false",
-        "spark.kryo.registrator": "",
     },
     # ============================================================
     # 5. JOIN HEAVY (Full Resources Tuned)
@@ -130,11 +115,6 @@ SPARK_CONFIGS = {
         "spark.sql.files.maxPartitionBytes": "256MB",
         "spark.driver.extraJavaOptions": "-XX:+UseG1GC",
         "spark.sql.execution.arrow.pyspark.enabled": "true",
-
-        # Disable RAPIDS
-        "spark.plugins": "",
-        "spark.rapids.sql.enabled": "false",
-        "spark.kryo.registrator": "",
     },
     # ============================================================
     # 6. AGGREGATION HEAVY (Full Resources Tuned)
@@ -154,44 +134,34 @@ SPARK_CONFIGS = {
         "spark.sql.files.maxPartitionBytes": "256MB",
         "spark.driver.extraJavaOptions": "-XX:+UseG1GC",
         "spark.sql.execution.arrow.pyspark.enabled": "true",
-
-        # Disable RAPIDS
-        "spark.plugins": "",
-        "spark.rapids.sql.enabled": "false",
-        "spark.kryo.registrator": "",
     },
+    # RAPIDS
     "RAPIDS": {
         "spark.master": "local[16]",
         "spark.driver.memory": "48g",
         "spark.memory.fraction": "0.75",
         "spark.memory.storageFraction": "0.30",
         "spark.sql.shuffle.partitions": "256",
-
         # RAPIDS plugin
         "spark.plugins": "com.nvidia.spark.SQLPlugin",
         "spark.rapids.sql.enabled": "true",
-
         # Kryo
         "spark.serializer": "org.apache.spark.serializer.KryoSerializer",
         "spark.kryo.registrator": "com.nvidia.spark.rapids.GpuKryoRegistrator",
-
         # AQE
         "spark.sql.adaptive.enabled": "true",
         "spark.sql.adaptive.coalescePartitions.enabled": "true",
         "spark.sql.adaptive.skewJoin.enabled": "true",
         "spark.sql.execution.arrow.pyspark.enabled": "true",
-
         # Setting up GPU
         "spark.rapids.sql.concurrentGpuTasks": "6",
         "spark.rapids.memory.pinnedPool.size": "8g",
         "spark.rapids.sql.explain": "NOT_ON_GPU",
-
         "spark.rapids.sql.batchSizeBytes": "536870912",
-
         "spark.rapids.memory.gpu.pooling.enabled": "true",
         "spark.rapids.memory.gpu.allocFraction": "0.90",
         "spark.rapids.memory.gpu.reserve": "2g",
-    }
+    },
 }
 
 # Grouping KPIs based on agg character
