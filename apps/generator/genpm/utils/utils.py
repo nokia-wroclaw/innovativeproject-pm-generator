@@ -41,12 +41,17 @@ class SparkDataManager:
             # Additional Spark optimizations
             .config("spark.sql.adaptive.enabled", "true")
             .config("spark.sql.adaptive.skewJoin.enabled", "true")
+            # Disable RAPIDS
+            .config("spark.plugins", "")
+            .config("spark.rapids.sql.enabled", "false")
+            .config("spark.kryo.registrator", "")
         )
 
         for conf, val in minio_spark_conf().items():
             builder = builder.config(conf, val)
 
         if spark_conf is not None:
+            logger.info(f"ADDITIONALL SPARK CONFIG ADDED: {spark_conf}")
             for conf, val in spark_conf.items():
                 builder = builder.config(conf, val)
 
