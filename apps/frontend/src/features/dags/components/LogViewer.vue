@@ -94,7 +94,8 @@
     >
       <div v-if="!filteredLines.length" class="p-6 text-center text-slate-500">
         <span v-if="streamState === 'error'">Stream error — see badge for details.</span>
-        <span v-else-if="streamState === 'live' && !lines.length">Waiting for first log lines…</span>
+        <span v-else-if="isTaskPending() && streamState === 'idle'">Task is queued, waiting for it to start.</span>
+        <span v-else-if="streamState === 'live' && !lines.length">Waiting for first log lines.</span>
         <span v-else-if="!lines.length">No logs yet.</span>
         <span v-else>No lines match the current filter.</span>
       </div>
@@ -226,12 +227,18 @@ async function startStream() {
   errorMessage.value = '';
 
   const isLatest = selectedTry.value === props.currentTryNumber;
-  const taskIsRunning = props.taskStatus === 'running' || props.taskStatus === 'queued';
+
+  if (isLatest && isTaskPending()) {
+    streamState.value = 'idle';
+    return;
+  }
+
+  const taskIsActive = props.taskStatus === 'running' || props.taskStatus === 'queued';
 
   // Step 1: ALWAYS fetch historical first. This is the most reliable path —
   // the REST endpoint returns the full log buffer Airflow has on disk,
   // regardless of whether the task is still running or has finished.
-  streamState.value = isLatest && taskIsRunning ? 'live' : 'idle';
+  streamState.value = isLatest && taskIsActive ? 'live' : 'idle';
   try {
     await fetchHistorical(selectedTry.value);
   } catch (err) {
@@ -242,7 +249,7 @@ async function startStream() {
 
   // Step 2: if the task is still running and the user is looking at the
   // current attempt, follow up with SSE for incremental tail.
-  if (!isLatest || !taskIsRunning) {
+  if (!isLatest || !taskIsActive) {
     streamState.value = 'done';
     return;
   }
@@ -314,12 +321,15 @@ watch(
   { immediate: true },
 );
 
-// When a task finishes mid-view (running → success/failed), upgrade from SSE
-// to a final REST refresh so the user sees the closing log lines.
 watch(
   () => props.taskStatus,
   (newStatus, oldStatus) => {
-    if (oldStatus === 'running' && newStatus !== 'running') {
+    const wasIdle = oldStatus === 'queued' || oldStatus === 'scheduled' || oldStatus === 'none';
+    const nowRunning = newStatus === 'running';
+    const wasRunning = oldStatus === 'running';
+    const nowFinished = ['success', 'failed', 'skipped', 'up_for_retry'].includes(newStatus);
+
+    if ((wasIdle && nowRunning) || (wasRunning && nowFinished)) {
       void startStream();
     }
   },

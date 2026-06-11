@@ -72,8 +72,6 @@ class AirflowClient:
             params={"update_mask": ",".join(update_mask)} if update_mask else None,
         )
 
-    async def get_dag_details(self, dag_id: str) -> dict[str, Any]:
-        return await self._request("GET", f"/dags/{_path_segment(dag_id)}/details")
 
     async def list_dag_tasks(self, dag_id: str) -> dict[str, Any]:
         return await self._request("GET", f"/dags/{_path_segment(dag_id)}/tasks")
@@ -146,7 +144,7 @@ class AirflowClient:
         dag_id: str,
         *,
         conf: dict[str, Any] | None = None,
-        dag_run_id: str | None = None,
+        run_id: str | None = None,
         logical_date: str | None = None,
         note: str | None = None,
     ) -> dict[str, Any]:
@@ -157,17 +155,17 @@ class AirflowClient:
             "logical_date": run_moment,
             "run_after": run_moment,
         }
-        if dag_run_id is not None:
-            body["dag_run_id"] = dag_run_id
+        if run_id is not None:
+            body["dag_run_id"] = run_id
         if conf is not None:
             body["conf"] = conf
         if note is not None:
             body["note"] = note
         raw = await self._request("POST", f"/dags/{_path_segment(dag_id)}/dagRuns", json=body)
         logger.info(
-            "trigger_dag %s dag_run_id=%s response_keys=%s",
+            "trigger_dag %s run_id=%s response_keys=%s",
             dag_id,
-            dag_run_id,
+            run_id,
             list(raw.keys()) if raw else [],
         )
         return raw
@@ -210,16 +208,6 @@ class AirflowClient:
             "POST", f"/dags/{_path_segment(dag_id)}/clearTaskInstances", json=body
         )
 
-    async def healthcheck(self) -> dict[str, Any]:
-        if self._client is None:
-            raise AirflowUnavailable("Airflow client not started")
-        try:
-            response = await self._client.get(f"{self._settings.base_url}/api/v2/monitor/health")
-        except httpx.HTTPError as exc:
-            raise AirflowUnavailable(f"Cannot reach Airflow: {exc}") from exc
-        if response.status_code >= 500:
-            raise AirflowUnavailable(f"Airflow health returned {response.status_code}")
-        return cast(dict[str, Any], response.json())
 
     async def _request(
         self,
@@ -240,10 +228,8 @@ class AirflowClient:
             retry=retry_if_exception_type((AirflowUnavailable, httpx.HTTPError)),
         )
 
-        attempt = 0
         async for attempt_ctx in retrying:
             with attempt_ctx:
-                attempt += 1
                 response = await self._send(method, path, params=params, json=json, accept=accept)
                 if response.status_code in _RETRYABLE_STATUSES:
                     raise AirflowUnavailable(

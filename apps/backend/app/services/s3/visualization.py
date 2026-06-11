@@ -6,7 +6,8 @@ from typing import Any
 from fastapi import HTTPException
 
 from app.db.schemas import DagRunStatus, Dataset, DatasetStatus, DatasetType, TaskStatus
-from app.models.dags import TriggerRequest
+from app.models.auth import TokenPayload
+from app.models.dags import DagRunSummary, TriggerRequest
 from app.models.s3 import DatasetVisualizationResponse, DatasetVisualizationStatusResponse
 from app.services.airflow.errors import AirflowIntegrationError, AirflowNotFound
 from app.services.airflow.runtime import get_airflow_client, get_airflow_service
@@ -33,7 +34,7 @@ logger = logging.getLogger(__name__)
 
 
 class VisualizationSchemaError(Exception):
-    def __init__(self, payload: dict[str, Any]) -> None:
+    def __init__(self, payload: TokenPayload) -> None:
         self.payload = payload
         super().__init__(str(payload.get("message", "Unsupported dataset schema")))
 
@@ -61,7 +62,7 @@ def check_dataset_pm_schema(s3_service: S3Service, dataset: Dataset) -> dict[str
 def _unsupported_status_response(
     *,
     dataset_id: int,
-    payload: dict[str, Any],
+    payload: TokenPayload,
     run_id: str | None = None,
 ) -> DatasetVisualizationStatusResponse:
     return DatasetVisualizationStatusResponse(
@@ -75,12 +76,8 @@ def _unsupported_status_response(
 
 
 def is_raw_completed(dataset: Dataset) -> bool:
-    status = (
-        dataset.status.value if isinstance(dataset.status, DatasetStatus) else str(dataset.status)
-    )
-    dataset_type = (
-        dataset.type.value if isinstance(dataset.type, DatasetType) else str(dataset.type)
-    )
+    status = str(dataset.status)
+    dataset_type = str(dataset.type)
     return dataset_type == DatasetType.RAW.value and status == DatasetStatus.COMPLETED.value
 
 
@@ -109,8 +106,8 @@ async def trigger_dataset_visualization(
         DATASET_VISUALIZATION_DAG_ID,
         body=TriggerRequest(
             conf=conf,
-            dag_run_id=run_id,
-            note="Dataset visualization (PM summary)",
+            run_id=run_id,
+            note=f"Dashboard calculation for {dataset.file_name}",
         ),
         triggered_by=triggered_by,
     )
@@ -195,23 +192,22 @@ def _conf_dataset_id(conf: Any) -> int | None:
 _ACTIVE_RUN_STATES = frozenset({"running", "queued", "scheduled", "up_for_retry", "restarting"})
 
 
-def _run_matches_dataset(run: dict[str, Any], dataset_id: int) -> bool:
-    if _conf_dataset_id(run.get("conf")) == dataset_id:
+def _run_matches_dataset(run: DagRunSummary, dataset_id: int) -> bool:
+    if _conf_dataset_id(run.conf) == dataset_id:
         return True
     run_id_prefix = f"genpm_viz_{dataset_id}_"
-    return str(run.get("dag_run_id") or "").startswith(run_id_prefix)
+    return run.run_id.startswith(run_id_prefix)
 
 
 def _find_latest_run_for_dataset(
-    runs: list[dict[str, Any]], dataset_id: int
-) -> dict[str, Any] | None:
+    runs: list[DagRunSummary], dataset_id: int
+) -> DagRunSummary | None:
     matched = [run for run in runs if _run_matches_dataset(run, dataset_id)]
     if not matched:
         return None
 
     for run in matched:
-        state = str(run.get("state") or "").lower()
-        if state in _ACTIVE_RUN_STATES:
+        if str(run.status) in _ACTIVE_RUN_STATES:
             return run
 
     return matched[0]
@@ -379,13 +375,12 @@ async def get_dataset_visualization_status(
             )
 
     service = airflow or get_airflow_service()
-    client = get_airflow_client()
 
     try:
-        raw_list = await client.list_dag_runs(
+        runs = await service.list_dag_runs(
             DATASET_VISUALIZATION_DAG_ID,
             limit=100,
-            order_by="-start_date",
+            order_by="-logical_date",
         )
     except (AirflowNotFound, AirflowIntegrationError) as exc:
         logger.warning("Could not list visualization DAG runs: %s", exc)
@@ -399,9 +394,8 @@ async def get_dataset_visualization_status(
             ),
         )
 
-    runs = list(raw_list.get("dag_runs", []) or [])
-    raw_run = _find_latest_run_for_dataset(runs, dataset_id)
-    if raw_run is None:
+    run = _find_latest_run_for_dataset(runs, dataset_id)
+    if run is None:
         return DatasetVisualizationStatusResponse(
             dataset_id=dataset_id,
             dag_id=DATASET_VISUALIZATION_DAG_ID,
@@ -409,9 +403,8 @@ async def get_dataset_visualization_status(
             message="No visualization run found for this dataset yet.",
         )
 
-    run_id = str(raw_run.get("dag_run_id") or "")
-    run = await service.get_dag_run(DATASET_VISUALIZATION_DAG_ID, run_id)
-    status = run.status.value if hasattr(run.status, "value") else str(run.status)
+    run_id = run.run_id
+    status = str(run.status)
 
     try:
         artifact = load_visualization_artifact(dataset.s3_key)
@@ -438,11 +431,7 @@ async def get_dataset_visualization_status(
     if status in {DagRunStatus.QUEUED.value, DagRunStatus.RUNNING.value}:
         spark_task = await _get_spark_task(service, run_id)
         if spark_task is not None:
-            task_status = (
-                spark_task.status.value
-                if hasattr(spark_task.status, "value")
-                else str(spark_task.status)
-            )
+            task_status = str(spark_task.status)
             if task_status == TaskStatus.FAILED.value:
                 return await _failed_run_response(
                     dataset_id=dataset_id,

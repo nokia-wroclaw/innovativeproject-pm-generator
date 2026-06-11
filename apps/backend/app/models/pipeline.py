@@ -20,3 +20,8 @@ class PipelineRunRead(BaseModel):
 class PipelineRunCreate(BaseModel):
     dataset_id: int
     pipeline_type: PipelineType
+
+
+class PipelineRunDeleteResponse(BaseModel):
+    message: str
+    run_id: int

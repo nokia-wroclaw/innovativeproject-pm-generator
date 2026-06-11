@@ -5,6 +5,8 @@ from typing import Any
 
 from botocore.exceptions import ClientError  # type: ignore[import-untyped]
 
+from app.models.auth import TokenPayload
+
 logger = logging.getLogger(__name__)
 
 
@@ -13,13 +15,13 @@ class VisualizationStorageError(RuntimeError):
 
 
 def _require_s3_bucket() -> str:
-    from app.services.s3.service import S3_BUCKET
-
-    if not S3_BUCKET:
+    from app.core.config import get_settings
+    bucket = get_settings().s3_bucket
+    if not bucket:
         raise VisualizationStorageError(
             "S3_BUCKET is not configured; cannot read or write visualization artifacts."
         )
-    return S3_BUCKET
+    return bucket
 
 
 def dataset_visualization_prefix(dataset_s3_key: str) -> str:
@@ -53,11 +55,11 @@ def kpi_analysis_artifact_key(dataset_s3_key: str) -> str:
 
 
 def read_s3_json_artifact(key: str) -> dict[str, Any] | None:
-    from app.services.s3.service import s3_client_internal
+    from app.services.s3.service import get_s3_client_internal
 
     bucket = _require_s3_bucket()
     try:
-        response = s3_client_internal.get_object(Bucket=bucket, Key=key)
+        response = get_s3_client_internal().get_object(Bucket=bucket, Key=key)
         body = response["Body"].read()
         payload = json.loads(body.decode("utf-8"))
         if isinstance(payload, dict):
@@ -84,14 +86,14 @@ def load_visualization_artifact(dataset_s3_key: str) -> dict[str, Any] | None:
     return None
 
 
-def persist_unsupported_schema_artifact(dataset_s3_key: str, payload: dict[str, Any]) -> None:
-    from app.services.s3.service import s3_client_internal
+def persist_unsupported_schema_artifact(dataset_s3_key: str, payload: TokenPayload) -> None:
+    from app.services.s3.service import get_s3_client_internal
 
     bucket = _require_s3_bucket()
     _, error_key = visualization_artifact_keys(dataset_s3_key)
     body = json.dumps(payload, ensure_ascii=False, default=str).encode("utf-8")
     try:
-        s3_client_internal.put_object(
+        get_s3_client_internal().put_object(
             Bucket=bucket,
             Key=error_key,
             Body=body,

@@ -20,13 +20,8 @@ from app.services.airflow.client import AirflowClient
 from app.services.airflow.config import AirflowSettings
 from app.services.airflow.errors import AirflowIntegrationError, AirflowNotFound
 from app.services.airflow.mapper import (
-    map_dag_details,
     map_dag_graph,
-    map_dag_run,
-    map_dag_summary,
     map_log_chunk,
-    map_task_instance,
-    map_task_try,
 )
 
 logger = logging.getLogger(__name__)
@@ -59,22 +54,26 @@ class AirflowService:
         dag_raw, tasks_raw, runs_raw = await asyncio.gather(
             self._client.get_dag(dag_id),
             self._client.list_dag_tasks(dag_id),
-            self._client.list_dag_runs(dag_id, limit=10),
+            self._client.list_dag_runs(dag_id, limit=10, order_by="-logical_date"),
         )
 
         graph = map_dag_graph(tasks_raw)
-        recent_runs = [map_dag_run(r) for r in runs_raw.get("dag_runs", []) or []]
+        recent_runs = [DagRunSummary.model_validate(r) for r in runs_raw.get("dag_runs", []) or []]
         last_run = recent_runs[0] if recent_runs else None
         stats = _aggregate_stats_from_runs(recent_runs)
-        summary = map_dag_summary(dag_raw, last_run=last_run, stats=stats)
+        
+        # Merge extra fields into the dict before validation
+        dag_raw["last_run"] = last_run
+        dag_raw["stats_24h"] = stats
+        summary = DagSummary.model_validate(dag_raw)
 
-        return map_dag_details(summary=summary, graph=graph, recent_runs=recent_runs)
+        return DagDetails(summary=summary, graph=graph, recent_runs=recent_runs)
 
     async def list_dag_runs(
-        self, dag_id: str, *, limit: int = 50, offset: int = 0
+        self, dag_id: str, limit: int = 50, offset: int = 0, order_by: str = "-start_date"
     ) -> list[DagRunSummary]:
-        raw = await self._client.list_dag_runs(dag_id, limit=limit, offset=offset)
-        return [map_dag_run(r) for r in raw.get("dag_runs", []) or []]
+        raw = await self._client.list_dag_runs(dag_id, limit=limit, offset=offset, order_by=order_by)
+        return [DagRunSummary.model_validate(r) for r in raw.get("dag_runs", []) or []]
 
     async def get_dag_run(self, dag_id: str, run_id: str) -> DagRunSummary:
         raw = await self._fetch_dag_run_raw(
@@ -82,7 +81,7 @@ class AirflowService:
             run_id,
             genpm_run_id=run_id if run_id.startswith("genpm_") else None,
         )
-        return map_dag_run(raw)
+        return DagRunSummary.model_validate(raw)
 
     async def list_task_instances(self, dag_id: str, run_id: str) -> list[TaskInstance]:
         raw = await self._client.list_task_instances(dag_id, run_id)
@@ -94,15 +93,15 @@ class AirflowService:
             len(items),
             list(raw.keys()),
         )
-        return [map_task_instance(ti) for ti in items]
+        return [TaskInstance.model_validate(ti) for ti in items]
 
     async def get_task_instance(self, dag_id: str, run_id: str, task_id: str) -> TaskInstance:
         raw = await self._client.get_task_instance(dag_id, run_id, task_id)
-        return map_task_instance(raw)
+        return TaskInstance.model_validate(raw)
 
     async def list_task_tries(self, dag_id: str, run_id: str, task_id: str) -> list[TaskTry]:
         raw = await self._client.list_task_tries(dag_id, run_id, task_id)
-        return [map_task_try(t) for t in (raw.get("task_instances", []) or [])]
+        return [TaskTry.model_validate(t) for t in (raw.get("task_instances", []) or [])]
 
     async def get_task_logs_page(
         self,
@@ -130,21 +129,21 @@ class AirflowService:
         raw = await self._client.trigger_dag(
             dag_id,
             conf=body.conf,
-            dag_run_id=body.dag_run_id,
+            run_id=body.run_id,
             logical_date=logical_date,
             note=note,
         )
         self._invalidate_dag_list_cache()
-        requested_id = str(body.dag_run_id or "")
+        requested_id = str(body.run_id or "")
         resolved_raw = await self._fetch_dag_run_raw(
             dag_id,
-            _dag_run_id_from_payload(raw) or requested_id,
+            _run_id_from_payload(raw) or requested_id,
             genpm_run_id=requested_id or None,
         )
-        run_id = _dag_run_id_from_payload(resolved_raw)
+        run_id = _run_id_from_payload(resolved_raw)
         if not run_id:
             raise AirflowIntegrationError(
-                f"Airflow triggered '{dag_id}' but returned no dag_run_id.",
+                f"Airflow triggered '{dag_id}' but returned no run_id.",
             )
         return ActionResponse(
             run_id=run_id,
@@ -178,7 +177,7 @@ class AirflowService:
 
         raw_list = await self._client.list_dag_runs(dag_id, limit=100)
         for item in raw_list.get("dag_runs", []) or []:
-            item_id = _dag_run_id_from_payload(item)
+            item_id = _run_id_from_payload(item)
             if item_id and item_id in lookup_ids:
                 return cast(dict[str, Any], item)
             item_conf = item.get("conf")
@@ -285,7 +284,9 @@ class AirflowService:
                 last_run, stats = None, DagStats()
             else:
                 last_run, stats = fetched
-            summaries.append(map_dag_summary(dag_payload, last_run=last_run, stats=stats))
+            dag_payload["last_run"] = last_run
+            dag_payload["stats_24h"] = stats
+            summaries.append(DagSummary.model_validate(dag_payload))
         return summaries
 
     async def _fetch_dag_recent_window(
@@ -297,7 +298,7 @@ class AirflowService:
             raw = await self._client.list_dag_runs(dag_id, limit=200, start_date_gte=start_date_gte)
         except AirflowNotFound:
             return None, DagStats()
-        runs = [map_dag_run(r) for r in raw.get("dag_runs", []) or []]
+        runs = [DagRunSummary.model_validate(r) for r in raw.get("dag_runs", []) or []]
         stats = _aggregate_stats_from_runs(runs)
         last_run: DagRunSummary | None = None
         if runs:
@@ -315,11 +316,10 @@ def _aggregate_stats_from_runs(runs: list[DagRunSummary]) -> DagStats:
     return DagStats(success=success, failed=failed, running=running, total=len(runs))
 
 
-def _dag_run_id_from_payload(raw: dict[str, Any]) -> str:
-    for key in ("dag_run_id", "run_id"):
-        value = raw.get(key)
-        if isinstance(value, str) and value:
-            return value
+def _run_id_from_payload(raw: dict[str, Any]) -> str:
+    value = raw.get("dag_run_id")
+    if isinstance(value, str) and value:
+        return value
     return ""
 
 

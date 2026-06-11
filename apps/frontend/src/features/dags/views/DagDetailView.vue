@@ -227,18 +227,23 @@ function runIdFromRouteQuery() {
 
 watch(
   [recentRuns, () => route.query.run],
-  (runs) => {
+  ([runs, queryRun]) => {
     const fromQuery = runIdFromRouteQuery();
-    if (fromQuery && runs.find((r) => r.run_id === fromQuery)) {
+
+    if (fromQuery) {
       selectedRunId.value = fromQuery;
       return;
     }
+
     if (!selectedRunId.value && runs.length) {
       selectedRunId.value = runs[0].run_id;
       return;
     }
+
     if (selectedRunId.value && !runs.find((r) => r.run_id === selectedRunId.value)) {
-      selectedRunId.value = runs[0]?.run_id ?? null;
+      if (!fromQuery) {
+        selectedRunId.value = runs[0]?.run_id ?? null;
+      }
     }
   },
   { immediate: true },

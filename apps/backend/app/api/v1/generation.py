@@ -24,7 +24,3 @@ def generate(
     return GenerationRead.model_validate(generate_response)
 
 
-# dummy endpoint for testing
-@router.get("/test", response_model=list[GenerationRead])
-def test(service: GenerationService = Depends(get_generation_service)) -> list[GenerationRead]:
-    return [GenerationRead(name=f"Generation {i}", number=i) for i in range(1, 68)]

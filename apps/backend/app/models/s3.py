@@ -23,11 +23,6 @@ class DatasetCreate(BaseModel):
     type: DatasetType = DatasetType.RAW
 
 
-class UploadUrlResponse(BaseModel):
-    url: str
-    file_name: str
-
-
 class DatasetStatusUpdate(BaseModel):
     dataset_id: int
     status: DatasetStatus
@@ -60,6 +55,23 @@ class MultipartInitiateResponse(BaseModel):
 
 class PartUrlResponse(BaseModel):
     url: str
+
+
+class CompleteMultipartResponse(BaseModel):
+    Location: str | None = None
+    Bucket: str | None = None
+    Key: str | None = None
+    ETag: str | None = None
+
+
+class AbortMultipartResponse(BaseModel):
+    status: str
+
+
+class DeleteDatasetResponse(BaseModel):
+    message: str
+    dataset_id: int
+    deleted_from_s3: bool
 
 
 class TablePreview(BaseModel):

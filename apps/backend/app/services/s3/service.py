@@ -18,8 +18,10 @@ from botocore.exceptions import ClientError  # type: ignore[import-untyped]
 from fastapi import HTTPException
 from sqlalchemy.orm import Session
 
-from app.core.config import settings
+from app.core.base_service import BaseService
+from app.core.config import get_settings
 from app.db.schemas import Dataset, DatasetStatus, DatasetType
+from app.models.s3 import DatasetCreate, DatasetStatusUpdate
 
 PREVIEW_ROW_LIMIT = 5
 CSV_PREVIEW_RANGE_BYTES = 4 * 1024 * 1024
@@ -27,25 +29,26 @@ MAX_PREVIEW_TABLES = 50
 SUPPORTED_PREVIEW_EXTENSIONS = {".parquet", ".csv"}
 
 
-s3_client_internal = boto3.client(
-    "s3",
-    endpoint_url=str(settings.s3_url),
-    config=Config(signature_version="s3v4", s3={"addressing_style": "path"}),
-)
+@lru_cache
+def get_s3_client_internal():
+    return boto3.client(
+        "s3",
+        endpoint_url=str(get_settings().s3_url),
+        config=Config(signature_version="s3v4", s3={"addressing_style": "path"}),
+    )
 
-
-s3_client_external = boto3.client(
-    "s3",
-    endpoint_url=str(settings.s3_external_url),
-    config=Config(signature_version="s3v4", s3={"addressing_style": "path"}),
-)
-
-S3_BUCKET = os.getenv("S3_BUCKET")
+@lru_cache
+def get_s3_client_external():
+    return boto3.client(
+        "s3",
+        endpoint_url=str(get_settings().s3_external_url),
+        config=Config(signature_version="s3v4", s3={"addressing_style": "path"}),
+    )
 
 
 @lru_cache
 def _get_s3_filesystem() -> pafs.S3FileSystem:
-    parsed = urlparse(str(settings.s3_url))
+    parsed = urlparse(str(get_settings().s3_url))
     scheme = parsed.scheme or "http"
     endpoint = parsed.netloc or parsed.path.lstrip("/")
 
@@ -58,11 +61,11 @@ def _get_s3_filesystem() -> pafs.S3FileSystem:
     )
 
 
-class S3Service:
+class S3Service(BaseService[Dataset, DatasetCreate, DatasetStatusUpdate]):
     def __init__(self, db: Session):
-        self._db = db
-        self.s3_client_internal = s3_client_internal
-        self.s3_client_external = s3_client_external
+        super().__init__(Dataset, db)
+        self.s3_client_internal = get_s3_client_internal()
+        self.s3_client_external = get_s3_client_external()
 
     def create_dataset(
         self, user_uuid: uuid.UUID, file_name: str, s3_key: str, type: DatasetType = DatasetType.RAW
@@ -90,7 +93,7 @@ class S3Service:
         self, user_uuid: uuid.UUID, s3_key: str, file_name: str | None = None, type: DatasetType = DatasetType.RAW
     ) -> Dataset:
         try:
-            self.s3_client_internal.head_object(Bucket=S3_BUCKET, Key=s3_key)
+            self.s3_client_internal.head_object(Bucket=get_settings().s3_bucket, Key=s3_key)
         except Exception as e:
             raise HTTPException(
                 status_code=404,
@@ -125,7 +128,7 @@ class S3Service:
     def initiate_multipart_upload(self, dataset: Dataset) -> dict[str, Any]:
         try:
             response = self.s3_client_internal.create_multipart_upload(
-                Bucket=S3_BUCKET, Key=dataset.s3_key
+                Bucket=get_settings().s3_bucket, Key=dataset.s3_key
             )
             return {"upload_id": response["UploadId"], "s3_key": dataset.s3_key}
         except Exception as e:
@@ -138,7 +141,7 @@ class S3Service:
             presigned_url = self.s3_client_external.generate_presigned_url(
                 ClientMethod="upload_part",
                 Params={
-                    "Bucket": S3_BUCKET,
+                    "Bucket": get_settings().s3_bucket,
                     "Key": s3_key,
                     "UploadId": upload_id,
                     "PartNumber": part_number,
@@ -157,7 +160,7 @@ class S3Service:
     ) -> dict[str, Any]:
         try:
             response = self.s3_client_internal.complete_multipart_upload(
-                Bucket=S3_BUCKET, Key=s3_key, UploadId=upload_id, MultipartUpload={"Parts": parts}
+                Bucket=get_settings().s3_bucket, Key=s3_key, UploadId=upload_id, MultipartUpload={"Parts": parts}
             )
             return cast(dict[str, Any], response)
         except Exception as e:
@@ -166,7 +169,7 @@ class S3Service:
     def abort_multipart_upload(self, s3_key: str, upload_id: str) -> None:
         try:
             self.s3_client_internal.abort_multipart_upload(
-                Bucket=S3_BUCKET, Key=s3_key, UploadId=upload_id
+                Bucket=get_settings().s3_bucket, Key=s3_key, UploadId=upload_id
             )
         except Exception as e:
             raise HTTPException(
@@ -178,7 +181,7 @@ class S3Service:
 
         if delete_from_s3:
             try:
-                self.s3_client_internal.delete_object(Bucket=S3_BUCKET, Key=dataset.s3_key)
+                self.s3_client_internal.delete_object(Bucket=get_settings().s3_bucket, Key=dataset.s3_key)
             except Exception as e:
                 raise HTTPException(
                     status_code=400,
@@ -220,11 +223,11 @@ class S3Service:
 
         if extension == ".csv":
             try:
-                head = self.s3_client_internal.head_object(Bucket=S3_BUCKET, Key=object_key)
+                head = self.s3_client_internal.head_object(Bucket=get_settings().s3_bucket, Key=object_key)
                 content_length = head.get("ContentLength", CSV_PREVIEW_RANGE_BYTES)
                 range_end = max(0, min(content_length, CSV_PREVIEW_RANGE_BYTES) - 1)
                 response = self.s3_client_internal.get_object(
-                    Bucket=S3_BUCKET,
+                    Bucket=get_settings().s3_bucket,
                     Key=object_key,
                     Range=f"bytes=0-{range_end}",
                 )
@@ -232,7 +235,7 @@ class S3Service:
             except ClientError as exc:
                 error_code = exc.response.get("Error", {}).get("Code", "")
                 if error_code in {"InvalidRange", "416"}:
-                    response = self.s3_client_internal.get_object(Bucket=S3_BUCKET, Key=object_key)
+                    response = self.s3_client_internal.get_object(Bucket=get_settings().s3_bucket, Key=object_key)
                     body = response["Body"].read()
                 else:
                     raise
@@ -279,7 +282,7 @@ class S3Service:
         extension = Path(s3_key).suffix.lower()
         if extension in SUPPORTED_PREVIEW_EXTENSIONS:
             try:
-                self.s3_client_internal.head_object(Bucket=S3_BUCKET, Key=s3_key)
+                self.s3_client_internal.head_object(Bucket=get_settings().s3_bucket, Key=s3_key)
                 return [(Path(s3_key).name or s3_key, s3_key)]
             except ClientError as exc:
                 error_code = exc.response.get("Error", {}).get("Code", "")
@@ -294,7 +297,7 @@ class S3Service:
         paginator = self.s3_client_internal.get_paginator("list_objects_v2")
 
         for prefix in prefixes:
-            for page in paginator.paginate(Bucket=S3_BUCKET, Prefix=prefix):
+            for page in paginator.paginate(Bucket=get_settings().s3_bucket, Prefix=prefix):
                 for obj in page.get("Contents", []):
                     key = obj["Key"]
                     if key.endswith("/"):
@@ -318,7 +321,7 @@ class S3Service:
         return discovered[:MAX_PREVIEW_TABLES]
 
     def _s3_object_path(self, s3_key: str) -> str:
-        return f"{S3_BUCKET}/{s3_key}"
+        return f"{get_settings().s3_bucket}/{s3_key}"
 
     def _preview_object(self, s3_key: str) -> tuple[list[str], list[dict[str, object]]]:
         extension = Path(s3_key).suffix.lower()
@@ -369,13 +372,13 @@ class S3Service:
 
     def _read_csv_preview_from_s3(self, s3_key: str) -> tuple[list[str], list[dict[str, object]]]:
         try:
-            head = self.s3_client_internal.head_object(Bucket=S3_BUCKET, Key=s3_key)
+            head = self.s3_client_internal.head_object(Bucket=get_settings().s3_bucket, Key=s3_key)
             content_length = head.get("ContentLength", CSV_PREVIEW_RANGE_BYTES)
             range_end = max(0, min(content_length, CSV_PREVIEW_RANGE_BYTES) - 1)
             range_header = f"bytes=0-{range_end}"
 
             response = self.s3_client_internal.get_object(
-                Bucket=S3_BUCKET,
+                Bucket=get_settings().s3_bucket,
                 Key=s3_key,
                 Range=range_header,
             )
@@ -383,7 +386,7 @@ class S3Service:
         except ClientError as exc:
             error_code = exc.response.get("Error", {}).get("Code", "")
             if error_code in {"InvalidRange", "416"}:
-                response = self.s3_client_internal.get_object(Bucket=S3_BUCKET, Key=s3_key)
+                response = self.s3_client_internal.get_object(Bucket=get_settings().s3_bucket, Key=s3_key)
                 body = response["Body"].read()
             else:
                 raise
