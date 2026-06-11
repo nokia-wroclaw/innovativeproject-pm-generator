@@ -36,7 +36,8 @@ logger = logging.getLogger(__name__)
 class VisualizationSchemaError(Exception):
     def __init__(self, payload: TokenPayload) -> None:
         self.payload = payload
-        super().__init__(str(payload.get("message", "Unsupported dataset schema")))
+        msg = str(payload.message) if payload.message else "Unsupported dataset schema"
+        super().__init__(msg)   
 
 
 def check_dataset_pm_schema(s3_service: S3Service, dataset: Dataset) -> dict[str, Any] | None:
@@ -70,7 +71,7 @@ def _unsupported_status_response(
         dag_id=DATASET_VISUALIZATION_DAG_ID,
         run_id=run_id,
         status="unsupported_schema",
-        message=payload.get("message"),
+        message=payload.message,
         summary=payload,
     )
 

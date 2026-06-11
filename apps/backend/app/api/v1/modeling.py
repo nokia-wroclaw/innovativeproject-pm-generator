@@ -4,7 +4,7 @@ from typing import Literal
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 
-from app.core.auth import assert_modeling_admin, require_auth, require_modeling_admin
+from app.core.auth import assert_modeling_admin, get_user_identity, require_auth, require_modeling_admin
 from app.db.database import db_manager
 from app.db.schemas import DagRunStatus, DatasetStatus
 from app.models.auth import TokenPayload
@@ -108,9 +108,6 @@ def _get_s3_service(db: Session = Depends(db_manager.get_db)) -> S3Service:
 def _airflow_service() -> AirflowService:
     return get_airflow_service()
 
-
-def _identity(payload: TokenPayload) -> str | None:
-    return getattr(payload, "preferred_username", None) or getattr(payload, "email", None) or getattr(payload, "sub", None)
 
 
 def _mock_logs(status: DagRunStatus, process_type: ModelingProcessType) -> list[str]:
@@ -264,7 +261,7 @@ async def trigger_generate_run(
                 dag_run_id=run_id,
                 note="Modeling process generate",
             ),
-            triggered_by=_identity(user),
+            triggered_by=get_user_identity(user),
         )
     except AirflowNotFound as exc:
         raise HTTPException(
@@ -331,7 +328,7 @@ async def trigger_modeling_run(
                 dag_run_id=run_id,
                 note=f"Modeling process {process_type}",
             ),
-            triggered_by=_identity(user),
+            triggered_by=get_user_identity(user),
         )
     except AirflowNotFound as exc:
         raise HTTPException(

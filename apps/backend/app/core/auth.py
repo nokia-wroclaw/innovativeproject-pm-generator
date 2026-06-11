@@ -176,11 +176,11 @@ def get_token_payload(
     payload = _verify_token_signature(token, settings)
     _validate_token_claims(payload, settings)
 
-    user_id = payload.get("sub") or payload.get("clientId") or payload.get("client_id")
+    user_id = payload.get("sub") or payload.get("client_id")
 
     if not user_id:
         print("WARNING: Missing user identification claims. Payload:", payload)
-        raise _unauthorized("Token payload is missing identification claims (sub/clientId)")
+        raise _unauthorized("Token payload is missing identification claims (sub/client_id)")
 
     session_id = payload.get("sid") or payload.get("session_state")
 
@@ -218,3 +218,7 @@ def assert_modeling_admin(payload: TokenPayload) -> None:
 def require_modeling_admin(payload: TokenPayload = Depends(require_auth)) -> TokenPayload:
     assert_modeling_admin(payload)
     return payload
+
+
+def get_user_identity(payload: TokenPayload) -> str:
+    return payload.preferred_username or payload.email or payload.sub or payload.user_id or "unknown"

@@ -1,4 +1,4 @@
-
+import uuid
 from pydantic import BaseModel, ConfigDict
 
 
@@ -10,3 +10,8 @@ class TokenPayload(BaseModel):
     preferred_username: str | None = None
     email: str | None = None
     sub: str | None = None
+
+    def get_uuid(self) -> uuid.UUID:
+        return uuid.UUID(self.user_id)
+
+

@@ -59,11 +59,9 @@ class AirflowService:
 
         graph = map_dag_graph(tasks_raw)
         recent_runs = [DagRunSummary.model_validate(r) for r in runs_raw.get("dag_runs", []) or []]
-        last_run = recent_runs[0] if recent_runs else None
         stats = _aggregate_stats_from_runs(recent_runs)
-        
-        # Merge extra fields into the dict before validation
-        dag_raw["last_run"] = last_run
+
+        dag_raw["last_run"] = recent_runs[0] if recent_runs else None
         dag_raw["stats_24h"] = stats
         summary = DagSummary.model_validate(dag_raw)
 
@@ -101,7 +99,7 @@ class AirflowService:
 
     async def list_task_tries(self, dag_id: str, run_id: str, task_id: str) -> list[TaskTry]:
         raw = await self._client.list_task_tries(dag_id, run_id, task_id)
-        return [TaskTry.model_validate(t) for t in (raw.get("task_instances", []) or [])]
+        return [TaskTry.model_validate(t) for t in (raw.get("task_instances", []))]
 
     async def get_task_logs_page(
         self,

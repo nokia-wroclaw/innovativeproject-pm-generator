@@ -8,7 +8,7 @@ from datetime import UTC, datetime
 from fastapi import APIRouter, Depends, Query, Request
 from sse_starlette.sse import EventSourceResponse
 
-from app.core.auth import require_admin
+from app.core.auth import get_user_identity, require_admin
 from app.models.auth import TokenPayload
 from app.models.dags import (
     ActionResponse,
@@ -37,10 +37,6 @@ router = APIRouter(
 def _service() -> AirflowService:
     return get_airflow_service()
 
-
-def _identity(payload: TokenPayload) -> str | None:
-    """Extracts the best available user identifier from the token payload."""
-    return payload.preferred_username or payload.email or payload.sub
 
 
 @router.get("", response_model=list[DagSummary])
@@ -124,7 +120,7 @@ async def trigger_dag(
     return await service.trigger_dag(
         dag_id,
         body=body or TriggerRequest(),
-        triggered_by=_identity(user),
+        triggered_by=get_user_identity(user),
     )
 
 
@@ -135,7 +131,7 @@ async def stop_dag_run(
     user: TokenPayload = Depends(require_admin),
     service: AirflowService = Depends(_service),
 ) -> ActionResponse:
-    return await service.stop_dag_run(dag_id, run_id, triggered_by=_identity(user))
+    return await service.stop_dag_run(dag_id, run_id, triggered_by=get_user_identity(user))
 
 
 @router.post("/{dag_id}/runs/{run_id}/clear", response_model=ActionResponse)
@@ -145,7 +141,7 @@ async def clear_dag_run(
     user: TokenPayload = Depends(require_admin),
     service: AirflowService = Depends(_service),
 ) -> ActionResponse:
-    return await service.clear_dag_run(dag_id, run_id, triggered_by=_identity(user))
+    return await service.clear_dag_run(dag_id, run_id, triggered_by=get_user_identity(user))
 
 
 @router.post(
@@ -165,7 +161,7 @@ async def clear_task_instance(
         run_id,
         task_id,
         downstream=downstream,
-        triggered_by=_identity(user),
+        triggered_by=get_user_identity(user),
     )
 
 
@@ -224,7 +220,7 @@ async def stream_task_logs(
                     # No more logs available at the moment, check if task is finished
                     try:
                         task_instance = await service.get_task_instance(dag_id, run_id, task_id)
-                        if task_instance.status in {"success", "failed", "skipped"}:
+                        if str(task_instance.status) in {"success", "failed", "skipped"}:
                             yield _build_sse_event("end", {"reason": "task_finished"})
                             return
                     except AirflowIntegrationError:

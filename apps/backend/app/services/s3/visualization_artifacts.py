@@ -4,6 +4,7 @@ from pathlib import PurePosixPath
 from typing import Any
 
 from botocore.exceptions import ClientError  # type: ignore[import-untyped]
+from app.services.s3.service import get_s3_client_internal
 
 from app.models.auth import TokenPayload
 
@@ -25,10 +26,6 @@ def _require_s3_bucket() -> str:
 
 
 def dataset_visualization_prefix(dataset_s3_key: str) -> str:
-    """Parent prefix of the dataset object — same tree the user chose at upload.
-
-    Keep in sync with genpm.raw_vis.s3_layout (Spark writer).
-    """
     key = (dataset_s3_key or "").strip().lstrip("/")
     if not key:
         raise ValueError("dataset s3_key is empty")
@@ -55,8 +52,6 @@ def kpi_analysis_artifact_key(dataset_s3_key: str) -> str:
 
 
 def read_s3_json_artifact(key: str) -> dict[str, Any] | None:
-    from app.services.s3.service import get_s3_client_internal
-
     bucket = _require_s3_bucket()
     try:
         response = get_s3_client_internal().get_object(Bucket=bucket, Key=key)
@@ -87,8 +82,6 @@ def load_visualization_artifact(dataset_s3_key: str) -> dict[str, Any] | None:
 
 
 def persist_unsupported_schema_artifact(dataset_s3_key: str, payload: TokenPayload) -> None:
-    from app.services.s3.service import get_s3_client_internal
-
     bucket = _require_s3_bucket()
     _, error_key = visualization_artifact_keys(dataset_s3_key)
     body = json.dumps(payload, ensure_ascii=False, default=str).encode("utf-8")
@@ -100,11 +93,7 @@ def persist_unsupported_schema_artifact(dataset_s3_key: str, payload: TokenPaylo
             ContentType="application/json",
         )
     except ClientError as exc:
-        logger.warning(
-            "Failed to write unsupported_schema artifact for s3_key=%s: %s",
-            dataset_s3_key,
-            exc,
-        )
+        logger.warning(f"Failed to write unsupported_schema artifact for s3_key={dataset_s3_key}: {exc}")
 
 
 def status_from_artifact(artifact: dict[str, Any]) -> str:

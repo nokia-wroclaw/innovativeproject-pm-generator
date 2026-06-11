@@ -221,6 +221,10 @@ const statusLabel = computed(() => {
 });
 
 // ─── Stream lifecycle ───────────────────────────────────────────────────────
+function isTaskPending() {
+  return props.taskStatus === 'queued';
+}
+
 async function startStream() {
   closeStream();
   lines.value = [];

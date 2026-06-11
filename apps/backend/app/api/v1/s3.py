@@ -3,7 +3,7 @@ import uuid
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 
-from app.core.auth import require_admin, require_auth
+from app.core.auth import get_user_identity, require_admin, require_auth
 from app.core.storage_access import (
     assert_dataset_accessible,
     assert_raw_dataset,
@@ -55,9 +55,6 @@ def _airflow_service() -> AirflowService:
     return get_airflow_service()
 
 
-def _identity(payload: TokenPayload) -> str | None:
-    return payload.preferred_username or payload.email or payload.sub
-
 
 @router.post("/datasets", response_model=DatasetRead)
 async def create_s3_dataset(
@@ -65,7 +62,7 @@ async def create_s3_dataset(
     service: S3Service = Depends(get_s3_service),
     token_payload: TokenPayload = Depends(require_storage_admin),
 ) -> DatasetRead:
-    user_uuid = uuid.UUID(str(token_payload.user_id))
+    user_uuid = token_payload.get_uuid()
 
     s3_dataset = service.create_dataset(
         user_uuid=user_uuid,
@@ -135,7 +132,7 @@ async def register_s3_dataset(
     service: S3Service = Depends(get_s3_service),
     token_payload: TokenPayload = Depends(require_storage_admin),
 ) -> DatasetRead:
-    user_uuid = uuid.UUID(str(token_payload.user_id))
+    user_uuid = token_payload.get_uuid()
 
     s3_dataset = service.register_existing_dataset(
         user_uuid=user_uuid,
@@ -147,7 +144,7 @@ async def register_s3_dataset(
     await trigger_dataset_visualization_on_raw_completed(
         s3_dataset,
         s3_service=service,
-        triggered_by=_identity(token_payload),
+        triggered_by=get_user_identity(token_payload),
     )
 
     return DatasetRead.model_validate(s3_dataset)
@@ -185,7 +182,7 @@ async def confirm_s3_dataset(
         await trigger_dataset_visualization_on_raw_completed(
             updated,
             s3_service=service,
-            triggered_by=_identity(token_payload),
+            triggered_by=get_user_identity(token_payload),
         )
     return DatasetRead.model_validate(updated)
 
@@ -229,7 +226,7 @@ async def request_dataset_visualization(
             dataset,
             airflow=airflow,
             s3_service=service,
-            triggered_by=_identity(token_payload),
+            triggered_by=get_user_identity(token_payload),
         )
     except VisualizationSchemaError as exc:
         raise HTTPException(status_code=422, detail=exc.payload) from exc
