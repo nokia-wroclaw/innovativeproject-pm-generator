@@ -1,7 +1,5 @@
 from dataclasses import dataclass
 
-from genpm.utils.consts import MAX_IMPUTABLE_GAP
-
 
 @dataclass
 class PreprocessingConfig:
@@ -35,7 +33,7 @@ class PreprocessingConfig:
     stride_hours: int = 24
 
     # Max gap - threshold for filtering the biggest windows
-    max_gap_hours: int = MAX_IMPUTABLE_GAP
+    max_gap_hours: int = 24
 
     # Greedy approach - minimal joint windows available in data
     min_joint_windows_abs: int | None = None

@@ -4,16 +4,16 @@ from pyspark.sql import functions as f
 from genpm.preprocessing.configs import PreprocessingConfig
 from genpm.preprocessing.logic import imputing, kpi_coverage, preprocessing_logic
 from genpm.preprocessing.logic.scaling import SimpleMinMaxScaler
-from genpm.utils.consts import SHARED_DIR_PATH, MAX_IMPUTABLE_GAP
+from genpm.utils.consts import MAX_IMPUTABLE_GAP, SHARED_DIR_PATH
 from genpm.utils.logger import get_logger
-from genpm.utils.utils import SparkDataManager
+from genpm.utils.utils import SparkDataManager, validate_windowed_pm
 
 logger = get_logger()
 
 
 PREPROCESSED_DATASET_PATH = SHARED_DIR_PATH / "preprocessed_dataset"
 
-VERBOSE_DIAGNOSTICS = False
+VERBOSE_DIAGNOSTICS = True
 
 
 def _log_pm_diag(label: str, df: DataFrame) -> None:
@@ -83,14 +83,14 @@ def run_preprocessing(sdm: SparkDataManager, preprocessing_cfg: PreprocessingCon
     # sdm.write_parquet(kpi_definitions, PREPROCESSED_DATASET_PATH / "intermediate" / "kpi_definitions", mode="overwrite")
     # sdm.write_parquet(pm_df_const_kpi, PREPROCESSED_DATASET_PATH / "intermediate" / "pm_df_const_kpi", mode="overwrite")
 
-    # pm_df_long = sdm.read_parquet(PREPROCESSED_DATASET_PATH / "intermediate" / "pm_df_long")
-    # kpi_definitions = sdm.read_parquet(
-    #     PREPROCESSED_DATASET_PATH / "intermediate" / "kpi_definitions"
-    # )
+    pm_df_long = sdm.read_parquet(PREPROCESSED_DATASET_PATH / "intermediate" / "pm_df_long")
+    kpi_definitions = sdm.read_parquet(
+        PREPROCESSED_DATASET_PATH / "intermediate" / "kpi_definitions"
+    )
 
-    # pm_df_const_kpi = sdm.read_parquet(
-    #     PREPROCESSED_DATASET_PATH / "intermediate" / "pm_df_const_kpi"
-    # )
+    pm_df_const_kpi = sdm.read_parquet(
+        PREPROCESSED_DATASET_PATH / "intermediate" / "pm_df_const_kpi"
+    )
 
     # STAGE: COVERAGE ANALYSIS
     # Timestamp frequency uniformoty (1 hour)
@@ -110,12 +110,12 @@ def run_preprocessing(sdm: SparkDataManager, preprocessing_cfg: PreprocessingCon
             max_imputable_gap=preprocessing_cfg.max_gap_hours,  # THIS PARAMETER IS VERY AGGRESIVE,
             min_imputable_gap_frac=preprocessing_cfg.min_imputable_gap_frac,
         ),
-        on=["kpi_id", "distname"], # THIS ON DISTNAME COULD BRAKE THINGS
+        on=["kpi_id", "distname"],  # THIS ON DISTNAME COULD BRAKE THINGS
         how="inner",
     )
-
-    # # pm_df_long_filled_gaps_filtered = pm_df_long_filled_gaps_filtered.cache()
-    # # print(pm_df_long_filled_gaps_filtered.count())
+    _log_pm_diag("after series_imputability_gate", pm_df_long_filled_gaps_filtered)
+    pm_df_long_filled_gaps_filtered = pm_df_long_filled_gaps_filtered.cache()
+    print(pm_df_long_filled_gaps_filtered.count())
 
     # # FILTERING READY FOR IMPUTING
 
@@ -148,11 +148,11 @@ def run_preprocessing(sdm: SparkDataManager, preprocessing_cfg: PreprocessingCon
 
     # NOTE: INTERMEDIATE SAVES - FOR DEBUGGING AND QUICKER RUNS
 
-    sdm.write_parquet(
-        pm_df_long_imputed,
-        PREPROCESSED_DATASET_PATH / "intermediate" / "pm_df_long_imputed",
-        mode="overwrite",
-    )
+    # sdm.write_parquet(
+    #     pm_df_long_imputed,
+    #     PREPROCESSED_DATASET_PATH / "intermediate" / "pm_df_long_imputed",
+    #     mode="overwrite",
+    # )
     pm_df_long_imputed = sdm.read_parquet(
         PREPROCESSED_DATASET_PATH / "intermediate" / "pm_df_long_imputed"
     )
@@ -162,16 +162,16 @@ def run_preprocessing(sdm: SparkDataManager, preprocessing_cfg: PreprocessingCon
     # NOTE: There is no way, to allign all kpis to the min of cell
     # The crossjoin for this will be added at the end of preprocessing, when all goes through
 
-    pm_training_windows_density = kpi_coverage.drop_windows_containing_nulls(
+    pm_df_windows = kpi_coverage.drop_windows_with_nulls(
         pm_df_long_imputed,
         window_hours=preprocessing_cfg.window_width_hours,
         stride_hours=preprocessing_cfg.stride_hours,
     )
-    _log_window_diag("after drop_windows_containing_nulls", pm_training_windows_density)
+    _log_window_diag("after drop_windows_with_nulls", pm_df_windows)
 
     # Stage 2: discard density-failing windows; log good/total in one agg pass
-    good_windows_cleaned = kpi_coverage.discard_invalid_windows(pm_training_windows_density)
-    density_stats = pm_training_windows_density.agg(
+    good_windows_cleaned = kpi_coverage.discard_invalid_windows(pm_df_windows)
+    density_stats = pm_df_windows.agg(
         f.count("*").alias("total_windows"),
         f.sum(f.col("is_good_window").cast("long")).alias("good_windows"),
         f.countDistinct("kpi_id").alias("kpis_assessed"),
@@ -204,14 +204,8 @@ def run_preprocessing(sdm: SparkDataManager, preprocessing_cfg: PreprocessingCon
     )
     kpi_yield_stats.select("frac_contributing_cells").summary().show()
 
-    # valid_kpi_candidates = kpi_coverage.prefilter_kpis(kpi_yield_stats)
-    valid_kpi_candidates = kpi_coverage.filter_window_density(
-        good_windows_cleaned,
-        min_anchors_frac=0.50,  # = the old window_coverage_frac >= 0.5
-    )
-    logger.info(
-        f"[prefilter] {len(valid_kpi_candidates)}/{good_window_stats['n_kpis']} KPIs pass cell-breadth cut"
-    )
+    valid_kpi_candidates = kpi_coverage.prefilter_kpis(kpi_yield_stats)
+
     if VERBOSE_DIAGNOSTICS:
         logger.info(f"[DIAG] after prefilter_kpis | candidates={len(valid_kpi_candidates):,}")
 
@@ -252,31 +246,30 @@ def run_preprocessing(sdm: SparkDataManager, preprocessing_cfg: PreprocessingCon
     # Greedy joint KPI selection
     selected_kpis = kpi_coverage.greedy_joint_kpi_selection(
         good_windows_candidates,
-        # TODO: Add overwriting the candidate list, so some KPIs could be forced in training
         valid_kpi_candidates,
         min_joint_windows_abs=None,
+        forced_kpis=None,
     )
     logger.info(f"Selected {len(selected_kpis)} KPIs from {len(valid_kpi_candidates)} candidates.")
 
     # joint_anchor_pairs holds start_time as STRING — cast back before the range join
-    anchor_rows = [(d, t) for (d, t) in joint_anchor_pairs]
-    joint_anchors_df = sdm.spark.createDataFrame(
-        anchor_rows, ["distname", "start_time"]
-    ).withColumn("start_time", f.col("start_time").cast("timestamp"))
-    joint_anchors_df = joint_anchors_df.cache()
-    print(joint_anchors_df.count())
-    joint_anchors_df.groupby("distname").agg(f.count_distinct("start_time")).show()
-    joint_anchors_df.groupBy("distname").agg(f.count_distinct("start_time").alias("ccc")).agg(
-        f.mean("ccc")
-    ).show()
-    print(joint_anchors_df.groupby("distname").agg(f.count_distinct("start_time")).count())
+
+    # joint_anchors_df = sdm.spark.createDataFrame(
+    #     anchor_rows, ["distname", "start_time"]
+    # ).withColumn("start_time", f.col("start_time").cast("timestamp"))
+    # joint_anchors_df = joint_anchors_df.cache()
+    # print(joint_anchors_df.count())
+    # joint_anchors_df.groupby("distname").agg(f.count_distinct("start_time")).show()
+    # joint_anchors_df.groupBy("distname").agg(f.count_distinct("start_time").alias("ccc")).agg(
+    #     f.mean("ccc")
+    # ).show()
+    # print(joint_anchors_df.groupby("distname").agg(f.count_distinct("start_time")).count())
 
     # POST GREEDY good_windows_cleaned (pre-greedy, post-contiguity)
-    joint_anchors_df.select("kpi_id").distinct().count()  # you reported 485
-    joint_anchors_df.select("distname").distinct().count()  # you reported 396
-    joint_anchors_df.select("distname", "start_time").distinct().count()
+    # joint_anchors_df.select("kpi_id").distinct().count()  # you reported 485
+    # joint_anchors_df.select("distname").distinct().count()  # you reported 396
+    # joint_anchors_df.select("distname", "start_time").distinct().count()
 
-    print("damn")
     # joint_anchors_df has only (distname, start_time).  attach_windows_index_to_pm
     # does .select("distname", "start_time") on its good_windows argument and discards
     # everything else — so this minimal DataFrame is exactly what it needs.
@@ -311,31 +304,28 @@ def run_preprocessing(sdm: SparkDataManager, preprocessing_cfg: PreprocessingCon
     # TODO: SAVING FOR VISUALS DATAFRAMES and DATA OVERALL
 
     # NOTE: INTERMEDIATE SAVE
-    sdm.write_parquet(
-        pm_df_long_scaled,
-        PREPROCESSED_DATASET_PATH / "intermediate" / "pm_df_long_imputed_selected",
-        mode="overwrite",
-    )
-    sdm.write_parquet(
-        good_windows_selected,
-        PREPROCESSED_DATASET_PATH / "intermediate" / "good_windows_selected",
-        mode="overwrite",
-    )
+    # sdm.write_parquet(
+    #     pm_df_long_scaled,
+    #     PREPROCESSED_DATASET_PATH / "intermediate" / "pm_df_long_imputed_selected",
+    #     mode="overwrite",
+    # )
+    # sdm.write_parquet(
+    #     good_windows_selected,
+    #     PREPROCESSED_DATASET_PATH / "intermediate" / "good_windows_selected",
+    #     mode="overwrite",
+    # )
 
-    pm_df_long_scaled = sdm.read_parquet(
-        PREPROCESSED_DATASET_PATH / "intermediate" / "pm_df_long_imputed_selected"
-    )
-    good_windows_selected = sdm.read_parquet(
-        PREPROCESSED_DATASET_PATH / "intermediate" / "good_windows_selected"
-    )
+    # pm_df_long_scaled = sdm.read_parquet(
+    #     PREPROCESSED_DATASET_PATH / "intermediate" / "pm_df_long_imputed_selected"
+    # )
+    # good_windows_selected = sdm.read_parquet(
+    #     PREPROCESSED_DATASET_PATH / "intermediate" / "good_windows_selected"
+    # )
 
-    print(
-        pm_df_long_imputed_selected.select("kpi_id").distinct().rdd.flatMap(lambda x: x).collect()
-    )
-    # This list, has to be created here, as it is brought from filtered
-    selected_kpis = [
-        r["kpi_id"] for r in pm_df_long_imputed_selected.select("kpi_id").distinct().collect()
-    ]
+    # # This list, has to be created here, as it is brought from filtered
+    # selected_kpis = [
+    #     r["kpi_id"] for r in pm_df_long_scaled.select("kpi_id").distinct().collect()
+    # ]
     # INTERMIEDIATE END
 
     # ── REMOVE this block entirely once the greedy unpacking fix above is applied ──
@@ -359,22 +349,24 @@ def run_preprocessing(sdm: SparkDataManager, preprocessing_cfg: PreprocessingCon
     # logger.info(f"  {n_joint:,} joint-complete (distname, anchor) windows survive.")
 
     # This function materializes the windows and indexes window start and its width in 2 columns
-    pm_df_long_indexed_winds = kpi_coverage.attach_windows_index_to_pm(
+    pm_df_long_indexed_winds = kpi_coverage.emit_window_index(
         pm_df_long_scaled,
         good_windows_selected,
         window_hours=preprocessing_cfg.window_width_hours,
     )
+    if VERBOSE_DIAGNOSTICS:
+        validate_windowed_pm(pm_df_long_indexed_winds)
     _log_pm_diag("after attach_windows_index_to_pm", pm_df_long_indexed_winds)
 
     simple_reports = preprocessing_logic.simple_reports_pivot(simple_reports_df_raw)
 
     # TODO: FIX PIVOT NOT THIS:
-    pm_df_wide_indexed_winds = (
-        pm_df_long_indexed_winds.groupBy("distname", "bts_id", "window_anchor", "hour_idx")
-        .pivot("kpi_id")
-        .agg(f.first("kpi_value"))
-        .orderBy("distname", "window_anchor", "hour_idx")
-    ).cache()
+    # pm_df_wide_indexed_winds = (
+    #     pm_df_long_indexed_winds.groupBy("distname", "bts_id", "window_anchor")
+    #     .pivot("kpi_id")
+    #     .agg(f.first("kpi_value"))
+    #     .orderBy("distname", "window_anchor")
+    # ).cache()
 
     # TODO: Verify, why this function kills the Spark drivers and FIX
     # pm_df_long_indexed_winds = pm_df_long_indexed_winds.localCheckpoint()
@@ -387,7 +379,7 @@ def run_preprocessing(sdm: SparkDataManager, preprocessing_cfg: PreprocessingCon
 
     dataset_paths_and_dfs: dict[str, DataFrame] = {
         "pm_df_long_indexed_winds": pm_df_long_indexed_winds,
-        "pm_df_wide_indexed_winds": pm_df_wide_indexed_winds,
+        # "pm_df_wide_indexed_winds": pm_df_wide_indexed_winds,
         "scaling_params_df": params_df,
         "pm_data_const_kpi": pm_df_const_kpi,
         "kpi_definitions": kpi_definitions,

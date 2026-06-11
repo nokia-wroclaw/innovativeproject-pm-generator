@@ -1,7 +1,6 @@
 import numpy as np
 from pyspark.sql import DataFrame, Window
 from pyspark.sql import functions as f
-from pyspark.sql.types import LongType
 
 from genpm.utils.logger import get_logger
 
@@ -598,82 +597,6 @@ def discard_invalid_windows(
     return pm_windows.filter(f.col("is_good_window") == 1)
 
 
-def flag_flat_series_pre_pelt(
-    aligned_df: DataFrame,
-    good_windows: DataFrame,
-    *,
-    min_std_val: float = 0.01,
-    max_zero_frac: float = 0.95,
-) -> DataFrame:
-    """Flag near-constant (distname, kpi_id) series before regime detection and scaling.
-
-    Produces a per-(distname, kpi_id) boolean flag that downstream steps consume
-    to handle constant or near-constant series correctly.  This function only
-    detects and flags — it does not run PELT or scaling.
-
-    Designed to run after greedy KPI selection (so only training-bound series
-    are evaluated) and immediately before PELT change-point detection (so the
-    flag is available when it is first needed).
-
-    Series are never dropped.  "Always 0 in this cell" is legitimate signal
-    for a multivariate conditional model: it is a trivially reconstructable
-    constant pattern that costs the decoder almost nothing.  Dropping the series
-    would shrink the joint anchor set greedy built, at zero benefit.
-
-        kpi_Z @ c1:  0 0 0 0 0 0 0 0    std=0
-           OLD: drop → c1 leaves kpi_Z's anchor set, joint coverage shrinks
-           NEW: is_flat=True, series kept → K-set and anchor set unchanged
-
-    A series is flagged (is_flat=True) when either condition holds:
-      • std_val < min_std_val   (near-constant at any level)
-      • zero_frac > max_zero_frac  (almost entirely zero)
-
-    Parameters
-    ----------
-    aligned_df : DataFrame
-        Imputed long-format data (post-greedy, selected KPIs only).
-    good_windows : DataFrame
-        Joint-selected anchors with (distname, kpi_id) columns; restricts
-        the computation to series that will actually appear in training.
-    min_std_val : float
-        Series with std_val < min_std_val are flagged as flat (default 0.01).
-    max_zero_frac : float
-        Series with zero_frac > max_zero_frac are flagged as flat
-        (default 0.95).
-
-    Returns
-    -------
-    DataFrame
-        Columns (distname, kpi_id, is_flat) for every (distname, kpi_id) pair
-        in good_windows.  ALL pairs are present — none are dropped.
-    """
-    # Restrict to (distname, kpi_id) pairs with passing windows and to rows
-    # with real (non-null) values so stddev reflects observed signal, not nulls.
-    valid_values = aligned_df.join(
-        good_windows.select("distname", "kpi_id").distinct(),
-        on=["distname", "kpi_id"],
-        how="inner",
-    ).filter(f.col("kpi_value").isNotNull())
-
-    # Group by (distname, kpi_id) — series-scoped, not KPI-global — so a KPI
-    # that is flat in one cell but variant in another keeps both series.
-    stats = valid_values.groupBy("distname", "kpi_id").agg(
-        # sample stddev of non-null kpi_value in this series
-        f.stddev("kpi_value").alias("std_val"),
-        # fraction of non-null rows where kpi_value is exactly 0
-        (f.sum(f.when(f.col("kpi_value") == 0, 1).otherwise(0)) / f.count("*")).alias("zero_frac"),
-    )
-
-    return (
-        stats
-        # is_flat = True when stddev is negligible OR the series is mostly zero
-        .withColumn(
-            "is_flat",
-            (f.col("std_val") < f.lit(min_std_val)) | (f.col("zero_frac") > f.lit(max_zero_frac)),
-        ).select("distname", "kpi_id", "is_flat")
-    )
-
-
 def compute_kpi_yield_stats(
     good_windows: DataFrame,
     *,
@@ -769,14 +692,30 @@ def prefilter_kpis(
 # ═══════════════════════════════════════════════════════════════════════════
 #                Greedy joint KPI selection
 # ═══════════════════════════════════════════════════════════════════════════
-def greedy_coverage_curve(
+def _collect_kpi_coverage(
     good_windows: DataFrame,
     candidates: list[str],
-) -> list[dict]:
-    """Run greedy selection with no floor, recording the full coverage curve.
-    Returns a list of dicts with step, kpi_id, joint_windows for elbow analysis.
+) -> tuple[np.ndarray, list[str], list[tuple[str, str]]]:
+    """Collect KPI coverage once and pack it into a boolean numpy matrix.
+
+    This is the **single** Spark→driver collect for the whole greedy stage
+    (the old code collected the same groupBy twice — once for the elbow curve
+    and once for the real selection).
+
+    Returns
+    -------
+    M : np.ndarray[bool], shape (n_kpis, n_anchors)
+        ``M[i, j]`` is True when KPI ``kpi_ids[i]`` has a good window at the
+        ``(distname, start_time)`` pair ``anchor_pairs[j]``.
+    kpi_ids : list[str]
+        Row → KPI id.  Restricted to ``candidates`` that actually appear in the
+        collected coverage, ordered by descending coverage so the natural seed
+        (most-covering KPI) is row 0.
+    anchor_pairs : list[tuple[str, str]]
+        Column → (distname, start_time) pair.
     """
-    # Same one-scan upfront collection as before
+    # One scan: per (kpi, distname) the set of anchor start_times. start_time is
+    # cast to string so the (distname, start_time) tuples hash cleanly.
     rows = (
         good_windows.withColumn("start_time", f.col("start_time").cast("string"))
         .groupBy("kpi_id", "distname")
@@ -784,37 +723,103 @@ def greedy_coverage_curve(
         .collect()
     )
 
+    candidate_set = set(candidates)
+
+    # kpi_id → set of (distname, start_time) anchor pairs, candidates only.
     kpi_coverage: dict[str, set[tuple[str, str]]] = {}
     for row in rows:
+        kpi = row["kpi_id"]
+        if kpi not in candidate_set:
+            continue
         pairs = {(row["distname"], anchor) for anchor in row["anchors"]}
-        if row["kpi_id"] not in kpi_coverage:
-            kpi_coverage[row["kpi_id"]] = set()
-        kpi_coverage[row["kpi_id"]] |= pairs
+        kpi_coverage.setdefault(kpi, set()).update(pairs)
 
-    available = [k for k in candidates if k in kpi_coverage]
-    best_seed = max(available, key=lambda k: len(kpi_coverage[k]))
-    selected = [best_seed]
-    current_intersection = kpi_coverage[best_seed].copy()
-    available.remove(best_seed)
+    # Order rows by descending coverage so row 0 is the natural seed.
+    kpi_ids = sorted(kpi_coverage, key=lambda k: len(kpi_coverage[k]), reverse=True)
 
-    curve = [{"step": 1, "kpi_id": best_seed, "joint_windows": len(current_intersection)}]
+    # Global anchor → column index.
+    anchor_index: dict[tuple[str, str], int] = {}
+    for kpi in kpi_ids:
+        for pair in kpi_coverage[kpi]:
+            if pair not in anchor_index:
+                anchor_index[pair] = len(anchor_index)
 
-    step = 2
+    n_kpis = len(kpi_ids)
+    n_anchors = len(anchor_index)
+    M = np.zeros((n_kpis, n_anchors), dtype=bool)
+    for i, kpi in enumerate(kpi_ids):
+        cols = [anchor_index[pair] for pair in kpi_coverage[kpi]]
+        M[i, cols] = True
+
+    anchor_pairs = [pair for pair, _ in sorted(anchor_index.items(), key=lambda kv: kv[1])]
+    return M, kpi_ids, anchor_pairs
+
+
+def _greedy_order(
+    M: np.ndarray,
+    forced_rows: list[int],
+) -> tuple[list[int], list[int]]:
+    """Greedy KPI ordering over the boolean coverage matrix — no floor applied.
+
+    At each step the candidate that retains the most joint windows (loses the
+    fewest) is appended.  Forced rows are placed first (ordered greedily among
+    themselves) and seed the running intersection; they are kept regardless of
+    how much coverage they cost.
+
+    Returns
+    -------
+    order : list[int]
+        Row indices in greedy pick order.
+    counts : list[int]
+        ``counts[k]`` is the joint-window count after the k-th pick.  This is
+        the coverage curve; it is monotonically non-increasing.
+    """
+    n_kpis = M.shape[0]
+
+    order: list[int] = []
+    counts: list[int] = []
+    available = set(range(n_kpis))
+
+    # ── seed ───────────────────────────────────────────────────────────────
+    # live_cols = anchor column indices still in the running intersection.
+    if forced_rows:
+        # Highest-coverage forced KPI seeds; remaining forced ones are ordered
+        # greedily too, but all are kept unconditionally.
+        forced_sorted = sorted(forced_rows, key=lambda r: int(M[r].sum()), reverse=True)
+        seed = forced_sorted[0]
+        forced_rest = forced_sorted[1:]
+    else:
+        # argmax(row coverage); M rows are already coverage-sorted so this is 0,
+        # but argmax keeps the function correct regardless of row ordering.
+        seed = int(M.sum(axis=1).argmax())
+        forced_rest = []
+
+    live_cols = np.flatnonzero(M[seed])
+    order.append(seed)
+    counts.append(int(live_cols.size))
+    available.discard(seed)
+
+    def _pick(row: int) -> None:
+        nonlocal live_cols
+        order.append(row)
+        live_cols = live_cols[M[row, live_cols]]
+        counts.append(int(live_cols.size))
+        available.discard(row)
+
+    # Forced KPIs next — kept no matter the coverage cost.
+    for row in forced_rest:
+        _pick(row)
+
+    # ── greedy fill over the rest ────────────────────────────────────────────
     while available:
-        best_kpi, best_next, best_count = None, None, -1
-        for kpi in available:
-            tentative = current_intersection & kpi_coverage[kpi]
-            count = len(tentative)
-            if count > best_count:
-                best_count, best_kpi, best_next = count, kpi, tentative
+        cand = np.fromiter(available, dtype=np.intp, count=len(available))
+        # Joint-window count each candidate would retain. live_cols are all-True
+        # in the current intersection, so the AND-count reduces to a column slice.
+        cand_counts = M[np.ix_(cand, live_cols)].sum(axis=1)
+        best = int(cand[cand_counts.argmax()])
+        _pick(best)
 
-        selected.append(best_kpi)
-        current_intersection = best_next
-        available.remove(best_kpi)
-        curve.append({"step": step, "kpi_id": best_kpi, "joint_windows": best_count})
-        step += 1
-
-    return curve
+    return order, counts
 
 
 def find_elbow(curve: list[dict]) -> int:
@@ -848,98 +853,101 @@ def greedy_joint_kpi_selection(
     candidates: list[str],
     *,
     min_joint_windows_abs: int | None = None,
+    forced_kpis: list[str] | None = None,
 ) -> list[str]:
     """Greedily build the largest KPI set whose joint window count stays above floor.
 
     A 'joint window' is a unique (distname, start_time) pair where every
     selected KPI has data. Each such pair represents one training sample.
+
+    The greedy loop runs on a boolean numpy coverage matrix (see
+    ``_collect_kpi_coverage`` / ``_greedy_order``) instead of Python set algebra,
+    and Spark is collected exactly **once**: the no-floor greedy ordering is the
+    same ordering as the floored selection (the floor only decides where to
+    stop), and the joint-window count is monotonically non-increasing along it,
+    so the final selection is just the prefix of that single ordering that stays
+    at or above the floor.
+
+    Parameters
+    ----------
+    forced_kpis : list[str] | None
+        KPIs that must appear in the result.  They are placed first and seed the
+        running intersection, and are **exempt from the floor** — kept even if
+        they alone drop joint coverage below it (a warning is logged).  Forced
+        KPIs absent from the collected coverage are skipped with a warning.
+        When ``None``/empty, behavior is unchanged: the elbow method (or
+        ``min_joint_windows_abs``) chooses the KPI count.
     """
+    # ── single Spark collect → numpy coverage matrix ─────────────────────────
+    M, kpi_ids, _anchor_pairs = _collect_kpi_coverage(good_windows, candidates)
+    row_of = {kpi: i for i, kpi in enumerate(kpi_ids)}
+
+    # ── resolve forced KPIs to rows; skip any without collected coverage ─────
+    forced_rows: list[int] = []
+    for kpi in forced_kpis or []:
+        if kpi in row_of:
+            forced_rows.append(row_of[kpi])
+        else:
+            logger.warning(
+                f"[greedy] forced KPI '{kpi}' has no good-window coverage among "
+                f"candidates — skipping it"
+            )
+
+    # ── one greedy pass → full ordering + coverage curve ─────────────────────
+    order, counts = _greedy_order(M, forced_rows)
+    curve = [
+        {"step": k + 1, "kpi_id": kpi_ids[row], "joint_windows": counts[k]}
+        for k, row in enumerate(order)
+    ]
+
+    # ── determine the joint-window floor ─────────────────────────────────────
     if min_joint_windows_abs is None:
         logger.info(
             "[elbow] min_joint_windows_abs not selected - defaulting to elbow method of selection"
         )
-        curve = greedy_coverage_curve(good_windows, candidates)
-
-        # Find elbow
         elbow_idx = find_elbow(curve)
-        suggested_threshold = suggest_threshold(curve, elbow_idx)
-        suggested_n_kpis = elbow_idx  # number of KPIs at the elbow
-
+        min_joint_windows = suggest_threshold(curve, elbow_idx)
         logger.info(
-            f"[elbow] suggested cutoff: {suggested_n_kpis} KPIs "
-            f"| joint_windows at elbow: {suggested_threshold:,}"
+            f"[elbow] suggested cutoff: {elbow_idx} KPIs "
+            f"| joint_windows at elbow: {min_joint_windows:,}"
         )
-        min_joint_windows = suggested_threshold
     else:
         min_joint_windows = min_joint_windows_abs
 
     logger.info(f"{min_joint_windows=}")
 
-    # Build kpi_id → set of (distname, start_time) anchor pairs in one pass.
-    # After this, all greedy logic is pure Python set operations
-    rows = (
-        good_windows.withColumn("start_time", f.col("start_time").cast("string"))  # safe hashing
-        .groupBy("kpi_id", "distname")
-        .agg(f.collect_set("start_time").alias("anchors"))
-        .collect()
-    )
+    n_forced = len(forced_rows)
+    seed_kpi = kpi_ids[order[0]]
+    logger.info(f"[greedy] seed '{seed_kpi}' | coverage={counts[0]:,}")
 
-    kpi_coverage: dict[str, set[tuple[str, str]]] = {}
-    for row in rows:
-        pairs = {(row["distname"], anchor) for anchor in row["anchors"]}
-        if row["kpi_id"] not in kpi_coverage:
-            kpi_coverage[row["kpi_id"]] = set()
-        kpi_coverage[row["kpi_id"]] |= pairs
+    if n_forced and counts[n_forced - 1] < min_joint_windows:
+        logger.warning(
+            f"[greedy] forced KPIs alone drop joint coverage to "
+            f"{counts[n_forced - 1]:,} < floor {min_joint_windows:,} — "
+            f"keeping them anyway (exempt from floor)"
+        )
 
-    # We explicitly pick the KPI with the most coverage as the seed.
-    available = [k for k in candidates if k in kpi_coverage]
-    best_seed = max(available, key=lambda k: len(kpi_coverage[k]))
-    selected: list[str] = [best_seed]
-    current_intersection: set[tuple[str, str]] = kpi_coverage[best_seed].copy()
-    available.remove(best_seed)
+    # ── select the floor-respecting prefix; forced picks are always kept ─────
+    selected: list[str] = []
+    for k, row in enumerate(order):
+        kpi = kpi_ids[row]
+        joint_windows = counts[k]
 
-    logger.info(f"[greedy] seed '{best_seed}' | coverage={len(current_intersection):,}")
-
-    # ── Bug fix 3: true greedy — pick best candidate at each step ──────────
-    # Original code iterated candidates in fixed order, accepting each one
-    # that passed the threshold. That is not greedy — it is a sequential
-    # filter. True greedy means: at each step, among all remaining candidates,
-    # pick the one that loses the fewest windows from current_intersection.
-    # This produces a better KPI set for the same coverage floor.
-    step = 1
-    while available:
-        best_kpi: str | None = None
-        best_next_intersection: set[tuple[str, str]] | None = None
-        best_count = -1
-
-        for kpi in available:
-            tentative_intersection = current_intersection & kpi_coverage[kpi]
-            count = len(tentative_intersection)
-            if count > best_count:
-                best_count = count
-                best_kpi = kpi
-                best_next_intersection = tentative_intersection
-
-        # If even the best candidate drops below floor, stop entirely —
-        # no remaining candidate can do better than the least-damaging one.
-        if best_count < min_joint_windows:
+        # Forced picks (the first n_forced steps) bypass the floor entirely.
+        if k >= n_forced and joint_windows < min_joint_windows:
             logger.info(
-                f"[greedy] stopping at step {step} — "
-                f"best candidate '{best_kpi}' would reduce coverage "
-                f"to {best_count:,} < {min_joint_windows:,}"
+                f"[greedy] stopping at step {k + 1} — "
+                f"best candidate '{kpi}' would reduce coverage "
+                f"to {joint_windows:,} < {min_joint_windows:,}"
             )
             break
 
-        selected.append(best_kpi)
-        current_intersection = best_next_intersection
-        available.remove(best_kpi)
-
+        selected.append(kpi)
         logger.info(
-            f"[greedy] step {step:>4d} | accepted '{best_kpi}' "
+            f"[greedy] step {k + 1:>4d} | accepted '{kpi}' "
             f"| selected={len(selected):>4d} "
-            f"| joint_windows={best_count:,} "
+            f"| joint_windows={joint_windows:,} "
         )
-        step += 1
 
     return selected
 
@@ -993,67 +1001,98 @@ def filter_joint_complete_windows(
     return selected_windows.join(complete_anchors, on=["distname", "start_time"], how="inner")
 
 
-def attach_windows_index_to_pm(
-    pm_df_long_imputed_selected: DataFrame,
+def emit_window_index(
+    pm_df_long_selected: DataFrame,
     good_windows: DataFrame,
     window_hours: int = 168,
-):
-    """Attach (window_anchor, hour_idx) to every hourly row.
+) -> DataFrame:
+    """Mark window starts on the long PM data WITHOUT materialising windows.
 
-    Window membership is gated on **distname + time only**.  ``good_windows``
-    is expected to be the JOINT-complete anchor set (output of
-    ``filter_joint_complete_windows``): every (distname, window_anchor) it
-    contains is valid for *all* selected KPIs simultaneously.  Therefore an
-    hourly row belongs to a window purely by virtue of its cell and timestamp
-    falling inside the window span — kpi_id must NOT participate in the
-    membership predicate, or per-KPI divergence is reintroduced.
+    The old ``attach_windows_index_to_pm`` range-joined the long data against the
+    joint anchors on ``start_time IN [anchor, anchor + W)``.  With W=168 and S=24
+    each window overlaps its 6 neighbours, so every hourly value was duplicated up
+    to 7×: the full window grid was materialised up front.  That is the heavy step
+    on real PM data.
 
-    The previous version joined on distname AND kpi_id, which let each KPI
-    inherit its own anchor set and produced ragged windows (min_kpis != max_kpis
-    per cell, and clipped windows missing leading/trailing hours).
+    This function does not materialise anything.  It returns the long PM data **as
+    is** (one row per (distname, kpi_id, start_time), no duplication) with a single
+    extra ``window_anchor`` column that is non-null **only on the rows that begin a
+    window** and null everywhere else::
+
+        distname  kpi_id  start_time  window_anchor  kpi_value
+        c1        A       date1       date1          0.1   <- anchor start
+        c1        A       date2       null           0.1
+        c1        A       date3       null           0.1
+        ...                           (next stride anchor) ...
+        c1        A       date25      date25         0.1   <- anchor start
+
+    Actual K×W windows are reconstructed downstream (see
+    ``genpm.modelling.dataset_prep.dataset_prep.generate_window_tensors``), which
+    reads the non-null marks as the window starts and slices [anchor, anchor+W) out
+    of this same frame — the overlap then costs zero storage here.
+
+    ``good_windows`` is expected to be the JOINT-complete anchor set: every
+    (distname, start_time) it contains is valid for *all* selected KPIs.  Its
+    ``start_time`` is a stride anchor (not a real row timestamp), so it is renamed
+    to ``anchor_start_time`` internally; the emitted column is ``window_anchor``.
+
+    Two restrictions are applied to the emitted rows, both via non-duplicating
+    semi-joins:
+      (a) only (distname, kpi_id) pairs present in ``good_windows`` survive, and
+      (b) only rows that fall inside at least one window span are kept ("only the
+          windows that are there").
+
+    Membership is keyed on ``distname + time`` only — never ``kpi_id`` — so the
+    joint guarantee is preserved.
     """
-    # Step 1: distinct joint anchors (KPI-agnostic) + window_end for range join
-    joint_anchors = (
-        good_windows.select("distname", "start_time")
-        .distinct()
-        .withColumn("window_end", f.col("start_time") + f.expr(f"INTERVAL {window_hours} HOURS"))
-        .withColumnRenamed("start_time", "window_anchor")
+    # good_windows.start_time IS the stride anchor — name it accordingly.
+    anchors = good_windows.select(
+        "distname", f.col("start_time").alias("anchor_start_time")
+    ).distinct()
+    anchor_spans = anchors.withColumn(
+        "anchor_end",
+        f.col("anchor_start_time") + f.expr(f"INTERVAL {window_hours} HOURS"),
     )
 
-    # range join — membership on distname + time span ONLY.
-    # kpi_id deliberately excluded from the join predicate.
-    joined = (
-        pm_df_long_imputed_selected.alias("p")
+    # (a) keep only the (distname, kpi_id) pairs that survived into good_windows
+    selected_pairs = good_windows.select("distname", "kpi_id").distinct()
+    pm = pm_df_long_selected.join(selected_pairs, on=["distname", "kpi_id"], how="left_semi")
+
+    # (b) keep only rows inside at least one window span — left_semi is a FILTER,
+    #     not a 7× materialisation: a row survives once if any anchor covers it.
+    pm_in_windows = pm.alias("p").join(
+        anchor_spans.alias("s"),
+        on=[
+            f.col("p.distname") == f.col("s.distname"),
+            f.col("p.start_time") >= f.col("s.anchor_start_time"),
+            f.col("p.start_time") < f.col("s.anchor_end"),
+        ],
+        how="left_semi",
+    )
+
+    # (c) mark ONLY the rows whose timestamp is an anchor start; null elsewhere.
+    #     equality left-join adds one column without growing the row count.
+    return (
+        pm_in_windows.alias("p")
         .join(
-            joint_anchors.alias("g"),
+            anchors.alias("a"),
             on=[
-                pm_df_long_imputed_selected.distname == joint_anchors.distname,
-                pm_df_long_imputed_selected.start_time >= joint_anchors.window_anchor,
-                pm_df_long_imputed_selected.start_time < joint_anchors.window_end,
+                f.col("p.distname") == f.col("a.distname"),
+                f.col("p.start_time") == f.col("a.anchor_start_time"),
             ],
-            how="inner",
+            how="left",
         )
-        .select("p.*", "g.window_anchor")
+        .withColumn("window_anchor", f.col("a.anchor_start_time"))  # null = not a start
+        .select(
+            "p.distname",
+            "p.bts_id",
+            "p.kpi_id",
+            "p.start_time",
+            "window_anchor",
+            "p.kpi_value",
+            "p.imputed_flag",
+        )
     )
-
-    # compute hour_idx — position within the window
-    indexed = joined.withColumn(
-        "hour_idx",
-        (
-            (f.col("start_time").cast(LongType()) - f.col("window_anchor").cast(LongType())) / 3600
-        ).cast("integer"),
-    ).select(
-        "distname",
-        "bts_id",
-        "kpi_id",
-        f.col("window_anchor"),
-        "hour_idx",
-        "kpi_value",
-        "imputed_flag",
-        "is_flat",
-    )
-
-    return indexed
 
 
 def extract_valid_pm_windows(
