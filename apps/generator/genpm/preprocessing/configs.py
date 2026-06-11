@@ -1,7 +1,5 @@
 from dataclasses import dataclass
 
-from genpm.utils.consts import MAX_IMPUTABLE_GAP
-
 
 @dataclass
 class PreprocessingConfig:
@@ -12,16 +10,16 @@ class PreprocessingConfig:
     # Path prefix - output paths
     output_path_prefix: str
     # KPI coverage - filter thresholds
-    # KPI global density threshold
+    # Minimum non-null fraction over a series' own active range (Stage 0 density check)
     kpi_min_global_density: float
-    kpi_global_min_frac_cells_passing: float
     # Max gap filtering
     min_imputable_gap_frac: float
     # Stale kpis filtering
     kpi_min_std_val: float
     max_zero_frac: float
-    # prefilter kpis
-    # SKIP PREFILTER KPIS
+    # Stage 5 prefilter thresholds (honest cuts — no fictional theoretical max)
+    min_frac_contributing_cells: float = 0.50
+    min_total_windows: int = 1
     # Training data windows
     # NOTE: As training will be done in windows of K x N x F
     # (
@@ -35,10 +33,15 @@ class PreprocessingConfig:
     stride_hours: int = 24
 
     # Max gap - threshold for filtering the biggest windows
-    max_gap_hours: int = MAX_IMPUTABLE_GAP
+    max_gap_hours: int = 24
 
     # Greedy approach - minimal joint windows available in data
     min_joint_windows_abs: int | None = None
+    # Floor relaxation: effective floor = min(elbow_floor, seed_coverage × frac).
+    # 1.0 = use elbow as-is.  Lower values trade joint-window count for more KPIs.
+    # Start at 0.3–0.5 when only a handful of KPIs are selected.
+    greedy_min_coverage_frac: float = 1.0
+    kpi_window_preference: float = 0.5
 
     # Impute bool - TODO: include this option
     impute: bool = True
