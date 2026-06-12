@@ -20,7 +20,7 @@ cfg = PreprocessingConfig(
     kpi_definitions_raw_path=str(SHARED_DIR_PATH / "raw_data" / "kpi_definitions"),
     simple_reports_raw_path=str(SHARED_DIR_PATH / "raw_data" / "simple_reports"),
     # output_path_prefix=str(SHARED_DIR_PATH / "preprocessed_dataset" / "final_scaled_only_minmax"),
-    output_path_prefix=str(SHARED_DIR_PATH / "preprocessed_dataset" / "final_v2"),
+    output_path_prefix=str(SHARED_DIR_PATH / "preprocessed_dataset" / "final_pmcm"),
     kpi_min_global_density=0.5,
     min_imputable_gap_frac=0.8,
     kpi_min_std_val=0.01,
@@ -34,5 +34,5 @@ cfg = PreprocessingConfig(
 )
 
 if __name__ == "__main__":
-    sdm = SparkDataManager(SPARK_CONFIGS["HALF_SAFE"])
+    sdm = SparkDataManager(SPARK_CONFIGS["FULL_RESOURCES"])
     run_preprocessing(sdm, cfg)

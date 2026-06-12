@@ -35,6 +35,7 @@ ANY ADDITIONAL FEATURES
 
 def series_imputability_gate(
     gap_filled_df: DataFrame,
+    group_cols: tuple[str, ...],
     *,
     min_global_density: float = 0.80,
     max_imputable_gap: int = 6,
@@ -114,12 +115,12 @@ def series_imputability_gate(
         AND gap_shape_passes are True are included.  The caller joins on
         both columns to filter gap_filled_df at the series level.
     """
-    # ── Step 1: density per (distname, kpi_id) ─────────────────────────────
+    # ── Step 1: density per (group_cols, kpi_id) ───────────────────────────
     # The gap-filled spine has exactly one row per hour inside the KPI's own
     # [min_t, max_t].  count(*) is therefore the total active-range length and
     # needs no correction for cross-KPI padding.
     density_stats = (
-        gap_filled_df.groupBy("kpi_id", "distname")
+        gap_filled_df.groupBy("kpi_id", *group_cols)
         .agg(
             # count non-null hours: 1 where kpi_value exists, 0 where it is null
             f.sum(f.when(f.col("kpi_value").isNotNull(), 1).otherwise(0)).alias("non_null_count"),
@@ -130,10 +131,10 @@ def series_imputability_gate(
         .withColumn("global_density", f.col("non_null_count") / f.col("total_hours"))
         # True when the series is at least min_global_density non-null
         .withColumn("density_passes", f.col("global_density") >= f.lit(min_global_density))
-        .select("kpi_id", "distname", "density_passes")
+        .select("kpi_id", *group_cols, "density_passes")
     )
 
-    # Step 2: null-run detection per (distname, kpi_id)
+    # Step 2: null-run detection per (group_cols, kpi_id)
     # A "null run" is a contiguous streak of null-valued spine rows.  We detect
     # run boundaries with a lag-based finite-difference:
     #
@@ -145,8 +146,8 @@ def series_imputability_gate(
     #                    i.e., the first null row of each new run
     #   run_id         = cumulative sum of null_run_start from the start of the
     #                    partition; gives each null run a unique integer ID
-    #                    within its (distname, kpi_id) partition
-    lag_w = Window.partitionBy("distname", "kpi_id").orderBy("start_time")
+    #                    within its (group_cols, kpi_id) partition
+    lag_w = Window.partitionBy(*group_cols, "kpi_id").orderBy("start_time")
 
     with_runs = (
         gap_filled_df
@@ -171,12 +172,12 @@ def series_imputability_gate(
     # That count is the run length (consecutive null hours).
     null_run_lengths = (
         with_runs.filter(f.col("is_null") == 1)
-        .groupBy("kpi_id", "distname", "run_id")
+        .groupBy("kpi_id", *group_cols, "run_id")
         # count(*) over a single run = number of consecutive null hours
         .agg(f.count("*").alias("run_length"))
     )
 
-    # Step 3: gap-shape score per (distname, kpi_id)
+    # Step 3: gap-shape score per (group_cols, kpi_id)
     # For each series, what fraction of its null runs are "short enough"
     # (≤ max_imputable_gap hours) to be imputed without fabricating signal?
     # mean(short_flag) = count(short runs) / count(all runs).
@@ -191,7 +192,7 @@ def series_imputability_gate(
     #   A single 24-h run wipes out an entire night — imputing it fabricates
     #   a full overnight period of invented values.
     gap_shape_stats = (
-        null_run_lengths.groupBy("kpi_id", "distname")
+        null_run_lengths.groupBy("kpi_id", *group_cols)
         .agg(
             # short_flag = 1 if this run can be safely imputed, 0 if too long
             # mean over all runs = fraction of runs that are short enough
@@ -204,7 +205,7 @@ def series_imputability_gate(
             "gap_shape_passes",
             f.col("imputable_gap_frac") >= f.lit(min_imputable_gap_frac),
         )
-        .select("kpi_id", "distname", "gap_shape_passes")
+        .select("kpi_id", *group_cols, "gap_shape_passes")
     )
 
     # Step 4: combine both gates
@@ -214,7 +215,7 @@ def series_imputability_gate(
     # NULL.  coalesce(gap_shape_passes, True) encodes vacuous truth:
     # "no null runs at all" trivially satisfies the gap-shape check.
     return (
-        density_stats.join(gap_shape_stats, on=["kpi_id", "distname"], how="left")
+        density_stats.join(gap_shape_stats, on=["kpi_id", *group_cols], how="left")
         # vacuous truth: zero null runs → no bad gaps → gap shape passes
         .withColumn(
             "gap_shape_passes",
@@ -222,12 +223,13 @@ def series_imputability_gate(
         )
         # series survives only when BOTH density AND gap shape are acceptable
         .filter(f.col("density_passes") & f.col("gap_shape_passes"))
-        .select("kpi_id", "distname")
+        .select("kpi_id", *group_cols)
     )
 
 
 def fill_internal_gaps(
     df: DataFrame,
+    grouping_cols: tuple[str, ...],
     time_col: str = "start_time",
     freq_hours: int = 1,
 ) -> DataFrame:
@@ -250,17 +252,17 @@ def fill_internal_gaps(
     """
     interval_expr = f"INTERVAL {freq_hours} HOUR"
 
-    df = df.repartition("distname", "kpi_id")
+    df = df.repartition(*grouping_cols, "kpi_id")
 
-    # Dedup once, up front: at most one row per (distname, kpi_id, bts_id, hour).
+    # Dedup once, up front: at most one row per (grouping_cols, kpi_id, hour).
     # Downstream window stats use a plain count() of non-null rows as a proxy
     # for the distinct-hour count; that equivalence only holds if the spine has
     # no duplicate timestamps per series. Paying the dedup here (one pass) is
     # far cheaper than forcing a countDistinct on every window in Stage 2.
-    df = df.dropDuplicates(["distname", "kpi_id", "bts_id", time_col])
+    df = df.dropDuplicates([*grouping_cols, "kpi_id", time_col])
 
-    # Per-series bounds — NOT distname-wide
-    series_bounds = df.groupBy("distname", "kpi_id", "bts_id").agg(
+    # Per-series bounds — NOT group-wide
+    series_bounds = df.groupBy(*grouping_cols, "kpi_id").agg(
         f.min(time_col).alias("min_t"),
         f.max(time_col).alias("max_t"),
     )
@@ -272,11 +274,12 @@ def fill_internal_gaps(
     ).drop("min_t", "max_t")
 
     # Left-join actual values onto the per-series spine
-    return series_spine.join(df, on=["distname", "kpi_id", "bts_id", time_col], how="left")
+    return series_spine.join(df, on=[*grouping_cols, "kpi_id", time_col], how="left")
 
 
 def drop_windows_with_nulls(
     pm_df: DataFrame,
+    group_cols: tuple[str, ...],
     *,
     window_hours: int = 168,
     stride_hours: int = 24,
@@ -343,26 +346,26 @@ def drop_windows_with_nulls(
     n_overlap = window_hours // stride_hours  # 7 for W=168, S=24
     window_end_offset_s = (window_hours - 1) * 3600  # seconds
 
-    # ── distname-level origin (broadcast-safe) ──────────────────────────
-    distname_origin = pm_df.groupBy("distname").agg(
+    # ── group-level origin (broadcast-safe) ─────────────────────────────
+    group_origin = pm_df.groupBy(*group_cols).agg(
         f.min(f.unix_timestamp("start_time")).alias("dist_origin_epoch"),
     )
 
-    # ── per-(distname, kpi_id) series end for tail filter ───────────────
+    # ── per-(group_cols, kpi_id) series end for tail filter ─────────────
     series_end = (
         pm_df.filter(f.col("kpi_value").isNotNull())
-        .groupBy("distname", "kpi_id")
+        .groupBy(*group_cols, "kpi_id")
         .agg(
             f.max(f.unix_timestamp("start_time")).alias("series_end_epoch"),
         )
     )
 
-    # ── distname lookup (one cell per distname × kpi_id) ───────────────
-    distname_lookup = pm_df.select("distname", "kpi_id").distinct()
+    # ── group lookup (one entry per group × kpi_id) ──────────────────────
+    group_lookup = pm_df.select(*group_cols, "kpi_id").distinct()
 
     # ── attach origin & compute offset ─────────────────────────────────
     base = (
-        pm_df.join(f.broadcast(distname_origin), on="distname")
+        pm_df.join(f.broadcast(group_origin), on=list(group_cols))
         .withColumn("row_epoch", f.unix_timestamp("start_time"))
         .withColumn(
             "offset_h",
@@ -407,7 +410,7 @@ def drop_windows_with_nulls(
     )
 
     window_stats = (
-        non_null.groupBy("distname", "kpi_id", "anchor_epoch")
+        non_null.groupBy(*group_cols, "kpi_id", "anchor_epoch")
         .agg(
             # Plain count(), NOT countDistinct: after the Stage-1 dedup there is
             # at most one row per (series, hour), so count of non-null rows in a
@@ -436,16 +439,16 @@ def drop_windows_with_nulls(
 
     # ── tail filter + attach metadata ──────────────────────────────────
     result = (
-        window_stats.join(series_end, on=["distname", "kpi_id"])
+        window_stats.join(series_end, on=[*group_cols, "kpi_id"])
         .filter(f.col("anchor_epoch") + f.lit(window_end_offset_s) <= f.col("series_end_epoch"))
         .drop("series_end_epoch", "non_null_count", "min_hour_idx", "max_hour_idx")
-        .join(distname_lookup, on=["distname", "kpi_id"])
+        .join(group_lookup, on=[*group_cols, "kpi_id"])
         .withColumn(
             "start_time",
             f.from_unixtime(f.col("anchor_epoch")).cast("timestamp"),
         )
         .select(
-            "distname",
+            *group_cols,
             "kpi_id",
             "start_time",
             "window_valid_frac",
@@ -465,6 +468,7 @@ def discard_invalid_windows(
 
 def compute_kpi_yield_stats(
     good_windows: DataFrame,
+    group_cols: tuple[str, ...],
     *,
     total_distinct_cells: int,
 ) -> DataFrame:
@@ -479,7 +483,7 @@ def compute_kpi_yield_stats(
         good_windows.groupBy("kpi_id")
         .agg(
             f.count("*").alias("total_windows"),
-            f.countDistinct("distname").alias("n_cells"),
+            f.countDistinct(*group_cols).alias("n_cells"),
         )
         .withColumn(
             "frac_contributing_cells",
@@ -556,7 +560,8 @@ def prefilter_kpis(
 def _collect_kpi_coverage(
     good_windows: DataFrame,
     candidates: list[str],
-) -> tuple[np.ndarray, list[str], list[tuple[str, str]]]:
+    group_cols: tuple[str, ...],
+) -> tuple[np.ndarray, list[str], list[tuple[str, ...]]]:
     """Collect KPI coverage once and pack it into a boolean numpy matrix.
 
     This is the Spark-driver collect for the whole greedy stage
@@ -565,32 +570,32 @@ def _collect_kpi_coverage(
     -------
     M : np.ndarray[bool], shape (n_kpis, n_anchors)
         ``M[i, j]`` is True when KPI ``kpi_ids[i]`` has a good window at the
-        ``(distname, start_time)`` pair ``anchor_pairs[j]``.
+        ``(*group_cols, start_time)`` tuple ``anchor_pairs[j]``.
     kpi_ids : list[str]
         Row → KPI id.  Restricted to ``candidates`` that actually appear in the
         collected coverage, ordered by descending coverage so the natural seed
         (most-covering KPI) is row 0.
-    anchor_pairs : list[tuple[str, str]]
-        Column → (distname, start_time) pair.
+    anchor_pairs : list[tuple[str, ...]]
+        Column → (*group_cols, start_time) tuple.
     """
-    # One scan: per (kpi, distname) the set of anchor start_times. start_time is
-    # cast to string so the (distname, start_time) tuples hash cleanly.
+    # One scan: per (kpi, *group_cols) the set of anchor start_times. start_time is
+    # cast to string so the (*group_cols, start_time) tuples hash cleanly.
     rows = (
         good_windows.withColumn("start_time", f.col("start_time").cast("string"))
-        .groupBy("kpi_id", "distname")
+        .groupBy("kpi_id", *group_cols)
         .agg(f.collect_set("start_time").alias("anchors"))
         .collect()
     )
 
     candidate_set = set(candidates)
 
-    # kpi_id → set of (distname, start_time) anchor pairs, candidates only.
-    kpi_coverage: dict[str, set[tuple[str, str]]] = {}
+    # kpi_id → set of (*group_cols, start_time) anchor tuples, candidates only.
+    kpi_coverage: dict[str, set[tuple[str, ...]]] = {}
     for row in rows:
         kpi = row["kpi_id"]
         if kpi not in candidate_set:
             continue
-        pairs = {(row["distname"], anchor) for anchor in row["anchors"]}
+        pairs = {tuple(row[c] for c in group_cols) + (anchor,) for anchor in row["anchors"]}
         kpi_coverage.setdefault(kpi, set()).update(pairs)
 
     # Order rows by descending coverage so row 0 is the natural seed.
@@ -710,6 +715,7 @@ def suggest_threshold(curve: list[dict], elbow_idx: int) -> int:
 def greedy_joint_kpi_selection(
     good_windows: DataFrame,
     candidates: list[str],
+    group_cols: tuple[str, ...],
     *,
     min_joint_windows_abs: int | None = None,
     forced_kpis: list[str] | None = None,
@@ -738,7 +744,7 @@ def greedy_joint_kpi_selection(
         ``min_joint_windows_abs``) chooses the KPI count.
     """
     # ── single Spark collect → numpy coverage matrix ─────────────────────────
-    M, kpi_ids, _anchor_pairs = _collect_kpi_coverage(good_windows, candidates)
+    M, kpi_ids, _anchor_pairs = _collect_kpi_coverage(good_windows, candidates, group_cols)
     row_of = {kpi: i for i, kpi in enumerate(kpi_ids)}
 
     # ── resolve forced KPIs to rows; skip any without collected coverage ─────
@@ -814,6 +820,7 @@ def greedy_joint_kpi_selection(
 def filter_joint_complete_windows(
     good_windows: DataFrame,
     selected_kpis: list[str],
+    group_cols: tuple[str, ...],
 ) -> DataFrame:
     """Keep only anchors where **every** selected KPI is complete.
 
@@ -851,18 +858,19 @@ def filter_joint_complete_windows(
     selected_windows = good_windows.filter(f.col("kpi_id").isin(selected_kpis))
 
     complete_anchors = (
-        selected_windows.groupBy("distname", "start_time")
+        selected_windows.groupBy(*group_cols, "start_time")
         .agg(f.countDistinct("kpi_id").alias("n_kpis_present"))
         .filter(f.col("n_kpis_present") == f.lit(n_selected))
-        .select("distname", "start_time")
+        .select(*group_cols, "start_time")
     )
 
-    return selected_windows.join(complete_anchors, on=["distname", "start_time"], how="inner")
+    return selected_windows.join(complete_anchors, on=[*group_cols, "start_time"], how="inner")
 
 
 def emit_window_index(
     pm_df_long_selected: DataFrame,
     good_windows: DataFrame,
+    group_cols: tuple[str, ...],
     window_hours: int = 168,
 ) -> DataFrame:
     """Mark window starts on the long PM data WITHOUT materialising windows.
@@ -900,23 +908,24 @@ def emit_window_index(
     """
     # good_windows.start_time IS the stride anchor — name it accordingly.
     anchors = good_windows.select(
-        "distname", f.col("start_time").alias("anchor_start_time")
+        *group_cols, f.col("start_time").alias("anchor_start_time")
     ).distinct()
     anchor_spans = anchors.withColumn(
         "anchor_end",
         f.col("anchor_start_time") + f.expr(f"INTERVAL {window_hours} HOURS"),
     )
 
-    # (a) keep only the (distname, kpi_id) pairs that survived into good_windows
-    selected_pairs = good_windows.select("distname", "kpi_id").distinct()
-    pm = pm_df_long_selected.join(selected_pairs, on=["distname", "kpi_id"], how="left_semi")
+    # (a) keep only the (group_cols, kpi_id) pairs that survived into good_windows
+    selected_pairs = good_windows.select(*group_cols, "kpi_id").distinct()
+    pm = pm_df_long_selected.join(selected_pairs, on=[*group_cols, "kpi_id"], how="left_semi")
 
     # (b) keep only rows inside at least one window span — left_semi is a FILTER,
     #     not a 7× materialisation: a row survives once if any anchor covers it.
+    group_span_cond = [f.col(f"p.{c}") == f.col(f"s.{c}") for c in group_cols]
     pm_in_windows = pm.alias("p").join(
         anchor_spans.alias("s"),
-        on=[
-            f.col("p.distname") == f.col("s.distname"),
+        on=group_span_cond
+        + [
             f.col("p.start_time") >= f.col("s.anchor_start_time"),
             f.col("p.start_time") < f.col("s.anchor_end"),
         ],
@@ -925,20 +934,20 @@ def emit_window_index(
 
     # (c) mark ONLY the rows whose timestamp is an anchor start; null elsewhere.
     #     equality left-join adds one column without growing the row count.
+    group_anchor_cond = [f.col(f"p.{c}") == f.col(f"a.{c}") for c in group_cols]
     return (
         pm_in_windows.alias("p")
         .join(
             anchors.alias("a"),
-            on=[
-                f.col("p.distname") == f.col("a.distname"),
+            on=group_anchor_cond
+            + [
                 f.col("p.start_time") == f.col("a.anchor_start_time"),
             ],
             how="left",
         )
         .withColumn("window_anchor", f.col("a.anchor_start_time"))  # null = not a start
         .select(
-            "p.distname",
-            "p.bts_id",
+            *[f"p.{c}" for c in group_cols],
             "p.kpi_id",
             "p.start_time",
             "window_anchor",
