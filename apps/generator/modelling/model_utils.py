@@ -9,6 +9,41 @@ from keras import layers, ops
 from tsgm.backend import get_backend
 
 
+class CellConditioning(keras.layers.Layer):
+    """
+    Turns compact Y (B, 6) into a per-timestep conditioning tensor (B, T, E+5).
+    Input y_compact columns:
+        0: cell_idx (integer, stored as float)
+        1: holiday
+        2-5: seasonal features
+    """
+
+    def __init__(self, n_cells: int, embed_dim: int = 32, seq_len: int = 168, **kwargs):
+        super().__init__(**kwargs)
+        self.n_cells = n_cells
+        self.embed_dim = embed_dim
+        self.seq_len = seq_len
+        self.cell_embedding = layers.Embedding(n_cells, embed_dim)
+
+    def call(self, y_compact):
+        # y_compact: (B, 6)
+        cell_idx = ops.cast(y_compact[:, 0], "int32")  # (B,)
+        ctx = y_compact[:, 1:]  # (B, 5) holiday + seasonal
+        cell_emb = self.cell_embedding(cell_idx)  # (B, E)
+        cond = ops.concatenate([cell_emb, ctx], axis=-1)  # (B, E+5) = (B, 37)
+        # Broadcast to every hour
+        cond_rep = ops.repeat(cond[:, None, :], [self.seq_len], axis=1)  # (B, T, 37)
+        return cond_rep
+
+    def get_config(self):
+        return {
+            **super().get_config(),
+            "n_cells": self.n_cells,
+            "embed_dim": self.embed_dim,
+            "seq_len": self.seq_len,
+        }
+
+
 class BetaVAE(keras.Model):
     """
     beta-VAE implementation for unlabeled time series.
@@ -406,6 +441,202 @@ class cBetaVAE(keras.Model):
             return self.train_step_jax(backend, data)
 
 
+# ── model_utils.py (new model class) ─────────────────────────────────────────
+class cBetaVAE_Hierarchical(keras.Model):
+    """
+    Conditional Beta-VAE with hierarchical latent codes.
+
+    z_g : (batch, global_latent_dim) week-level summary
+    z_l : (batch, seq_len, local_latent_dim) hour-level residuals
+
+    Training data: (X, y_compact) where y_compact is (batch, 6).
+    """
+
+    def __init__(
+        self,
+        encoder: keras.Model,
+        decoder: keras.Model,
+        cond_layer: CellConditioning,
+        global_latent_dim: int,
+        local_latent_dim: int,
+        seq_len: int,
+        beta: float = 0.0,
+        free_bits_global: float = 0.1,
+        free_bits_local: float = 0.05,
+        **kwargs,
+    ) -> None:
+        super().__init__(**kwargs)
+        self.encoder = encoder
+        self.decoder = decoder
+        self.cond_layer = cond_layer
+        self.global_latent_dim = global_latent_dim
+        self.local_latent_dim = local_latent_dim
+        self._seq_len = seq_len
+        self.beta = beta
+        self.free_bits_global = free_bits_global
+        self.free_bits_local = free_bits_local
+
+        self.total_loss_tracker = keras.metrics.Mean(name="loss")
+        self.reconstruction_loss_tracker = keras.metrics.Mean(name="reconstruction_loss")
+        self.kl_loss_tracker = keras.metrics.Mean(name="kl_loss")
+
+    @property
+    def metrics(self) -> list:
+        return [
+            self.total_loss_tracker,
+            self.reconstruction_loss_tracker,
+            self.kl_loss_tracker,
+        ]
+
+    def _encode(self, x: tsgm.types.Tensor, y: tsgm.types.Tensor, training: bool) -> tuple:
+        out = self.encoder([x, y], training=training)
+        if self.local_latent_dim == 0:
+            z_g_mean, z_g_log_var, z_g = out
+            return z_g_mean, z_g_log_var, None, None, z_g, None
+        z_g_mean, z_g_log_var, z_l_mean, z_l_log_var, z_g, z_l = out
+        return z_g_mean, z_g_log_var, z_l_mean, z_l_log_var, z_g, z_l
+
+    def call(self, data: tsgm.types.Tensor) -> tsgm.types.Tensor:
+        if not isinstance(data, (list, tuple)) or len(data) != 2:  # noqa
+            return data
+        x, y = data
+        *_, z_g, z_l = self._encode(x, y, training=False)
+        return self.decoder(self._build_decoder_input(z_g, z_l, y), training=False)
+
+    def generate(self, y_compact: tsgm.types.Tensor) -> tuple[tsgm.types.Tensor, tsgm.types.Tensor]:
+        batch_size = ops.shape(y_compact)[0]
+        dtype = "float32" if os.environ.get("KERAS_BACKEND") == "torch" else y_compact.dtype
+        z_g = keras.random.normal((batch_size, self.global_latent_dim), dtype=dtype)
+        z_l = None
+        if self.local_latent_dim > 0:
+            z_l = keras.random.normal(
+                (batch_size, self._seq_len, self.local_latent_dim), dtype=dtype
+            )
+        dec_in = self._build_decoder_input(z_g, z_l, y_compact)
+        return self.decoder(dec_in, training=False), y_compact
+
+    def _build_decoder_input(
+        self,
+        z_g: tsgm.types.Tensor,
+        z_l: tsgm.types.Tensor | None,
+        y_compact: tsgm.types.Tensor,
+    ) -> list[tsgm.types.Tensor]:
+        """z_g seeds the LSTM; per-step cond carries cell embed + calendar context."""
+        cond_rep = self.cond_layer(y_compact)
+        if self.local_latent_dim > 0 and z_l is not None:
+            cond_rep = ops.concatenate([cond_rep, z_l], axis=-1)
+        return [z_g, cond_rep]
+
+    def _get_reconstruction_loss(self, x: tsgm.types.Tensor, x_hat: tsgm.types.Tensor) -> float:
+        return ops.mean(ops.square(x - x_hat))
+
+    def _kl_loss(
+        self,
+        mean: tsgm.types.Tensor,
+        log_var: tsgm.types.Tensor,
+        free_bits: float,
+    ) -> float:
+        if len(mean.shape) > 2:
+            mean = ops.reshape(mean, (ops.shape(mean)[0], -1))
+            log_var = ops.reshape(log_var, (ops.shape(log_var)[0], -1))
+        log_var = ops.clip(log_var, -6.0, 2.0)
+        kl_per_dim = -0.5 * (1 + log_var - ops.square(mean) - ops.exp(log_var))
+        if free_bits > 0.0:
+            kl_per_dim = ops.maximum(kl_per_dim, free_bits)
+        return ops.mean(ops.sum(kl_per_dim, axis=-1))
+
+    def _compute_losses(
+        self,
+        x: tsgm.types.Tensor,
+        y: tsgm.types.Tensor,
+        z_g_mean: tsgm.types.Tensor,
+        z_g_log_var: tsgm.types.Tensor,
+        z_l_mean: tsgm.types.Tensor,
+        z_l_log_var: tsgm.types.Tensor,
+        z_g: tsgm.types.Tensor,
+        z_l: tsgm.types.Tensor,
+    ) -> tuple[float, float, float]:
+        dec_in = self._build_decoder_input(z_g, z_l, y)
+        x_hat = self.decoder(dec_in, training=True)
+        reconstruction_loss = self._get_reconstruction_loss(x, x_hat)
+        kl_g = self._kl_loss(z_g_mean, z_g_log_var, self.free_bits_global)
+        kl_l = 0.0
+        if self.local_latent_dim > 0 and z_l_mean is not None:
+            kl_l = self._kl_loss(z_l_mean, z_l_log_var, self.free_bits_local)
+        kl_loss = kl_g + kl_l
+        total_loss = reconstruction_loss + self.beta * kl_loss
+        return total_loss, reconstruction_loss, kl_loss
+
+    def train_step_tf(self, tf, data: tsgm.types.Tensor) -> dict[str, float]:
+        x, y = data
+        with tf.GradientTape() as tape:
+            z_g_mean, z_g_log_var, z_l_mean, z_l_log_var, z_g, z_l = self._encode(
+                x, y, training=True
+            )
+            total_loss, reconstruction_loss, kl_loss = self._compute_losses(
+                x, y, z_g_mean, z_g_log_var, z_l_mean, z_l_log_var, z_g, z_l
+            )
+        grads = tape.gradient(total_loss, self.trainable_weights)
+        self.optimizer.apply_gradients(zip(grads, self.trainable_weights, strict=False))
+        self.total_loss_tracker.update_state(total_loss)
+        self.reconstruction_loss_tracker.update_state(reconstruction_loss)
+        self.kl_loss_tracker.update_state(kl_loss)
+        return {
+            "loss": self.total_loss_tracker.result(),
+            "reconstruction_loss": self.reconstruction_loss_tracker.result(),
+            "kl_loss": self.kl_loss_tracker.result(),
+        }
+
+    def train_step_torch(self, torch, data: tsgm.types.Tensor) -> dict[str, float]:
+        x, y = data
+        z_g_mean, z_g_log_var, z_l_mean, z_l_log_var, z_g, z_l = self._encode(x, y, training=True)
+        total_loss, reconstruction_loss, kl_loss = self._compute_losses(
+            x, y, z_g_mean, z_g_log_var, z_l_mean, z_l_log_var, z_g, z_l
+        )
+        if hasattr(total_loss, "shape") and len(total_loss.shape) > 0:
+            total_loss = ops.mean(total_loss)
+        self.zero_grad()
+        total_loss.backward()
+
+        trainable_weights = [v for v in self.trainable_weights]
+        gradients = [v.value.grad for v in trainable_weights]
+        with torch.no_grad():
+            self.optimizer.apply_gradients(list(zip(gradients, trainable_weights, strict=False)))
+
+        self.total_loss_tracker.update_state(total_loss)
+        self.reconstruction_loss_tracker.update_state(reconstruction_loss)
+        self.kl_loss_tracker.update_state(kl_loss)
+        return {
+            "loss": self.total_loss_tracker.result(),
+            "reconstruction_loss": self.reconstruction_loss_tracker.result(),
+            "kl_loss": self.kl_loss_tracker.result(),
+        }
+
+    def train_step_jax(self, jax, data: tsgm.types.Tensor) -> dict[str, float]:
+        x, y = data
+        z_g_mean, z_g_log_var, z_l_mean, z_l_log_var, z_g, z_l = self._encode(x, y, training=True)
+        total_loss, reconstruction_loss, kl_loss = self._compute_losses(
+            x, y, z_g_mean, z_g_log_var, z_l_mean, z_l_log_var, z_g, z_l
+        )
+        self.total_loss_tracker.update_state(total_loss)
+        self.reconstruction_loss_tracker.update_state(reconstruction_loss)
+        self.kl_loss_tracker.update_state(kl_loss)
+        return {
+            "loss": self.total_loss_tracker.result(),
+            "reconstruction_loss": self.reconstruction_loss_tracker.result(),
+            "kl_loss": self.kl_loss_tracker.result(),
+        }
+
+    def train_step(self, data: tsgm.types.Tensor) -> dict[str, float]:
+        backend = get_backend()
+        if os.environ.get("KERAS_BACKEND") == "tensorflow":
+            return self.train_step_tf(backend, data)
+        elif os.environ.get("KERAS_BACKEND") == "torch":
+            return self.train_step_torch(backend, data)
+        elif os.environ.get("KERAS_BACKEND") == "jax":
+            return self.train_step_jax(backend, data)
+
+
 class Architecture(abc.ABC):
     @abc.abstractproperty
     def arch_type(self):
@@ -442,6 +673,28 @@ class Sampling(keras.layers.Layer):
         epsilon = keras.random.normal(shape=ops.shape(z_mean))
         #  ops for keras3.0
         return z_mean + ops.exp(0.5 * z_log_var) * epsilon
+
+
+class DualSampling(keras.layers.Layer):
+    """
+    Samples global z_g and local z_l from their respective mean/log_var heads.
+    Inputs:
+        z_g_mean, z_g_log_var : (B, G)
+        z_l_mean, z_l_log_var : (B, T, L)
+    Outputs:
+        z_g : (B, G)
+        z_l : (B, T, L)
+    """
+
+    def call(self, inputs):
+        z_g_mean, z_g_log_var, z_l_mean, z_l_log_var = inputs
+        z_g_log_var = ops.clip(z_g_log_var, -6.0, 2.0)
+        z_l_log_var = ops.clip(z_l_log_var, -6.0, 2.0)
+        eps_g = keras.random.normal(ops.shape(z_g_mean))
+        eps_l = keras.random.normal(ops.shape(z_l_mean))
+        z_g = z_g_mean + ops.exp(0.5 * z_g_log_var) * eps_g
+        z_l = z_l_mean + ops.exp(0.5 * z_l_log_var) * eps_l
+        return z_g, z_l
 
 
 class BaseVAEArchitecture(Architecture):
@@ -623,7 +876,7 @@ class cVAE_LSTMArchitecture(BaseVAEArchitecture):
 
 class HourlyPositionalEncoding(keras.layers.Layer):
     """
-    Sinusoidal positional encoding tuned to hourly telecom PM windows.
+    Sinusoidal positional encoding tuned to hourly windows.
 
     Concatenates 4 fixed channels to the last dimension of the input:
         sin(2π·t/24),  cos(2π·t/24)   — hour-of-day cycle (period = 24 h)
@@ -918,3 +1171,131 @@ class cVAE_LSTMv4Architecture(BaseVAEArchitecture):
             x = layers.Dropout(rate=drop)(x)
         d_output = layers.TimeDistributed(layers.Dense(self._feat_dim, activation="sigmoid"))(x)
         return keras.Model(inputs, d_output, name="decoder")
+
+
+class cVAE_LSTMv5Architecture(BaseVAEArchitecture):
+    """
+    v5: cell embedding + global latent (optional per-hour local latent).
+
+    Decoder uses z_g as LSTM initial state (not tiled).  Per-step decoder input
+    is conditioning only (+ optional z_l), so the LSTM can unroll temporally.
+
+    Recommended start: local_latent_dim=0, global_latent_dim=64,
+    free_bits_global=0.002, target_beta=2e-4, cyclical KL annealing.
+    """
+
+    arch_type = "vae:conditional_v5"
+
+    def __init__(
+        self,
+        seq_len: int,
+        feat_dim: int,
+        n_cells: int,
+        global_latent_dim: int = 64,
+        local_latent_dim: int = 0,
+        cell_embed_dim: int = 32,
+        hidden_dim: int = 256,
+        n_layers: int = 2,
+        use_attention: bool = True,
+        n_heads: int = 4,
+        min_units: int = 32,
+        max_dropout: float = 0.3,
+        output_activation: str = "sigmoid",  # use "sigmoid" for min-max [0,1] data
+    ):
+        self._seq_len = seq_len
+        self._feat_dim = feat_dim
+        self._n_cells = n_cells
+        self._global_latent_dim = global_latent_dim
+        self._local_latent_dim = local_latent_dim
+        self._cell_embed_dim = cell_embed_dim
+        self._hidden_dim = hidden_dim
+        self._n_layers = n_layers
+        self._use_attention = use_attention
+        self._n_heads = n_heads
+        self._output_activation = output_activation
+        self._layer_units, self._layer_dropouts = _funnel_schedule(
+            hidden_dim, n_layers, min_units, max_dropout
+        )
+        self._attn_key_dim = max((2 * self._layer_units[-1]) // n_heads, 1)
+        self._cond_layer = CellConditioning(n_cells, cell_embed_dim, seq_len)
+        self._encoder = self._build_encoder()
+        self._decoder = self._build_decoder()
+
+    @property
+    def cond_layer(self) -> CellConditioning:
+        return self._cond_layer
+
+    def _build_encoder(self) -> keras.Model:
+        # Inputs
+        x_in = keras.Input(shape=(self._seq_len, self._feat_dim), name="x")  # (B,T,F)
+        y_in = keras.Input(shape=(6,), name="y_compact")  # (B,6)
+        # Conditioning → (B, T, E+5)
+        cond_rep = self._cond_layer(y_in)  # (B,T,37)
+        # Concat KPIs + conditioning, add positional encoding
+        enc_in = ops.concatenate([x_in, cond_rep], axis=-1)  # (B,T,276)
+        x = HourlyPositionalEncoding(self._seq_len)(enc_in)  # (B,T,280)
+        # BiLSTM stack
+        for units, drop in zip(self._layer_units, self._layer_dropouts, strict=False):
+            x = layers.Bidirectional(layers.LSTM(units, return_sequences=True))(x)
+            x = layers.LayerNormalization()(x)
+            x = layers.Dropout(rate=drop)(x)
+        h_seq = x  # (B, T, 2*units_last) e.g. (B, 128, 512)
+        if self._use_attention:
+            attn_out = layers.MultiHeadAttention(
+                num_heads=self._n_heads,
+                key_dim=self._attn_key_dim,
+                dropout=0.1,
+            )(h_seq, h_seq)
+            h_seq = layers.LayerNormalization()(h_seq + attn_out)
+        h_global = layers.Lambda(lambda t: t[:, -1, :], name="last_timestep")(h_seq)
+        h_global = layers.Dense(self._global_latent_dim * 2, activation="relu")(h_global)
+        z_g_mean = layers.Dense(self._global_latent_dim, name="z_g_mean")(h_global)
+        z_g_log_var = layers.Dense(self._global_latent_dim, name="z_g_log_var")(h_global)
+
+        if self._local_latent_dim > 0:
+            z_l_mean = layers.TimeDistributed(
+                layers.Dense(self._local_latent_dim), name="z_l_mean"
+            )(h_seq)
+            z_l_log_var = layers.TimeDistributed(
+                layers.Dense(self._local_latent_dim), name="z_l_log_var"
+            )(h_seq)
+            z_g, z_l = DualSampling()([z_g_mean, z_g_log_var, z_l_mean, z_l_log_var])
+            return keras.Model(
+                inputs=[x_in, y_in],
+                outputs=[z_g_mean, z_g_log_var, z_l_mean, z_l_log_var, z_g, z_l],
+                name="encoder_v5",
+            )
+
+        z_g = Sampling()([z_g_mean, z_g_log_var])
+        return keras.Model(
+            inputs=[x_in, y_in],
+            outputs=[z_g_mean, z_g_log_var, z_g],
+            name="encoder_v5",
+        )
+
+    def _build_decoder(self) -> keras.Model:
+        z_in = keras.Input(shape=(self._global_latent_dim,), name="z_g")
+        cond_dim = self._cell_embed_dim + 5 + self._local_latent_dim
+        cond_in = keras.Input(shape=(self._seq_len, cond_dim), name="cond_seq")
+
+        init_units = self._layer_units[0]
+        h0 = layers.Dense(init_units, activation="tanh", name="dec_h0")(z_in)
+        c0 = layers.Dense(init_units, activation="tanh", name="dec_c0")(z_in)
+
+        x = HourlyPositionalEncoding(self._seq_len)(cond_in)
+        for i, (units, drop) in enumerate(
+            zip(self._layer_units, self._layer_dropouts, strict=False)
+        ):
+            if i == 0:
+                x = layers.LSTM(units, return_sequences=True, name="dec_lstm_0")(
+                    x, initial_state=[h0, c0]
+                )
+            else:
+                x = layers.LSTM(units, return_sequences=True, name=f"dec_lstm_{i}")(x)
+            x = layers.LayerNormalization()(x)
+            x = layers.Dropout(rate=drop)(x)
+
+        d_output = layers.TimeDistributed(
+            layers.Dense(self._feat_dim, activation=self._output_activation)
+        )(x)
+        return keras.Model([z_in, cond_in], d_output, name="decoder_v5")

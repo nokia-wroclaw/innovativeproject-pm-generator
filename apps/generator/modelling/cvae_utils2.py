@@ -111,10 +111,10 @@ def build_y(
 
 
 def build_y_extended(
-    cell_ids: np.ndarray,
+    cell_configs: np.ndarray,
     window_anchors: np.ndarray,
     holiday_flags: np.ndarray,
-    cell_encoder: LabelEncoder,
+    cell_config_encoder: LabelEncoder,
 ) -> np.ndarray:
     """
     Build extended conditioning vector Y per window.
@@ -122,16 +122,18 @@ def build_y_extended(
     Layout: [one-hot cell (n_cells) | holiday (1) | seasonal (4)]
     Returns shape (N, n_cells + 5).
     """
-    n = len(cell_ids)
-    n_cells = len(cell_encoder.classes_)
-
-    y_onehot = np.zeros((n, n_cells), dtype=np.float32)
-    y_onehot[np.arange(n), cell_encoder.transform(cell_ids)] = 1.0
+    y_onehots = np.array()
+    for cell_cfg in cell_configs:
+        n = len(cell_cfg)
+        n_cfgs = len(cell_config_encoder.classes_)
+        y_onehot = np.zeros((n, n_cfgs), dtype=np.float32)
+        y_onehot[np.arange(n), cell_config_encoder.transform(cell_configs)] = 1.0
+        np.concatenate([y_onehots, y_onehot], axis=1)
 
     y_holiday = holiday_flags.reshape(-1, 1).astype(np.float32)
     y_seasonal = np.stack([seasonal_features(pd.Timestamp(ts)) for ts in window_anchors])
 
-    return np.concatenate([y_onehot, y_holiday, y_seasonal], axis=1)
+    return np.concatenate([y_onehots, y_holiday, y_seasonal], axis=1)
 
 
 CONST_KPI_STD_THRESHOLD = 0.05
@@ -176,6 +178,7 @@ def _load_windows_from_list_format(
     pdf: pd.DataFrame,
     feat_cols: list[str],
     cell_id_col: str,
+    cell_config_cols: list[str] | None,
     anchor_col: str,
     hour_col: str,
     holiday_col: str | None,
@@ -198,6 +201,7 @@ def _load_windows_from_list_format(
 
     pdf_ok = pdf.loc[valid]
     cell_ids_arr = pdf_ok[cell_id_col].to_numpy()
+    cell_configs_arr = pdf_ok[cell_config_cols].to_numpy() if cell_config_cols else None
     window_anchors = pd.DatetimeIndex(pd.to_datetime(pdf_ok[anchor_col]))
 
     if holiday_col and holiday_col in pdf_ok.columns:
@@ -205,29 +209,34 @@ def _load_windows_from_list_format(
     else:
         holiday_flags = np.zeros(len(pdf_ok), dtype=np.int32)
 
-    return X[valid], cell_ids_arr, window_anchors, holiday_flags
+    return X[valid], cell_ids_arr, cell_configs_arr, window_anchors, holiday_flags
 
 
 def _load_windows_from_long_format(
     pdf: pd.DataFrame,
     feat_cols: list[str],
     cell_id_col: str,
+    cell_config_cols: list[str] | None,
+    group_cols: list[str],
     anchor_col: str,
     hour_col: str,
     holiday_col: str | None,
     seq_len: int,
 ) -> tuple[np.ndarray, np.ndarray, pd.DatetimeIndex, np.ndarray]:
     """Legacy format — group 168 hourly rows into one window tensor."""
-    groups, cell_ids_list, anchors_list, holiday_list = [], [], [], []
+    groups, cell_ids_list, group_values_list, anchors_list, holiday_list = [], [], [], [], []
 
-    for (cell_id, anchor), g in pdf.groupby([cell_id_col, anchor_col], sort=False):
+    group_keys = list(group_cols) + [anchor_col]
+
+    for key, g in pdf.groupby(group_keys, sort=False):
         g_sorted = g.sort_values(hour_col)
         kpi = g_sorted[feat_cols].to_numpy(dtype=np.float32)
         if len(g_sorted) != seq_len or np.isnan(kpi).any():
             continue
         groups.append(kpi)
-        cell_ids_list.append(cell_id)
-        anchors_list.append(pd.Timestamp(anchor))
+
+        group_values_list.append(key[:-1])
+        anchors_list.append(pd.Timestamp(key[-1]))
         if holiday_col and holiday_col in g_sorted.columns:
             holiday_list.append(int(g_sorted[holiday_col].iloc[0]))
         else:
@@ -236,7 +245,7 @@ def _load_windows_from_long_format(
     if not groups:
         raise ValueError(
             f"No valid windows found in long format — expected {seq_len} rows "
-            f"per ({cell_id_col}, {anchor_col}) group."
+            f"per ({group_cols}, {anchor_col}) group."
         )
 
     return (
@@ -345,106 +354,6 @@ def prepare_data(
         "output_dim": Y_DIM,
         "arch_version": "v5",
     }
-
-
-# def prepare_data(
-#     wide_scaled_path: str | Path,
-#     scaled_params_path: str | Path | None = None,
-#     cell_id_col: str = "distname",
-#     anchor_col: str = "window_anchor",
-#     hour_col: str = "hour_idx",
-#     holiday_col: str | None = None,
-#     meta_cols: set[str] | None = None,
-#     drop_constant_kpis: bool = True,
-#     const_std_threshold: float = CONST_KPI_STD_THRESHOLD,
-# ) -> dict:
-#     """
-#     Load the wide-format windowed parquet, build X and extended Y tensors.
-
-#     Returns dict with keys:
-#         X_scaled, y_extended, window_anchors, cell_ids, scaler,
-#         cell_encoder, kpi_columns, seq_len, feat_dim, n_classes, output_dim
-#     """
-#     if meta_cols is None:
-#         meta_cols = _META_COLS
-
-#     pdf = pd.read_parquet(wide_scaled_path)
-#     feat_cols = sorted([c for c in pdf.columns if c not in meta_cols])
-#     if not feat_cols:
-#         raise ValueError(f"No KPI columns found in '{wide_scaled_path}'.")
-
-#     scaled_params_df = None
-#     if scaled_params_path is not None:
-#         scaled_params_df = pd.read_parquet(scaled_params_path)
-
-#     groups, cell_ids_list, anchors_list, holiday_list = [], [], [], []
-
-#     for (cell_id, anchor), g in pdf.groupby([cell_id_col, anchor_col], sort=False):
-#         g_sorted = g.sort_values(hour_col)
-#         kpi = g_sorted[feat_cols].to_numpy(dtype=np.float32)
-#         if len(g_sorted) != SEQ_LEN or np.isnan(kpi).any():
-#             continue
-#         # # Drop any KPI column that contains at least one NaN anywhere in the dataset.
-#         # nan_cols = [c for c in feat_cols if pdf[c].isna().any()]
-#         # if nan_cols:
-#         #     print(f"Dropping {len(nan_cols)} KPI column(s) with NaN values: {nan_cols}")
-#         # feat_cols = [c for c in feat_cols if c not in nan_cols]
-#         groups.append(kpi)
-#         cell_ids_list.append(cell_id)
-#         anchors_list.append(pd.Timestamp(anchor))
-#         if holiday_col and holiday_col in g_sorted.columns:
-#             holiday_list.append(int(g_sorted[holiday_col].iloc[0]))
-#         else:
-#             holiday_list.append(0)
-
-#     X_scaled = np.stack(groups).astype(np.float32)
-
-#     # dropping constant KPIs decide by threshold
-#     if drop_constant_kpis:
-#         per_feat_std = X_scaled.std(axis=(0, 1))
-#         const_mask = per_feat_std < const_std_threshold
-#         if const_mask.any():
-#             dropped = [c for c, m in zip(feat_cols, const_mask) if m]
-#             print(
-#                 f"Dropping {const_mask.sum()} near-constant KPI column(s) "
-#                 f"(std < {const_std_threshold}): {dropped[:8]}"
-#                 f"{'...' if len(dropped) > 8 else ''}"
-#             )
-#             feat_cols = [c for c, m in zip(feat_cols, const_mask) if not m]
-#             X_scaled = X_scaled[:, :, ~const_mask]
-
-
-#     cell_ids_arr = np.array(cell_ids_list)
-#     window_anchors = pd.DatetimeIndex(anchors_list)
-#     holiday_flags = np.array(holiday_list, dtype=np.int32)
-
-#     cell_encoder = LabelEncoder()
-#     cell_encoder.fit(cell_ids_arr)
-#     y = build_y(cell_ids_arr, window_anchors, holiday_flags, cell_encoder)
-#     n_classes = len(cell_encoder.classes_)
-
-#     print(
-#         f"Loaded {len(X_scaled):,} windows  |  "
-#         f"feat_dim={len(feat_cols)}  |  "
-#         f"cells={n_classes}  |  "
-#         f"Y width={y.shape[1]}"
-#     )
-
-#     return {
-#         "X_scaled": X_scaled,
-#         "y": y,
-#         "window_anchors": window_anchors,
-#         "cell_ids": cell_ids_arr,
-#         "holiday_flags": holiday_flags,
-#         "params_df": scaled_params_df,  # caller sets this to the audit/params DataFrame after scaling
-#         "cell_encoder": cell_encoder,
-#         "kpi_columns": feat_cols,
-#         "seq_len": SEQ_LEN,
-#         "feat_dim": len(feat_cols),
-#         "n_classes": n_classes,
-#         "output_dim": y.shape[1],
-#         "arch_version": "v5",
-#     }
 
 
 # =============================================================================
