@@ -7,6 +7,8 @@ class PreprocessingConfig:
     pm_data_raw_path: str
     kpi_definitions_raw_path: str
     simple_reports_raw_path: str
+    # Intermediate for saving
+    intermediate_path: str
     # Path prefix - output paths
     output_path_prefix: str
     # KPI coverage - filter thresholds
@@ -46,3 +48,5 @@ class PreprocessingConfig:
 
     # Impute bool - TODO: include this option
     impute: bool = True
+    # Verbose
+    verbose: bool = False

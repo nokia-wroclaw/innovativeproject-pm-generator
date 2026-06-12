@@ -16,9 +16,9 @@ PREPROCESSED_DATASET_PATH = SHARED_DIR_PATH / "preprocessed_dataset"
 VERBOSE_DIAGNOSTICS = True
 
 
-def _log_pm_diag(label: str, df: DataFrame, group_cols: tuple[str, ...]) -> None:
+def _log_pm_diag(label: str, df: DataFrame, group_cols: tuple[str, ...], verbose: bool) -> None:
     """Print kpi_id count and kpi×group count for a long-format PM dataframe."""
-    if not VERBOSE_DIAGNOSTICS:
+    if not verbose:
         return
     df = df.cache()
     n_kpi = df.select("kpi_id").distinct().count()
@@ -26,9 +26,9 @@ def _log_pm_diag(label: str, df: DataFrame, group_cols: tuple[str, ...]) -> None
     logger.info(f"[DIAG] {label} | kpi_ids={n_kpi:,}  kpi×group={n_kpi_group:,}")
 
 
-def _log_window_diag(label: str, df: DataFrame, group_cols: tuple[str, ...]) -> None:
+def _log_window_diag(label: str, df: DataFrame, group_cols: tuple[str, ...], verbose: bool) -> None:
     """Print window counts (total + per-group stats) for a window metadata dataframe."""
-    if not VERBOSE_DIAGNOSTICS:
+    if not verbose:
         return
     n_kpi = df.select("kpi_id").distinct().count()
     per_group = (
@@ -54,28 +54,34 @@ def _log_window_diag(label: str, df: DataFrame, group_cols: tuple[str, ...]) -> 
 def _load_data(
     sdm: SparkDataManager, preprocessing_cfg: PreprocessingConfig
 ) -> tuple[DataFrame, DataFrame, DataFrame]:
+    logger.info("Loading raw data: PM, KPI definitions, simple reports")
     pm_df_long = sdm.read_parquet(preprocessing_cfg.pm_data_raw_path)
     kpis_definitions_df = sdm.read_parquet(preprocessing_cfg.kpi_definitions_raw_path)
     simple_reports_df = sdm.read_parquet(preprocessing_cfg.simple_reports_raw_path)
-
+    logger.info("Raw data loaded successfully")
     return pm_df_long, kpis_definitions_df, simple_reports_df
 
 
 def run_preprocessing(sdm: SparkDataManager, preprocessing_cfg: PreprocessingConfig) -> None:
+    logger.info("Starting preprocessing pipeline")
     pm_df_long_raw, kpi_definitions_df_raw, simple_reports_df_raw = _load_data(
         sdm, preprocessing_cfg
     )
 
     pm_df_long_raw = simple_logic.raw_pm_preperation(pm_df_long_raw)
+    logger.info("Raw PM preparation done")
 
     # # KPI version flattening
     pm_df_long, kpi_definitions = simple_logic.coalesce_kpi_version(
         pm_df_long_raw, kpi_definitions_df_raw
     )
+    logger.info("KPI version coalescing done")
 
     pm_df_long, pm_df_const_kpi = simple_logic.pop_constant_kpis(pm_df_long)
+    logger.info("Constant KPIs separated")
 
     simple_reports_pivoted = simple_logic.simple_reports_pivot(simple_reports_df_raw)
+    logger.info("Simple reports pivoted")
 
     simple_report_grouping_cols = ("distname", "bts_id", "datetime")
     cell_config = tuple(
@@ -88,7 +94,22 @@ def run_preprocessing(sdm: SparkDataManager, preprocessing_cfg: PreprocessingCon
     pm_cm_df_long = simple_logic.pm_and_reports_data_joined(
         pm_df_long, simple_reports_pivoted, cell_config
     )
-    # NOTE: INTERMEDIATE SAVES - FOR DEBUGGING AND QUICKER RUNS
+    logger.info(f"PM and CM data joined — grouping cols: {_GROUPING_COLS}")
+
+    # Intermediate saves for better performance
+    pm_cm_df_long = sdm.hard_checkpoint_to_parquet(
+        pm_cm_df_long, "/".join([preprocessing_cfg.intermediate_path, "pm_cm_df_long"])
+    )
+    kpi_definitions = sdm.hard_checkpoint_to_parquet(
+        kpi_definitions, "/".join([preprocessing_cfg.intermediate_path, "kpi_definitions"])
+    )
+    simple_reports_pivoted = sdm.hard_checkpoint_to_parquet(
+        simple_reports_pivoted,
+        "/".join([preprocessing_cfg.intermediate_path, "simple_reports_pivoted"]),
+    )
+    logger.info("Initial checkpoints written")
+
+    # NOTE: INTERMEDIATE SAVES - THOSE ARE DEBUG
 
     # sdm.write_parquet(pm_cm_df_long, PREPROCESSED_DATASET_PATH / "intermediate" / "pm_cm_df_long", mode="overwrite")
     # sdm.write_parquet(kpi_definitions, PREPROCESSED_DATASET_PATH / "intermediate" / "kpi_definitions", mode="overwrite")
@@ -119,16 +140,23 @@ def run_preprocessing(sdm: SparkDataManager, preprocessing_cfg: PreprocessingCon
     # STAGE: COVERAGE ANALYSIS
     # Timestamp frequency uniformoty (1 hour)
     # Perc cell allignment to min max (window coverage handles the rest)
+    logger.info("Stage: coverage analysis — filling internal gaps")
     pm_df_long_filled_gaps = kpi_coverage.fill_internal_gaps(
         pm_cm_df_long, _GROUPING_COLS, "start_time"
     )
     logger.info("COVERAGE - gap-filled rows computed")
-    _log_pm_diag("after fill_internal_gaps", pm_df_long_filled_gaps, _GROUPING_COLS)
+    _log_pm_diag(
+        "after fill_internal_gaps",
+        pm_df_long_filled_gaps,
+        _GROUPING_COLS,
+        preprocessing_cfg.verbose,
+    )
 
     # Stage 0: series-scoped pre-impute gate
     # Drops (group_cols, kpi_id) series that are too sparse OR dominated by long
     # null runs. Joins on BOTH columns so weak series are removed individually —
     # a KPI that survives in any cell carries on; the whole KPI is never dropped.
+    logger.info("Stage: series imputability gate")
     pm_df_long_filled_gaps_filtered = pm_df_long_filled_gaps.join(
         kpi_coverage.series_imputability_gate(
             pm_df_long_filled_gaps,
@@ -140,9 +168,13 @@ def run_preprocessing(sdm: SparkDataManager, preprocessing_cfg: PreprocessingCon
         on=["kpi_id", *_GROUPING_COLS],
         how="inner",
     )
-    pm_df_long_filled_gaps_filtered = pm_df_long_filled_gaps_filtered.cache()
-    print(pm_df_long_filled_gaps_filtered.count())
-    _log_pm_diag("after series_imputability_gate", pm_df_long_filled_gaps_filtered, _GROUPING_COLS)
+
+    _log_pm_diag(
+        "after series_imputability_gate",
+        pm_df_long_filled_gaps_filtered,
+        _GROUPING_COLS,
+        preprocessing_cfg.verbose,
+    )
 
     # # FILTERING READY FOR IMPUTING
 
@@ -159,13 +191,16 @@ def run_preprocessing(sdm: SparkDataManager, preprocessing_cfg: PreprocessingCon
         "after categorize_kpi_with_definitions (join with kpi_definitions)",
         pm_df_long_pre_impute,
         _GROUPING_COLS,
+        preprocessing_cfg.verbose,
     )
 
     # repartition for better imputing
+    logger.info("Repartitioning for imputation")
     pm_df_long_pre_impute = pm_df_long_pre_impute.repartition(
         "kpi_id", *_GROUPING_COLS
     ).sortWithinPartitions("kpi_id", *_GROUPING_COLS, "start_time")
 
+    logger.info("Stage: imputing")
     pm_df_long_imputed = imputing.impute(
         pm_df=pm_df_long_pre_impute,
         group_cols=["kpi_id", *_GROUPING_COLS],
@@ -173,6 +208,10 @@ def run_preprocessing(sdm: SparkDataManager, preprocessing_cfg: PreprocessingCon
         value_col="kpi_value",
         agg_method_col="agg_method",
         max_imputable_gap=MAX_IMPUTABLE_GAP,
+    )
+
+    pm_df_long_imputed = sdm.hard_checkpoint_to_parquet(
+        pm_df_long_imputed, "/".join([preprocessing_cfg.intermediate_path, "pm_cm_df_long"])
     )
 
     # NOTE: INTERMEDIATE SAVES - FOR DEBUGGING AND QUICKER RUNS
@@ -185,7 +224,12 @@ def run_preprocessing(sdm: SparkDataManager, preprocessing_cfg: PreprocessingCon
     # pm_df_long_imputed = sdm.read_parquet(
     #     PREPROCESSED_DATASET_PATH / "intermediate" / "pm_df_long_imputed"
     # )
-    _log_pm_diag("after imputing (pm_df_long_imputed)", pm_df_long_imputed, _GROUPING_COLS)
+    _log_pm_diag(
+        "after imputing (pm_df_long_imputed)",
+        pm_df_long_imputed,
+        _GROUPING_COLS,
+        preprocessing_cfg.verbose,
+    )
 
     # NOTE: There is no way, to allign all kpis to the min of cell earlier
     # The crossjoin for this will be at the end only
@@ -196,33 +240,23 @@ def run_preprocessing(sdm: SparkDataManager, preprocessing_cfg: PreprocessingCon
         window_hours=preprocessing_cfg.window_width_hours,
         stride_hours=preprocessing_cfg.stride_hours,
     )
-    _log_window_diag("after drop_windows_with_nulls", pm_df_windows, _GROUPING_COLS)
+    _log_window_diag(
+        "after drop_windows_with_nulls", pm_df_windows, _GROUPING_COLS, preprocessing_cfg.verbose
+    )
 
     # Stage 2: discard density-failing windows; log good/total in one agg pass
+    logger.info("Stage: discarding invalid windows and computing KPI yield stats")
     good_windows_cleaned = kpi_coverage.discard_invalid_windows(pm_df_windows)
-    density_stats = pm_df_windows.agg(
-        f.count("*").alias("total_windows"),
-        f.sum(f.col("is_good_window").cast("long")).alias("good_windows"),
-        f.countDistinct("kpi_id").alias("kpis_assessed"),
-        f.countDistinct(*_GROUPING_COLS).alias("groups_assessed"),
-    ).first()
-    logger.info(
-        f"[stage 2] window density: "
-        f"{density_stats['good_windows']:,}/{density_stats['total_windows']:,} windows pass "
-        f"({100 * density_stats['good_windows'] / density_stats['total_windows']:.1f}%) "
-        f"| {density_stats['kpis_assessed']} KPIs | {density_stats['groups_assessed']} groups"
-    )
 
     n_cells = good_windows_cleaned.select(*_GROUPING_COLS).distinct().count()
 
     kpi_yield_stats = kpi_coverage.compute_kpi_yield_stats(
         good_windows_cleaned, _GROUPING_COLS, total_distinct_cells=n_cells
     )
-    kpi_yield_stats.select("frac_contributing_cells").summary().show()
 
     valid_kpi_candidates = kpi_coverage.prefilter_kpis(kpi_yield_stats)
 
-    if VERBOSE_DIAGNOSTICS:
+    if preprocessing_cfg.verbose:
         logger.info(f"[DIAG] after prefilter_kpis | candidates={len(valid_kpi_candidates):,}")
 
     # Stage 5: build cached greedy-loop DataFrame from candidate KPIs only
@@ -236,7 +270,10 @@ def run_preprocessing(sdm: SparkDataManager, preprocessing_cfg: PreprocessingCon
     good_windows_candidates.cache()
     good_windows_candidates.count()
     _log_window_diag(
-        "good_windows_candidates (post prefilter)", good_windows_candidates, _GROUPING_COLS
+        "good_windows_candidates (post prefilter)",
+        good_windows_candidates,
+        _GROUPING_COLS,
+        preprocessing_cfg.verbose,
     )
 
     # SCALING HERE
@@ -257,6 +294,7 @@ def run_preprocessing(sdm: SparkDataManager, preprocessing_cfg: PreprocessingCon
     #     how="inner",
     # )
 
+    logger.info("Stage: fitting and applying MinMax scaler")
     scaler = scaling.SimpleMinMaxScaler(
         value_col="kpi_value", group_cols=["kpi_id", *_GROUPING_COLS]
     )
@@ -264,6 +302,7 @@ def run_preprocessing(sdm: SparkDataManager, preprocessing_cfg: PreprocessingCon
     pm_df_long_scaled = scaler.transform(pm_df_long_imputed)
 
     # Greedy joint KPI selection
+    logger.info("Stage: greedy joint KPI selection")
     selected_kpis = kpi_coverage.greedy_joint_kpi_selection(
         good_windows_candidates,
         valid_kpi_candidates,
@@ -273,36 +312,28 @@ def run_preprocessing(sdm: SparkDataManager, preprocessing_cfg: PreprocessingCon
     )
     logger.info(f"Selected {len(selected_kpis)} KPIs from {len(valid_kpi_candidates)} candidates.")
 
-    # joint_anchor_pairs holds start_time as STRING — cast back before the range join
-
-    # joint_anchors_df = sdm.spark.createDataFrame(
-    #     anchor_rows, ["distname", "start_time"]
-    # ).withColumn("start_time", f.col("start_time").cast("timestamp"))
-    # joint_anchors_df = joint_anchors_df.cache()
-    # print(joint_anchors_df.count())
-    # joint_anchors_df.groupby("distname").agg(f.count_distinct("start_time")).show()
-    # joint_anchors_df.groupBy("distname").agg(f.count_distinct("start_time").alias("ccc")).agg(
-    #     f.mean("ccc")
-    # ).show()
-    # print(joint_anchors_df.groupby("distname").agg(f.count_distinct("start_time")).count())
-
-    # POST GREEDY good_windows_cleaned (pre-greedy, post-contiguity)
-    # joint_anchors_df.select("kpi_id").distinct().count()  # you reported 485
-    # joint_anchors_df.select("distname").distinct().count()  # you reported 396
-    # joint_anchors_df.select("distname", "start_time").distinct().count()
-
-    # joint_anchors_df has only (distname, start_time).  attach_windows_index_to_pm
-    # does .select("distname", "start_time") on its good_windows argument and discards
-    # everything else — so this minimal DataFrame is exactly what it needs.
-    #
-    # good_windows_selected below is still needed for flag_flat_series_pre_pelt, which
-    # wants per-(distname, kpi_id) pairs.  Keep it, but pass joint_anchors_df (not
-    # good_windows_selected) to attach_windows_index_to_pm and remove the
-    # filter_joint_complete_windows call further down.
     good_windows_selected = good_windows_candidates.filter(f.col("kpi_id").isin(selected_kpis))
     pm_df_long_scaled = pm_df_long_scaled.filter(f.col("kpi_id").isin(selected_kpis))
-    _log_pm_diag("pm_df_long_imputed_selected (post greedy)", pm_df_long_scaled, _GROUPING_COLS)
-    _log_window_diag("good_windows_selected (post greedy)", good_windows_selected, _GROUPING_COLS)
+    _log_pm_diag(
+        "pm_df_long_imputed_selected (post greedy)",
+        pm_df_long_scaled,
+        _GROUPING_COLS,
+        preprocessing_cfg.verbose,
+    )
+    _log_window_diag(
+        "good_windows_selected (post greedy)",
+        good_windows_selected,
+        _GROUPING_COLS,
+        preprocessing_cfg.verbose,
+    )
+
+    good_windows_selected = sdm.hard_checkpoint_to_parquet(
+        good_windows_selected,
+        "/".join([preprocessing_cfg.intermediate_path, "good_windows_selected"]),
+    )
+    pm_df_long_scaled = sdm.hard_checkpoint_to_parquet(
+        pm_df_long_scaled, "/".join([preprocessing_cfg.intermediate_path, "pm_df_long_scaled"])
+    )
 
     # NOTE: INTERMEDIATE SAVE
     # sdm.write_parquet(
@@ -332,9 +363,15 @@ def run_preprocessing(sdm: SparkDataManager, preprocessing_cfg: PreprocessingCon
         selected_kpis,
         _GROUPING_COLS,
     )
-    _log_window_diag("after filter_joint_complete_windows", good_windows_selected, _GROUPING_COLS)
+    _log_window_diag(
+        "after filter_joint_complete_windows",
+        good_windows_selected,
+        _GROUPING_COLS,
+        preprocessing_cfg.verbose,
+    )
 
     # This function indexes window_start in pm data
+    logger.info("Stage: emitting window index")
     pm_df_long_indexed_winds = kpi_coverage.emit_window_index(
         pm_df_long_scaled,
         good_windows_selected,
@@ -345,6 +382,7 @@ def run_preprocessing(sdm: SparkDataManager, preprocessing_cfg: PreprocessingCon
         validate_windowed_pm(pm_df_long_indexed_winds)
 
     # PM long pivot to wide
+    logger.info("Stage: pivoting long PM to wide format")
     pm_df_wide_indexed_windows = (
         pm_df_long_indexed_winds.groupBy(*_GROUPING_COLS, "window_anchor", "start_time")
         .pivot("kpi_id")
@@ -366,6 +404,10 @@ def run_preprocessing(sdm: SparkDataManager, preprocessing_cfg: PreprocessingCon
         kpi_cols=_KPI_COLS,
         window_width=preprocessing_cfg.window_width_hours,
     )
+    logger.info(f"Windows materialized — {len(_KPI_COLS)} KPI columns")
+
+    # HELPER DFS:
+    unique_kpis = pm_df_long_indexed_winds.select("kpi_id").distinct()
 
     # Save preprocessed data
 
@@ -374,18 +416,25 @@ def run_preprocessing(sdm: SparkDataManager, preprocessing_cfg: PreprocessingCon
         "pm_df_long_indexed_winds": pm_df_long_indexed_winds,
         "pm_df_wide_indexed_winds": pm_df_wide_indexed_windows,
         "scaling_params_df": params_df,
-        "pm_data_const_kpi": pm_df_const_kpi,
-        "kpi_definitions": kpi_definitions,
-        "simple_reports": simple_reports_pivoted,
+        # Visual and forms HELPER dfs
+        "HELPER_pm_data_const_kpi": pm_df_const_kpi,
+        "HELPER_unique_kpis": unique_kpis,
+        # TODO: add other helpers
     }
 
     # END OF PREPROCESSING
 
     # SAVE PREPROCESSED DATA
+    logger.info(
+        f"Saving {len(dataset_paths_and_dfs)} output datasets to {preprocessing_cfg.output_path_prefix}"
+    )
 
     for df_path, df in dataset_paths_and_dfs.items():
+        logger.info(f"Writing: {df_path}")
         sdm.write_parquet(
             df,
             "/".join([preprocessing_cfg.output_path_prefix, df_path]),
             mode="overwrite",
         )
+
+    logger.info("Preprocessing pipeline complete")
