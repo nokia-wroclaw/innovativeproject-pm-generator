@@ -13,7 +13,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from genpm.raw_vis.configs import RawVisConfig
 from genpm.raw_vis.data_visualisation import make_kpi_analysis, make_summary_json
 from genpm.utils.consts import SHARED_DIR_PATH, SPARK_CONFIGS
-from genpm.utils.utils import SparkDataManager
+from genpm.utils.spark_session import SparkDataManager
 
 
 def run_summary(sdm: SparkDataManager) -> None:

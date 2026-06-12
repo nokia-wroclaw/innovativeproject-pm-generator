@@ -5,7 +5,7 @@ import argparse
 from genpm.raw_vis.configs import RawVisConfig
 from genpm.raw_vis.data_visualisation import make_kpi_analysis, make_summary_json
 from genpm.utils.consts import SPARK_CONFIGS
-from genpm.utils.utils import SparkDataManager
+from genpm.utils.spark_session import SparkDataManager
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -53,7 +53,7 @@ def main(argv=None):
         output_path=args.output_path,
     )
 
-    sdm = SparkDataManager(SPARK_CONFIGS["HALF_SAFE"])
+    sdm = SparkDataManager(additional_conf=SPARK_CONFIGS["HALF_SAFE"])
     raw_df = sdm.read_parquet(cfg.raw_pm_data_path)
 
     if args.command == "summary":

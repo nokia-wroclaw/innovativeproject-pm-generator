@@ -4,59 +4,76 @@ from pyspark import StorageLevel
 from pyspark.sql import DataFrame, Window
 from pyspark.sql import functions as f
 
-from genpm.utils.consts import SHARED_DIR_PATH
 from genpm.utils.logger import get_logger
 
 logger = get_logger()
 
-EDA_DATA_PATH = SHARED_DIR_PATH / "eda_data"
-PREPROCESSED_DATASET_PATH = SHARED_DIR_PATH / "preprocessed_dataset"
+
+def _prepare_simple_reports(
+    simple_reports_pivoted: DataFrame, cell_config: tuple[str, ...]
+) -> DataFrame:
+    w = Window.partitionBy("distname").orderBy("datetime")
+
+    lag_cols = {f"_prev_{c}": f.lag(c).over(w) for c in cell_config}
+    df = simple_reports_pivoted.withColumns(lag_cols).withColumn("_rn", f.row_number().over(w))
+
+    # first row per distname is always a new sequence start
+    is_first_row = f.col("_rn") == 1
+
+    # null-safe: changed if current value is not equal to previous (handles null configs)
+    change_expr = None
+    for c in cell_config:
+        expr = ~f.col(c).eqNullSafe(f.col(f"_prev_{c}"))
+        change_expr = expr if change_expr is None else (change_expr | expr)
+
+    is_new_sequence = is_first_row if change_expr is None else (is_first_row | change_expr)
+
+    filtered = df.filter(is_new_sequence).drop("_rn", *[f"_prev_{c}" for c in cell_config])
+
+    return (
+        filtered.withColumn("config_start", f.col("datetime"))
+        .withColumn("config_end", f.lead("datetime").over(w))
+        .drop("datetime")
+    )
 
 
-def _pivot_pm_data(pm_df_long: DataFrame) -> DataFrame:
-    # PIVOT ATTEMPT
-    def __chunk(lst, size):
-        for i in range(0, len(lst), size):
-            yield lst[i : i + size]
+def pm_and_reports_data_joined(
+    pm_df_long: DataFrame, simple_reports_pivoted: DataFrame, cell_config: tuple[str, ...]
+) -> DataFrame:
+    starting_reports = _prepare_simple_reports(simple_reports_pivoted, cell_config)
 
-    # Batch size - according to how much RAM is available
-    BATCH_SIZE = 30
-
-    kpis = [r.kpi_id for r in pm_df_long.select("kpi_id").distinct().collect()]
-    batches = list(__chunk(kpis, BATCH_SIZE))
-    logger.info(f"{len(batches)=}")
-
-    pm_df_long = pm_df_long.repartition("kpi_id").persist()
-
-    # count for activating evaluation
-    pm_df_long.count()
-
-    pm_df_wide = None
-
-    logger.info("PM DATA PIVOTTING")
-
-    for i, batch in enumerate(batches):
-        logger.info(f"\tBatch {i}")
-
-        df_batch = pm_df_long.filter(f.col("kpi_id").isin(batch))
-
-        df_pivot = (
-            df_batch.groupBy("bts_id", "distname", "start_time")
-            .pivot("kpi_id")
-            .agg(f.first("kpi_value"))
+    pm_cm_joined = (
+        pm_df_long.alias("pm")
+        .join(
+            starting_reports.alias("cm"),
+            on=[
+                f.col("pm.distname") == f.col("cm.distname"),
+                (f.col("pm.start_time") > f.col("cm.config_start"))
+                | f.col("cm.config_start").isNull(),
+                # adding the last null, for lead
+                f.col("pm.start_time") <= f.col("cm.config_end"),
+            ],
+            how="left",
         )
+        .select(
+            "pm.*",
+            *[f.col(f"cm.{cc}") for cc in cell_config],
+        )
+    )
 
-        if i % 5 == 0 and i != 0 and pm_df_wide is not None:
-            pm_df_wide = pm_df_wide.checkpoint()
+    first_config = (
+        starting_reports.withColumn(
+            "_rn", f.row_number().over(Window.partitionBy("distname").orderBy("config_start"))
+        )
+        .filter(f.col("_rn") == 1)
+        .select("distname", *[f.col(cc).alias(f"_fc_{cc}") for cc in cell_config])
+    )
 
-        if pm_df_wide is None:
-            pm_df_wide = df_pivot
-        else:
-            pm_df_wide = pm_df_wide.join(df_pivot, ["bts_id", "distname", "start_time"], "outer")
-
-    logger.info("PM DATA PIVOTTING COMPLETED")
-
-    return pm_df_wide  # type: ignore
+    return (
+        pm_cm_joined.join(first_config, on="distname", how="left")
+        .withColumns({cc: f.coalesce(f.col(cc), f.col(f"_fc_{cc}")) for cc in cell_config})
+        .drop(*[f"_fc_{cc}" for cc in cell_config])
+    )
 
 
 def coalesce_kpi_version(
@@ -97,8 +114,6 @@ def coalesce_kpi_version(
 
         return kpi_definitions_change_result
 
-    # TODO: ANALYZE HOW KPI STATISTICS CHANGE, WHEN VERSION CHANGES
-
     logger.info("PREPROCESSING - KPI VERSION COALESCE")
     # get only relevent kpis
     distinct_kpis = pm_df_long.select("kpi_id").distinct()
@@ -111,8 +126,6 @@ def coalesce_kpi_version(
     )
 
     kpi_changed_definition_mapping = _kpi_definition_comparison(kpi_definitions)
-
-    # TODO: add other filters for kpi version mapping (maybe statistical?)
 
     # take only applicable kpis
     appliccable_kpi_mask = (
@@ -224,7 +237,7 @@ def simple_reports_pivot(simple_reports: DataFrame):
     return simple_reports_pivot
 
 
-# raw_pm
+# raw_pm preprocessing
 def raw_pm_preperation(pm_df_long: DataFrame) -> DataFrame:
     pm_df_long = pm_df_long.dropDuplicates()
     pm_df_long = pm_df_long.dropna(subset=("start_time", "bts_id", "distname"))
@@ -297,3 +310,75 @@ def pop_constant_kpis(pm_df_long: DataFrame) -> tuple[DataFrame, DataFrame]:
     )
 
     return pm_df_long_no_constant_kpis, constant_kpis
+
+
+def materialize_windows(
+    pm_df_wide_preprocessed: DataFrame, identity_cols, kpi_cols, window_width: int
+) -> DataFrame:
+    """
+    For each (identity_cols, window_anchor) anchor, collect all rows whose
+    start_time falls in [window_anchor, window_anchor + window_width * 3600 s).
+
+    The root cause of the old approach failing: only anchor rows carry a non-null
+    window_anchor, so grouping by it directly produces single-row "windows".
+    Fix: extract anchors separately, range-join every hourly row to its anchor,
+    then aggregate.
+
+    Output schema:
+        *identity_cols, window_anchor, n_hours,
+        kpi_1: array<double>, kpi_2: array<double>, ...
+    Arrays are sorted by hour_idx (0 = anchor hour, 167 = last hour).
+    """
+    # Step 1: one row per (identity, window_anchor) — the anchor definition
+    anchors = (
+        pm_df_wide_preprocessed.filter(f.col("window_anchor").isNotNull())
+        .select(*identity_cols, "window_anchor")
+        .distinct()
+        .alias("anc")
+    )
+
+    data = pm_df_wide_preprocessed.alias("data")
+
+    # Step 2: range join — match identity columns + time window
+    identity_join = [f.col(f"data.{c}") == f.col(f"anc.{c}") for c in identity_cols]
+    anc_epoch = f.col("anc.window_anchor").cast("long")
+    data_epoch = f.col("data.start_time").cast("long")
+    range_join = [
+        data_epoch >= anc_epoch,
+        data_epoch < anc_epoch + window_width * 3600,
+    ]
+
+    joined = (
+        data.join(anchors, identity_join + range_join, "inner")
+        .select(
+            *[f.col(f"anc.{c}").alias(c) for c in identity_cols],
+            f.col("anc.window_anchor").alias("window_anchor"),
+            ((data_epoch - anc_epoch) / 3600).cast("int").alias("hour_idx"),
+            *[f.col(f"data.{c}").alias(c) for c in kpi_cols],
+        )
+        .orderBy(*identity_cols, "window_anchor", "hour_idx")
+    )
+
+    return joined
+
+    # NOTE: THE BELOW CODE IS THE NEW STRUCTURE FOR MATERIALIZING WINDOWS IN PYSPARK ARRAYS
+    # THIS SHOULD BE RETHOUGHT!
+
+    # # Step 3: pack all KPIs into one struct so a single sort_array orders everything
+    # joined = joined.withColumn("_row", f.struct("hour_idx", *[f.col(c) for c in kpi_cols]))
+
+    # all_key = [*identity_cols, "window_anchor"]
+
+    # materialized = (
+    #     joined.groupBy(*all_key)
+    #     .agg(
+    #         f.count("*").alias("n_hours"),
+    #         f.sort_array(f.collect_list("_row")).alias("_rows"),
+    #     )
+    #     .select(
+    #         *all_key,
+    #         "n_hours",
+    #         *[f.expr(f"transform(_rows, x -> x.`{c}`)").alias(c) for c in kpi_cols],
+    #     )
+    # )
+    # return materialized

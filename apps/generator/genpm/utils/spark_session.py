@@ -1,17 +1,86 @@
 """Spark session helpers for Airflow cluster submit and SDM (no yaml/config deps)."""
 
+import atexit
 import os
+import signal
+from pathlib import Path
 
-from pyspark.sql import SparkSession
+from pyspark.sql import DataFrame, SparkSession
 
-from genpm.utils.consts import SPARK_CONFIGS
+from .logger import get_logger
 
-_CLUSTER_PRESET_SKIP_KEYS = frozenset(
-    {
-        "spark.master",
-        "spark.driver.memory",
-    }
-)
+logger = get_logger()
+
+
+class SparkDataManager:
+    def __init__(self, app_name: str | None = None, additional_conf: dict | None = None) -> None:
+        SPARK_CORE_NUMBER = os.getenv("SPARK_CORE_NUMBER") or "8"
+        SPARK_EXECUTOR_MEMORY = os.getenv("SPARK_EXECUTOR_MEMORY") or "10g"
+        SPARK_DRIVER_MEMORY = os.getenv("SPARK_DRIVER_MEMORY") or "6g"
+        SPARK_PARALLELISM_COUNT = os.getenv("SPARK_PARALLELISM_COUNT") or "8"
+        logger.info("\tSPARK DATA MANAGER")
+
+        app_name = app_name or "GenPM"
+
+        # spark session builder
+        builder = (
+            SparkSession.builder.master(f"local[{SPARK_CORE_NUMBER}]")  # type: ignore
+            .appName(app_name)
+            .config("spark.executor.memory", SPARK_EXECUTOR_MEMORY)
+            .config("spark.driver.memory", SPARK_DRIVER_MEMORY)
+            .config("spark.sql.shuffle.partitions", "200")
+            .config("spark.default.parallelism", SPARK_PARALLELISM_COUNT)
+            .config("spark.log.level", "WARN")
+            # Additional Spark optimizations
+            .config("spark.sql.adaptive.enabled", "true")
+            .config("spark.sql.adaptive.skewJoin.enabled", "true")
+            # Disable RAPIDS
+            .config("spark.plugins", "")
+            .config("spark.rapids.sql.enabled", "false")
+            .config("spark.kryo.registrator", "")
+        )
+
+        for conf, val in minio_spark_conf().items():
+            builder = builder.config(conf, val)
+
+        if additional_conf is not None:
+            logger.info(f"ADDITIONALL SPARK CONFIG ADDED: {additional_conf}")
+            for conf, val in additional_conf.items():
+                builder = builder.config(conf, val)
+
+        self.spark: SparkSession = builder.getOrCreate()
+
+        # STOPPING FUNCTIONS TO RESERVE SPACE AT ALL TIMES
+
+        # Fires on normal exit and unhandled exceptions
+        atexit.register(self._stop_spark)
+
+        # Fires on SIGTERM (e.g. container stop, Airflow kill)
+        signal.signal(signal.SIGTERM, lambda sig, frame: self._stop_spark())
+        # Fires on SIGINT (Ctrl+C)
+        signal.signal(signal.SIGINT, lambda sig, frame: self._stop_spark())
+
+    def _stop_spark(self):
+        if self.spark:
+            self.spark.stop()
+            self.spark = None  # type: ignore
+
+    @staticmethod
+    def minio_spark_conf() -> dict[str, str]:
+        return minio_spark_conf()
+
+    def read_parquet(self, path: Path | str, **options) -> DataFrame:
+        # TODO: S3 compatability will be introduced here
+        logger.info(f"Reading Dataframe from {str(path)} ...")
+        return self.spark.read.parquet(str(path), **options)
+
+    def write_parquet(self, df: DataFrame, path: Path | str, mode: str = "error", **kwargs):
+        logger.info(f"Writing DataFrame to {str(path)} ...")
+        df.write.parquet(path=str(path), mode=mode, **kwargs)
+
+    def hard_checkpoint_to_parquet(self, df: DataFrame, path: Path | str) -> DataFrame:
+        self.write_parquet(df, path, mode="overwrite")
+        return self.read_parquet(path)
 
 
 def minio_spark_conf() -> dict[str, str]:
@@ -26,43 +95,3 @@ def minio_spark_conf() -> dict[str, str]:
         "spark.hadoop.fs.s3a.connection.ssl.enabled": "false",
         "spark.hadoop.fs.s3a.impl": "org.apache.hadoop.fs.s3a.S3AFileSystem",
     }
-
-
-def build_cluster_spark_session(
-    app_name: str,
-    *,
-    profile: str | None = None,
-    extra_conf: dict[str, str] | None = None,
-) -> SparkSession:
-    """Spark session for Airflow spark-submit (cluster/client mode).
-
-    Uses SPARK_CONFIGS presets from consts.py for query tuning and SPARK_* env vars
-    for executor/driver memory and core limits.
-    """
-    profile_name = profile or os.getenv("GENPM_SPARK_CONFIG", "AGG_HEAVY")
-    preset = dict(SPARK_CONFIGS.get(profile_name, SPARK_CONFIGS["HALF_SAFE"]))
-    for key in _CLUSTER_PRESET_SKIP_KEYS:
-        preset.pop(key, None)
-
-    cores = os.getenv("SPARK_CORE_NUMBER") or "8"
-    executor_memory = os.getenv("SPARK_EXECUTOR_MEMORY") or "10g"
-    driver_memory = os.getenv("SPARK_DRIVER_MEMORY") or "6g"
-
-    builder = (
-        SparkSession.builder.appName(app_name)
-        .config("spark.executor.cores", cores)
-        .config("spark.executor.memory", executor_memory)
-        .config("spark.driver.memory", driver_memory)
-        .config("spark.cores.max", cores)
-        .config("spark.default.parallelism", cores)
-        .config("spark.log.level", "WARN")
-    )
-
-    for conf, val in preset.items():
-        builder = builder.config(conf, str(val))
-
-    if extra_conf:
-        for conf, val in extra_conf.items():
-            builder = builder.config(conf, str(val))
-
-    return builder.getOrCreate()

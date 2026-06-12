@@ -7,6 +7,8 @@ class PreprocessingConfig:
     pm_data_raw_path: str
     kpi_definitions_raw_path: str
     simple_reports_raw_path: str
+    # Intermediate for saving
+    intermediate_path: str
     # Path prefix - output paths
     output_path_prefix: str
     # KPI coverage - filter thresholds
@@ -37,11 +39,14 @@ class PreprocessingConfig:
 
     # Greedy approach - minimal joint windows available in data
     min_joint_windows_abs: int | None = None
+    forced_kpis: list | None = None
+    # TODO: introcude preference for kpi selection in greedy approach
     # Floor relaxation: effective floor = min(elbow_floor, seed_coverage × frac).
     # 1.0 = use elbow as-is.  Lower values trade joint-window count for more KPIs.
     # Start at 0.3–0.5 when only a handful of KPIs are selected.
-    greedy_min_coverage_frac: float = 1.0
-    kpi_window_preference: float = 0.5
+    # kpi_window_preference: float = 0.5
 
     # Impute bool - TODO: include this option
     impute: bool = True
+    # Verbose
+    verbose: bool = False

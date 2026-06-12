@@ -2,6 +2,19 @@ import json
 import os
 import sys
 
+import boto3
+from botocore.client import Config
+from pyspark.sql import SparkSession  # noqa: E402
+
+from genpm.raw_vis.data_visualisation import (  # noqa: E402
+    make_kpi_analysis,
+    make_summary,
+    top_kpis_for_analysis,
+)
+from genpm.raw_vis.s3_layout import visualization_artifact_key  # noqa: E402
+from genpm.utils.consts import SPARK_CONFIGS
+from genpm.utils.spark_session import SparkDataManager
+
 
 def _ensure_spark_pythonpath() -> None:
     """PySpark lives under SPARK_HOME, not in genpm-venv."""
@@ -31,35 +44,19 @@ def _ensure_pyspark_python() -> None:
 _ensure_pyspark_python()
 _ensure_spark_pythonpath()
 
-from pyspark.sql import SparkSession  # noqa: E402
-
-from genpm.raw_vis.data_visualisation import (  # noqa: E402
-    make_kpi_analysis,
-    make_summary,
-    top_kpis_for_analysis,
-)
-from genpm.raw_vis.s3_layout import visualization_artifact_key  # noqa: E402
-from genpm.utils.spark_session import (  # noqa: E402
-    build_cluster_spark_session,
-    minio_spark_conf,
-)
-
 
 def _env(name: str, default: str = "") -> str:
     return os.environ.get(name, default)
 
 
 def _build_spark() -> SparkSession:
-    return build_cluster_spark_session(
-        "DatasetVisualizationSparkJob",
-        extra_conf=minio_spark_conf(),
-    )
+    return SparkDataManager(
+        app_name="DatasetVisualizationSparkJob",
+        additional_conf=SPARK_CONFIGS["HALF_SAFE"],
+    ).spark
 
 
 def _write_json_to_s3(payload: dict, bucket: str, key: str) -> None:
-    import boto3
-    from botocore.client import Config
-
     endpoint = _env("S3_URL", "http://minio:9000")
     client = boto3.client(
         "s3",
