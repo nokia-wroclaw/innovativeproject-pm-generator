@@ -90,7 +90,11 @@ class S3Service(BaseService[Dataset, DatasetCreate, DatasetStatusUpdate]):
         return dataset
 
     def register_existing_dataset(
-        self, user_uuid: uuid.UUID, s3_key: str, file_name: str | None = None, type: DatasetType = DatasetType.RAW
+        self,
+        user_uuid: uuid.UUID,
+        s3_key: str,
+        file_name: str | None = None,
+        type: DatasetType = DatasetType.RAW,
     ) -> Dataset:
         try:
             self.s3_client_internal.head_object(Bucket=get_settings().s3_bucket, Key=s3_key)

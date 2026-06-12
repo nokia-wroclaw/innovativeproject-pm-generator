@@ -1,6 +1,7 @@
 import datetime
+from typing import Any
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 
 from app.db.schemas import PipelineRunStatus, PipelineType
 
@@ -20,6 +21,7 @@ class PipelineRunRead(BaseModel):
 class PipelineRunCreate(BaseModel):
     dataset_id: int
     pipeline_type: PipelineType
+    dag_args: dict[str, Any] = Field(default_factory=dict)
 
 
 class PipelineRunDeleteResponse(BaseModel):

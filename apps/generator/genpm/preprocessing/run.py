@@ -10,10 +10,16 @@ from genpm.utils.utils import validate_windowed_pm
 
 logger = get_logger()
 
+VERBOSE_DIAGNOSTICS = False
 
-PREPROCESSED_DATASET_PATH = SHARED_DIR_PATH / "preprocessed_dataset"
 
-VERBOSE_DIAGNOSTICS = True
+def _intermediate_path(output_path_prefix: str, artifact: str) -> str:
+    prefix = output_path_prefix.rstrip("/")
+    if prefix.endswith("/final"):
+        base = prefix[: -len("/final")]
+    else:
+        base = prefix
+    return f"{base}/intermediate/{artifact}"
 
 
 def _log_pm_diag(label: str, df: DataFrame, group_cols: tuple[str, ...], verbose: bool) -> None:

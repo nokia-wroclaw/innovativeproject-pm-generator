@@ -41,6 +41,99 @@ def _parse_dt(value: Any) -> datetime | None:
     return None
 
 
+def _duration_ms(start: datetime | None, end: datetime | None, raw: Any = None) -> int | None:
+    if isinstance(raw, int | float) and raw >= 0:
+        return int(raw * 1000)
+    if start is not None and end is not None:
+        return max(0, int((end - start).total_seconds() * 1000))
+    return None
+
+
+def _schedule_str(value: Any) -> str | None:
+    if value is None:
+        return None
+    if isinstance(value, str):
+        return value
+    if isinstance(value, dict):
+        return value.get("value") or value.get("expression")
+    return str(value)
+
+
+def _run_type(value: str | None) -> RunType:
+    allowed: frozenset[RunType] = frozenset({"manual", "scheduled", "backfill", "asset_triggered"})
+    if value in allowed:
+        return cast(RunType, value)
+    if value == "dataset_triggered":
+        return "asset_triggered"
+    return "manual"
+
+
+def _tags(value: Any) -> list[str]:
+    if not isinstance(value, list):
+        return []
+    out: list[str] = []
+    for tag in value:
+        if isinstance(tag, str):
+            out.append(tag)
+        elif isinstance(tag, dict) and "name" in tag:
+            out.append(str(tag["name"]))
+    return out
+
+
+def map_dag_run(raw: dict[str, Any]) -> DagRunSummary:
+    start = _parse_dt(raw.get("start_date"))
+    end = _parse_dt(raw.get("end_date"))
+    logical = _parse_dt(raw.get("logical_date"))
+    state = raw.get("state")
+    conf_raw = raw.get("conf")
+    conf = conf_raw if isinstance(conf_raw, dict) else None
+    return DagRunSummary(
+        run_id=str(raw.get("dag_run_id") or ""),
+        logical_date=logical or start or datetime.now(tz=UTC),
+        start_date=start,
+        end_date=end,
+        duration_ms=_duration_ms(start, end),
+        status=normalize_dag_run_status(state),
+        raw_state=str(state or "queued"),
+        run_type=_run_type(raw.get("run_type")),
+        triggered_by=_triggered_by_from_note(raw.get("note")),
+        conf=conf,
+    )
+
+
+_TRIGGERED_BY_RE = re.compile(r"triggered_by=([\w.\-]+)")
+
+
+def _triggered_by_from_note(note: Any) -> str | None:
+    if not isinstance(note, str):
+        return None
+    match = _TRIGGERED_BY_RE.search(note)
+    return match.group(1) if match else None
+
+
+def map_dag_summary(
+    raw: dict[str, Any],
+    *,
+    last_run: DagRunSummary | None = None,
+    stats: DagStats | None = None,
+) -> DagSummary:
+    dag_id = str(raw.get("dag_id") or "")
+    display_name = str(raw.get("dag_display_name") or dag_id)
+    return DagSummary(
+        dag_id=dag_id,
+        display_name=display_name,
+        description=raw.get("description") or None,
+        owners=[str(o) for o in (raw.get("owners") or [])],
+        tags=_tags(raw.get("tags")),
+        is_paused=bool(raw.get("is_paused", False)),
+        is_active=bool(raw.get("is_active", True)),
+        schedule=_schedule_str(raw.get("timetable_summary")),
+        next_run_at=_parse_dt(raw.get("next_dagrun_run_after")),
+        last_run=last_run,
+        stats_24h=stats or DagStats(),
+    )
+
+
 def map_dag_graph(raw: dict[str, Any], *, dag_id: str | None = None) -> DagGraph:
     nodes: list[TaskNode] = []
     edges: list[TaskEdge] = []

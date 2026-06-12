@@ -34,7 +34,11 @@ def assert_storage_type_allowed(payload: TokenPayload, dataset_type: DatasetType
 
 
 def assert_raw_dataset(dataset: Dataset, *, context: Literal["upload", "status"]) -> None:
-    if dataset.type not in {DatasetType.RAW, DatasetType.KPI_DEFINITIONS, DatasetType.SIMPLE_REPORTS}:
+    if dataset.type not in {
+        DatasetType.RAW,
+        DatasetType.KPI_DEFINITIONS,
+        DatasetType.SIMPLE_REPORTS,
+    }:
         detail = _ERR_RAW_STATUS if context == "status" else _ERR_RAW_UPLOAD
         raise HTTPException(status_code=403, detail=detail)
 
