@@ -348,28 +348,37 @@ def materialize_windows(
         data_epoch < anc_epoch + window_width * 3600,
     ]
 
-    joined = data.join(anchors, identity_join + range_join, "inner").select(
-        *[f.col(f"anc.{c}").alias(c) for c in identity_cols],
-        f.col("anc.window_anchor").alias("window_anchor"),
-        ((data_epoch - anc_epoch) / 3600).cast("int").alias("hour_idx"),
-        *[f.col(f"data.{c}").alias(c) for c in kpi_cols],
-    )
-
-    # Step 3: pack all KPIs into one struct so a single sort_array orders everything
-    joined = joined.withColumn("_row", f.struct("hour_idx", *[f.col(c) for c in kpi_cols]))
-
-    all_key = [*identity_cols, "window_anchor"]
-
-    materialized = (
-        joined.groupBy(*all_key)
-        .agg(
-            f.count("*").alias("n_hours"),
-            f.sort_array(f.collect_list("_row")).alias("_rows"),
-        )
+    joined = (
+        data.join(anchors, identity_join + range_join, "inner")
         .select(
-            *all_key,
-            "n_hours",
-            *[f.expr(f"transform(_rows, x -> x.`{c}`)").alias(c) for c in kpi_cols],
+            *[f.col(f"anc.{c}").alias(c) for c in identity_cols],
+            f.col("anc.window_anchor").alias("window_anchor"),
+            ((data_epoch - anc_epoch) / 3600).cast("int").alias("hour_idx"),
+            *[f.col(f"data.{c}").alias(c) for c in kpi_cols],
         )
+        .orderBy(*identity_cols, "window_anchor", "hour_idx")
     )
-    return materialized
+
+    return joined
+
+    # NOTE: THE BELOW CODE IS THE NEW STRUCTURE FOR MATERIALIZING WINDOWS IN PYSPARK ARRAYS
+    # THIS SHOULD BE RETHOUGHT!
+
+    # # Step 3: pack all KPIs into one struct so a single sort_array orders everything
+    # joined = joined.withColumn("_row", f.struct("hour_idx", *[f.col(c) for c in kpi_cols]))
+
+    # all_key = [*identity_cols, "window_anchor"]
+
+    # materialized = (
+    #     joined.groupBy(*all_key)
+    #     .agg(
+    #         f.count("*").alias("n_hours"),
+    #         f.sort_array(f.collect_list("_row")).alias("_rows"),
+    #     )
+    #     .select(
+    #         *all_key,
+    #         "n_hours",
+    #         *[f.expr(f"transform(_rows, x -> x.`{c}`)").alias(c) for c in kpi_cols],
+    #     )
+    # )
+    # return materialized

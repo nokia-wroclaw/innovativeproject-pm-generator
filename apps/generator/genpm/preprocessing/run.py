@@ -211,7 +211,7 @@ def run_preprocessing(sdm: SparkDataManager, preprocessing_cfg: PreprocessingCon
     )
 
     pm_df_long_imputed = sdm.hard_checkpoint_to_parquet(
-        pm_df_long_imputed, "/".join([preprocessing_cfg.intermediate_path, "pm_cm_df_long"])
+        pm_df_long_imputed, "/".join([preprocessing_cfg.intermediate_path, "pm_df_long_imputed"])
     )
 
     # NOTE: INTERMEDIATE SAVES - FOR DEBUGGING AND QUICKER RUNS
@@ -338,7 +338,7 @@ def run_preprocessing(sdm: SparkDataManager, preprocessing_cfg: PreprocessingCon
     # NOTE: INTERMEDIATE SAVE
     # sdm.write_parquet(
     #     pm_df_long_scaled,
-    #     PREPROCESSED_DATASET_PATH / "intermediate" / "pm_df_long_imputed_selected",
+    #     PREPROCESSED_DATASET_PATH / "intermediate" / "pm_df_long_scaled",
     #     mode="overwrite",
     # )
     # sdm.write_parquet(
@@ -347,15 +347,15 @@ def run_preprocessing(sdm: SparkDataManager, preprocessing_cfg: PreprocessingCon
     #     mode="overwrite",
     # )
 
-    # pm_df_long_scaled = sdm.read_parquet(
-    #     PREPROCESSED_DATASET_PATH / "intermediate" / "pm_df_long_imputed_selected"
-    # )
-    # good_windows_selected = sdm.read_parquet(
-    #     PREPROCESSED_DATASET_PATH / "intermediate" / "good_windows_selected"
-    # )
+    pm_df_long_scaled = sdm.read_parquet(
+        PREPROCESSED_DATASET_PATH / "intermediate" / "pm_df_long_scaled"
+    )
+    good_windows_selected = sdm.read_parquet(
+        PREPROCESSED_DATASET_PATH / "intermediate" / "good_windows_selected"
+    )
 
-    # # This list, has to be created here, as it is brought from filtered
-    # selected_kpis = [r["kpi_id"] for r in pm_df_long_scaled.select("kpi_id").distinct().collect()]
+    # This list, has to be created here, as it is brought from filtered
+    selected_kpis = [r["kpi_id"] for r in pm_df_long_scaled.select("kpi_id").distinct().collect()]
     # INTERMIEDIATE END
 
     good_windows_selected = kpi_coverage.filter_joint_complete_windows(
@@ -378,7 +378,7 @@ def run_preprocessing(sdm: SparkDataManager, preprocessing_cfg: PreprocessingCon
         _GROUPING_COLS,
         window_hours=preprocessing_cfg.window_width_hours,
     )
-    if VERBOSE_DIAGNOSTICS:
+    if preprocessing_cfg.verbose:
         validate_windowed_pm(pm_df_long_indexed_winds)
 
     # PM long pivot to wide
@@ -419,6 +419,8 @@ def run_preprocessing(sdm: SparkDataManager, preprocessing_cfg: PreprocessingCon
         # Visual and forms HELPER dfs
         "HELPER_pm_data_const_kpi": pm_df_const_kpi,
         "HELPER_unique_kpis": unique_kpis,
+        "HELPER_simple_reports": simple_reports_pivoted,
+        "HELPER_kpi_definitions": kpi_definitions,
         # TODO: add other helpers
     }
 
