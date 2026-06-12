@@ -541,14 +541,14 @@ def prefilter_kpis(
     if n_dropped / total_kpis > max_drop_frac:
         logger.info(
             f"[prefilter] would drop {n_dropped}/{total_kpis} "
-            f"({n_dropped/total_kpis:.0%}) > max_drop_frac={max_drop_frac:.0%} "
+            f"({n_dropped / total_kpis:.0%}) > max_drop_frac={max_drop_frac:.0%} "
             f"— distribution too flat, disabling pre-cut"
         )
         return kpi_yield_stats.select("kpi_id").rdd.flatMap(lambda r: [r["kpi_id"]]).collect()
 
     logger.info(
         f"[prefilter] breadth threshold={threshold:.3f} "
-        f"(p{breadth_percentile*100:.0f}) | "
+        f"(p{breadth_percentile * 100:.0f}) | "
         f"dropped {n_dropped}/{total_kpis} KPIs"
     )
     return survivors.select("kpi_id").rdd.flatMap(lambda r: [r["kpi_id"]]).collect()

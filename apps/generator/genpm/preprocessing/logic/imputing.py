@@ -2,6 +2,7 @@ from pyspark.sql import DataFrame
 from pyspark.sql import functions as f
 from pyspark.sql.window import Window
 
+from genpm.preprocessing.logic.kpi_grouping_defs import classify_kpis
 from genpm.utils.consts import (
     AVG_KEYWORDS,
     MAX_KEYWORDS,
@@ -12,7 +13,7 @@ from genpm.utils.consts import (
     VOLUME_KEYWORDS,
     VOLUME_UNITS,
 )
-from genpm.utils.utils import classify_kpis, when_chained
+from genpm.utils.utils import when_chained
 
 
 def categorize_kpi_with_definitions(pm_df: DataFrame, kpi_defs_df: DataFrame) -> DataFrame:

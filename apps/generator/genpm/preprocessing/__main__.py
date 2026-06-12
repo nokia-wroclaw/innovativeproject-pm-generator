@@ -5,7 +5,7 @@ import argparse
 from genpm.preprocessing.configs import PreprocessingConfig
 from genpm.preprocessing.run import run_preprocessing
 from genpm.utils.consts import SPARK_CONFIGS
-from genpm.utils.utils import SparkDataManager
+from genpm.utils.spark_session import SparkDataManager
 
 
 def main(argv=None):
@@ -43,8 +43,6 @@ def main(argv=None):
         simple_reports_raw_path=args.simple_reports_raw_path,
         output_path_prefix=args.output_path_prefix,
         kpi_min_global_density=args.kpi_min_global_density,
-        kpi_global_min_frac_cells_passing=args.kpi_global_min_frac_cells_passing,
-        kpi_window_coverage_frac=args.kpi_window_coverage_frac,
         min_imputable_gap_frac=args.min_imputable_gap_frac,
         kpi_min_std_val=args.kpi_min_std_val,
         max_zero_frac=args.max_zero_frac,
@@ -55,7 +53,7 @@ def main(argv=None):
         impute=args.no_impute,
     )
 
-    sdm = SparkDataManager(SPARK_CONFIGS["HALF_SAFE"])
+    sdm = SparkDataManager(additional_conf=SPARK_CONFIGS["HALF_SAFE"])
 
     run_preprocessing(sdm, cfg)
 

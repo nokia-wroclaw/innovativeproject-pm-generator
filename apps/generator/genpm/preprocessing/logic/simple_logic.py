@@ -114,8 +114,6 @@ def coalesce_kpi_version(
 
         return kpi_definitions_change_result
 
-    # TODO: ANALYZE HOW KPI STATISTICS CHANGE, WHEN VERSION CHANGES
-
     logger.info("PREPROCESSING - KPI VERSION COALESCE")
     # get only relevent kpis
     distinct_kpis = pm_df_long.select("kpi_id").distinct()
@@ -128,8 +126,6 @@ def coalesce_kpi_version(
     )
 
     kpi_changed_definition_mapping = _kpi_definition_comparison(kpi_definitions)
-
-    # TODO: add other filters for kpi version mapping (maybe statistical?)
 
     # take only applicable kpis
     appliccable_kpi_mask = (
@@ -241,7 +237,7 @@ def simple_reports_pivot(simple_reports: DataFrame):
     return simple_reports_pivot
 
 
-# raw_pm
+# raw_pm preprocessing
 def raw_pm_preperation(pm_df_long: DataFrame) -> DataFrame:
     pm_df_long = pm_df_long.dropDuplicates()
     pm_df_long = pm_df_long.dropna(subset=("start_time", "bts_id", "distname"))
@@ -314,3 +310,66 @@ def pop_constant_kpis(pm_df_long: DataFrame) -> tuple[DataFrame, DataFrame]:
     )
 
     return pm_df_long_no_constant_kpis, constant_kpis
+
+
+def materialize_windows(
+    pm_df_wide_preprocessed: DataFrame, identity_cols, kpi_cols, window_width: int
+) -> DataFrame:
+    """
+    For each (identity_cols, window_anchor) anchor, collect all rows whose
+    start_time falls in [window_anchor, window_anchor + window_width * 3600 s).
+
+    The root cause of the old approach failing: only anchor rows carry a non-null
+    window_anchor, so grouping by it directly produces single-row "windows".
+    Fix: extract anchors separately, range-join every hourly row to its anchor,
+    then aggregate.
+
+    Output schema:
+        *identity_cols, window_anchor, n_hours,
+        kpi_1: array<double>, kpi_2: array<double>, ...
+    Arrays are sorted by hour_idx (0 = anchor hour, 167 = last hour).
+    """
+    # Step 1: one row per (identity, window_anchor) — the anchor definition
+    anchors = (
+        pm_df_wide_preprocessed.filter(f.col("window_anchor").isNotNull())
+        .select(*identity_cols, "window_anchor")
+        .distinct()
+        .alias("anc")
+    )
+
+    data = pm_df_wide_preprocessed.alias("data")
+
+    # Step 2: range join — match identity columns + time window
+    identity_join = [f.col(f"data.{c}") == f.col(f"anc.{c}") for c in identity_cols]
+    anc_epoch = f.col("anc.window_anchor").cast("long")
+    data_epoch = f.col("data.start_time").cast("long")
+    range_join = [
+        data_epoch >= anc_epoch,
+        data_epoch < anc_epoch + window_width * 3600,
+    ]
+
+    joined = data.join(anchors, identity_join + range_join, "inner").select(
+        *[f.col(f"anc.{c}").alias(c) for c in identity_cols],
+        f.col("anc.window_anchor").alias("window_anchor"),
+        ((data_epoch - anc_epoch) / 3600).cast("int").alias("hour_idx"),
+        *[f.col(f"data.{c}").alias(c) for c in kpi_cols],
+    )
+
+    # Step 3: pack all KPIs into one struct so a single sort_array orders everything
+    joined = joined.withColumn("_row", f.struct("hour_idx", *[f.col(c) for c in kpi_cols]))
+
+    all_key = [*identity_cols, "window_anchor"]
+
+    materialized = (
+        joined.groupBy(*all_key)
+        .agg(
+            f.count("*").alias("n_hours"),
+            f.sort_array(f.collect_list("_row")).alias("_rows"),
+        )
+        .select(
+            *all_key,
+            "n_hours",
+            *[f.expr(f"transform(_rows, x -> x.`{c}`)").alias(c) for c in kpi_cols],
+        )
+    )
+    return materialized
