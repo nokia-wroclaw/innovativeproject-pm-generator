@@ -10,7 +10,6 @@ Assumptions:
 
 """
 
-from pathlib import Path
 from typing import Any
 
 import numpy as np
@@ -20,8 +19,8 @@ from astropy.timeseries import LombScargle
 from plotly.subplots import make_subplots
 from pyspark.sql import DataFrame
 from pyspark.sql import functions as F
-from scipy.spatial.distance import pdist
-from scipy.stats import wasserstein_distance
+from scipy.spatial.distance import jensenshannon, pdist
+from scipy.stats import gaussian_kde, wasserstein_distance
 
 from genpm.data_similarity.fake_timeseries import (
     make_multi,
@@ -31,30 +30,13 @@ from genpm.data_similarity.fake_timeseries import (
     single_schema,
     to_numeric_array_with_nan,
 )
-from genpm.utils.utils import SparkDataManager
 
 rng = np.random.default_rng(42)
-
-
-# =============================================================================
-# 1. Spark helpers
-# =============================================================================
-
-
-def create_spark_session() -> Any:
-    """
-    Creates a Spark session using the project SparkDataManager.
-    """
-
-    sdm = SparkDataManager()
-    spark = sdm.spark
-    spark.sparkContext.setLogLevel("ERROR")
-
-    return spark
-
+REAL_COLOR = "#1f77b4"
+SYNTH_COLOR = "#ff7f0e"
 
 # =============================================================================
-# 2. Test data generation
+# Test data generation
 # =============================================================================
 
 
@@ -102,7 +84,7 @@ def create_demo_dataframes(spark: Any) -> tuple[DataFrame, DataFrame, DataFrame,
 
 
 # =============================================================================
-# 3. Data collection and missing-value helpers
+# Data collection and missing-value helpers
 # =============================================================================
 
 
@@ -249,7 +231,7 @@ def hourly_profile(
 
 
 # =============================================================================
-# 4. Single-KPI metrics
+# Single-KPI metrics
 # =============================================================================
 
 
@@ -411,20 +393,57 @@ def acf_distance(acf_1: np.ndarray, acf_2: np.ndarray) -> float:
     )
 
 
-def qq_quantiles(
-    x: np.ndarray,
-    y: np.ndarray,
-    n_q: int = 100,
-) -> tuple[np.ndarray, np.ndarray]:
+def kde_curves(
+    real_values: np.ndarray,
+    synth_values: np.ndarray,
+    n_grid: int = 300,
+    pad_frac: float = 0.05,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     """
-    Computes quantiles for a QQ plot.
+    Evaluates gaussian KDE for both series on a shared x grid.
+
+    Returns (x_grid, density_real, density_synth).
+    The grid spans the joint range of both series with a small padding.
     """
-    if len(x) == 0 or len(y) == 0:
-        return np.array([]), np.array([])
+    if len(real_values) < 2 or len(synth_values) < 2:
+        return np.array([]), np.array([]), np.array([])
 
-    q = np.linspace(0.01, 0.99, n_q)
+    lo = float(min(real_values.min(), synth_values.min()))
+    hi = float(max(real_values.max(), synth_values.max()))
+    pad = (hi - lo) * pad_frac
 
-    return np.quantile(x, q), np.quantile(y, q)
+    x_grid = np.linspace(lo - pad, hi + pad, n_grid)
+
+    density_real = gaussian_kde(real_values)(x_grid)
+    density_synth = gaussian_kde(synth_values)(x_grid)
+
+    return x_grid, density_real, density_synth
+
+
+def metric_jensen_shannon(
+    density_real: np.ndarray,
+    density_synth: np.ndarray,
+    base: float = 2.0,
+) -> float:
+    """
+    Computes Jensen-Shannon divergence between two density curves.
+
+    The divergence is the squared Jensen-Shannon distance.
+    With base=2 the result is bounded in [0, 1].
+    With base=e (natural log) the result is bounded in [0, ln(2)].
+
+    Both densities are expected to be evaluated on the same x grid
+    (scipy internally normalizes them to sum to 1).
+    """
+    if len(density_real) == 0 or len(density_synth) == 0:
+        return float("nan")
+
+    distance = jensenshannon(density_real, density_synth, base=base)
+
+    if np.isnan(distance):
+        return float("nan")
+
+    return float(distance**2)
 
 
 def hourly_profile_rmse(
@@ -454,6 +473,7 @@ def compute_single_metrics(
     ls_min_period_h: float = 2.0,
     ls_max_period_h: float = 24 * 14,
     ls_n_freq: int = 2000,
+    kde_n_grid: int = 300,
 ) -> dict[str, Any]:
     """
     Computes all single-KPI metrics and returns a dictionary with values and plot data.
@@ -499,7 +519,13 @@ def compute_single_metrics(
     synth_hourly = hourly_profile(synth_full_pdf, value_col=value_col, ts_col=ts_col)
     hourly_rmse = hourly_profile_rmse(real_hourly, synth_hourly)
 
-    qx, qy = qq_quantiles(val_r, val_s)
+    kde_grid, kde_real, kde_synth = kde_curves(
+        real_values=val_r,
+        synth_values=val_s,
+        n_grid=kde_n_grid,
+    )
+
+    js_div = metric_jensen_shannon(kde_real, kde_synth, base=2.0)
 
     return {
         "value_col": value_col,
@@ -527,8 +553,10 @@ def compute_single_metrics(
         "real_hourly_profile": real_hourly,
         "synth_hourly_profile": synth_hourly,
         "hourly_profile_rmse": hourly_rmse,
-        "qq_real_quantiles": qx,
-        "qq_synth_quantiles": qy,
+        "kde_grid": kde_grid,
+        "kde_real": kde_real,
+        "kde_synth": kde_synth,
+        "jensen_shannon": js_div,
         "acf_max_lag": acf_max_lag,
         "ls_min_period_h": ls_min_period_h,
         "ls_max_period_h": ls_max_period_h,
@@ -536,7 +564,7 @@ def compute_single_metrics(
 
 
 # =============================================================================
-# 5. Multi-KPI metrics
+# Multi-KPI metrics
 # =============================================================================
 
 
@@ -755,7 +783,7 @@ def compute_multi_metrics(
 
 
 # =============================================================================
-# 6. Plotly helpers
+# Plotly helpers
 # =============================================================================
 
 
@@ -811,191 +839,138 @@ def heatmap_text(matrix: np.ndarray, digits: int = 2) -> list[list[str]]:
     return out
 
 
-def save_plotly_figure(
-    fig: go.Figure,
-    html_path: Path,
-    png_path: Path | None = None,
-    width: int = 1600,
-    height: int = 950,
-) -> None:
-    """
-    Saves a Plotly figure as HTML and optionally as PNG.
-    """
-    fig.write_html(str(html_path), include_plotlyjs="cdn")
-
-    if png_path is not None:
-        try:
-            fig.write_image(str(png_path), width=width, height=height, scale=2)
-        except Exception as exc:
-            print(f"PNG export skipped for {png_path}: {exc}")
-
-    print(f"Saved HTML: {html_path}")
-
-
 # =============================================================================
-# 7. Figure creation
+# Figure creation
 # =============================================================================
 
 
-def create_single_kpi_figure(
-    metrics: dict[str, Any],
-    use_separate_legends: bool = True,
-) -> go.Figure:
+def create_single_kpi_figure(metrics: dict[str, Any]) -> go.Figure:
     """
     Creates a Plotly dashboard for single-KPI validation.
+
+    Layout: 2 rows x 3 cols, with the summary table spanning both rows
+    on the right.
     """
     val_r = metrics["real_values_observed"]
     val_s = metrics["synth_values_observed"]
-
-    qx = metrics["qq_real_quantiles"]
-    qy = metrics["qq_synth_quantiles"]
-
+    kde_grid = metrics["kde_grid"]
+    kde_real = metrics["kde_real"]
+    kde_synth = metrics["kde_synth"]
+    js_div = metrics["jensen_shannon"]
     real_hourly = metrics["real_hourly_profile"]
     synth_hourly = metrics["synth_hourly_profile"]
-
     per_r = metrics["ls_periods_real"]
     pow_r = metrics["ls_power_real"]
     per_s = metrics["ls_periods_synth"]
     pow_s = metrics["ls_power_synth"]
-
     acf_r = metrics["acf_real"]
     acf_s = metrics["acf_synth"]
     lags = np.arange(len(acf_r))
-
     real_full_pdf = metrics["real_full_pdf"]
     synth_full_pdf = metrics["synth_full_pdf"]
-
     real_missing = metrics["real_missing"]
     synth_missing = metrics["synth_missing"]
-
     w1 = metrics["wasserstein_1d"]
     mmd1 = metrics["mmd_rbf"]
     spec_d = metrics["ls_spectrum_distance"]
     acf_d = metrics["acf_distance"]
     hourly_rmse = metrics["hourly_profile_rmse"]
-
     ls_max_period_h = metrics["ls_max_period_h"]
 
     fig = make_subplots(
         rows=2,
         cols=3,
         subplot_titles=[
-            "Value distribution",
-            "QQ plot",
+            "KDE — value distribution",
             "Hourly profile",
+            "Summary table",
             "Lomb-Scargle",
             "Pairwise-complete ACF",
-            "Summary table",
+            "",
         ],
         specs=[
-            [{"type": "xy"}, {"type": "xy"}, {"type": "xy"}],
-            [{"type": "xy"}, {"type": "xy"}, {"type": "table"}],
+            [{"type": "xy"}, {"type": "xy"}, {"type": "table", "rowspan": 2}],
+            [{"type": "xy"}, {"type": "xy"}, None],
         ],
-        horizontal_spacing=0.05,
+        horizontal_spacing=0.08,
         vertical_spacing=0.16,
+        column_widths=[0.30, 0.30, 0.40],
     )
 
-    histogram_legend = "legend" if use_separate_legends else None
-    hourly_legend = "legend2" if use_separate_legends else None
-    ls_legend = "legend3" if use_separate_legends else None
-    acf_legend = "legend4" if use_separate_legends else None
-
-    fig.add_trace(
-        go.Histogram(
-            x=val_r,
-            name="real",
-            histnorm="probability density",
-            nbinsx=60,
-            opacity=0.65,
-            legend=histogram_legend,
-        ),
-        row=1,
-        col=1,
-    )
-
-    fig.add_trace(
-        go.Histogram(
-            x=val_s,
-            name="synth",
-            histnorm="probability density",
-            nbinsx=60,
-            opacity=0.65,
-            legend=histogram_legend,
-        ),
-        row=1,
-        col=1,
-    )
-
+    # KDE
+    if len(kde_grid) > 0:
+        fig.add_trace(
+            go.Scatter(
+                x=kde_grid,
+                y=kde_real,
+                mode="lines",
+                name="real",
+                legendgroup="real",
+                line=dict(color=REAL_COLOR, width=2),
+                fill="tozeroy",
+                fillcolor="rgba(31,119,180,0.18)",
+                showlegend=True,
+            ),
+            row=1,
+            col=1,
+        )
+        fig.add_trace(
+            go.Scatter(
+                x=kde_grid,
+                y=kde_synth,
+                mode="lines",
+                name="synth",
+                legendgroup="synth",
+                line=dict(color=SYNTH_COLOR, width=2),
+                fill="tozeroy",
+                fillcolor="rgba(255,127,14,0.18)",
+                showlegend=True,
+            ),
+            row=1,
+            col=1,
+        )
     fig.update_xaxes(title_text="value", row=1, col=1)
     fig.update_yaxes(title_text="density", row=1, col=1)
 
-    if len(qx) > 0:
-        qq_min = min(qx.min(), qy.min())
-        qq_max = max(qx.max(), qy.max())
-
-        fig.add_trace(
-            go.Scatter(
-                x=qx,
-                y=qy,
-                mode="markers",
-                name="QQ quantiles",
-                marker=dict(size=5),
-                showlegend=False,
-            ),
-            row=1,
-            col=2,
-        )
-
-        fig.add_trace(
-            go.Scatter(
-                x=[qq_min, qq_max],
-                y=[qq_min, qq_max],
-                mode="lines",
-                name="ideal y=x",
-                line=dict(dash="dash"),
-                showlegend=False,
-            ),
-            row=1,
-            col=2,
-        )
-
-    fig.update_xaxes(title_text="real quantiles", row=1, col=2)
-    fig.update_yaxes(title_text="synth quantiles", row=1, col=2)
-
+    # Hourly profile
     fig.add_trace(
         go.Scatter(
             x=real_hourly.index,
             y=real_hourly.values,
             mode="lines+markers",
             name="real",
-            legend=hourly_legend,
+            legendgroup="real",
+            line=dict(color=REAL_COLOR),
+            marker=dict(color=REAL_COLOR),
+            showlegend=False,
         ),
         row=1,
-        col=3,
+        col=2,
     )
-
     fig.add_trace(
         go.Scatter(
             x=synth_hourly.index,
             y=synth_hourly.values,
             mode="lines+markers",
             name="synth",
-            legend=hourly_legend,
+            legendgroup="synth",
+            line=dict(color=SYNTH_COLOR),
+            marker=dict(color=SYNTH_COLOR),
+            showlegend=False,
         ),
         row=1,
-        col=3,
+        col=2,
     )
-
     fig.update_xaxes(
         title_text="hour of day",
         tickmode="array",
         tickvals=list(range(0, 24, 3)),
         row=1,
-        col=3,
+        col=2,
     )
+    fig.update_yaxes(title_text="mean value", row=1, col=2)
 
-    fig.update_yaxes(title_text="mean value", row=1, col=3)
-
+    # Lomb-Scargle
     if len(per_r) > 0:
         fig.add_trace(
             go.Scatter(
@@ -1003,12 +978,13 @@ def create_single_kpi_figure(
                 y=pow_r,
                 mode="lines",
                 name="real",
-                legend=ls_legend,
+                legendgroup="real",
+                line=dict(color=REAL_COLOR),
+                showlegend=False,
             ),
             row=2,
             col=1,
         )
-
     if len(per_s) > 0:
         fig.add_trace(
             go.Scatter(
@@ -1016,40 +992,43 @@ def create_single_kpi_figure(
                 y=pow_s,
                 mode="lines",
                 name="synth",
-                legend=ls_legend,
+                legendgroup="synth",
+                line=dict(color=SYNTH_COLOR),
+                showlegend=False,
             ),
             row=2,
             col=1,
         )
 
-    ls_tickvals = [2, 6, 12, 24, 48, 72, 168, 336]
-    ls_tickvals = [v for v in ls_tickvals if v <= ls_max_period_h]
+    ls_tickvals = [v for v in [24, 168] if v <= ls_max_period_h]
     ls_ticktext = [f"{v}h" for v in ls_tickvals]
 
     fig.add_vline(
         x=24,
         line_dash="dot",
         line_width=1,
+        line_color="gray",
         annotation_text="24h",
-        annotation_position="top",
+        annotation_position="bottom right",
+        annotation_font_size=10,
         row=2,
         col=1,
     )
-
     if 24 * 7 <= ls_max_period_h:
         fig.add_vline(
             x=24 * 7,
             line_dash="dot",
             line_width=1,
+            line_color="gray",
             annotation_text="168h",
-            annotation_position="top",
+            annotation_position="bottom right",
+            annotation_font_size=10,
             row=2,
             col=1,
         )
 
     fig.update_xaxes(
         title_text="period [h]",
-        type="linear",
         range=[0, ls_max_period_h],
         tickmode="array",
         tickvals=ls_tickvals,
@@ -1057,44 +1036,36 @@ def create_single_kpi_figure(
         row=2,
         col=1,
     )
+    fig.update_yaxes(title_text="power", rangemode="tozero", row=2, col=1)
 
-    fig.update_yaxes(
-        title_text="power",
-        rangemode="tozero",
-        row=2,
-        col=1,
-    )
-
+    # ACF
     fig.add_trace(
         go.Scatter(
             x=lags,
             y=acf_r,
             mode="lines",
             name="real",
-            legend=acf_legend,
+            legendgroup="real",
+            line=dict(color=REAL_COLOR),
+            showlegend=False,
         ),
         row=2,
         col=2,
     )
-
     fig.add_trace(
         go.Scatter(
             x=lags,
             y=acf_s,
             mode="lines",
             name="synth",
-            legend=acf_legend,
+            legendgroup="synth",
+            line=dict(color=SYNTH_COLOR),
+            showlegend=False,
         ),
         row=2,
         col=2,
     )
-
-    fig.add_hline(
-        y=0,
-        line_width=1,
-        row=2,
-        col=2,
-    )
+    fig.add_hline(y=0, line_width=1, line_color="gray", row=2, col=2)
 
     for lag in [24, 48, 24 * 7]:
         if lag <= metrics["acf_max_lag"]:
@@ -1102,135 +1073,99 @@ def create_single_kpi_figure(
                 x=lag,
                 line_dash="dot",
                 line_width=1,
+                line_color="gray",
                 annotation_text=f"{lag}h",
-                annotation_position="top",
+                annotation_position="bottom right",
+                annotation_font_size=10,
                 row=2,
                 col=2,
             )
-
     fig.update_xaxes(title_text="lag [h]", row=2, col=2)
     fig.update_yaxes(title_text="ACF", row=2, col=2)
 
+    # Summary table
     table_rows = [
         ["Real rows", f"{len(real_full_pdf)}", "all points"],
         ["Synth rows", f"{len(synth_full_pdf)}", "all points"],
-        ["Real observed", f"{len(val_r)}", "non-missing points"],
-        ["Synth observed", f"{len(val_s)}", "non-missing points"],
+        ["Real observed", f"{len(val_r)}", "non-missing"],
+        ["Synth observed", f"{len(val_s)}", "non-missing"],
         ["1D Wasserstein", fmt_float(w1), "value distribution"],
-        ["MMD² RBF", fmt_float(mmd1), "distribution tails and nonlinear differences"],
+        ["MMD² RBF", fmt_float(mmd1), "tails / nonlinear"],
+        ["Jensen-Shannon", fmt_float(js_div), "divergence in [0, 1]"],
         ["LS spectrum dist", fmt_float(spec_d), "periodic structure"],
         ["ACF L2 dist", fmt_float(acf_d), "temporal dependence"],
         ["Hourly RMSE", fmt_float(hourly_rmse), "daily profile"],
         ["NULL rate real", fmt_percent(real_missing["missing_rate"]), "missingness"],
         ["NULL rate synth", fmt_percent(synth_missing["missing_rate"]), "missingness"],
         [
-            "Gap count real/synth",
+            "Gaps real/synth",
             f"{real_missing['n_gaps']}/{synth_missing['n_gaps']}",
-            "number of gaps",
+            "n gaps",
         ],
         [
-            "Mean gap real/synth",
-            f"{real_missing['mean_gap_h']:.1f}/{synth_missing['mean_gap_h']:.1f} h",
-            "average gap length",
+            "Mean gap real/synth [h]",
+            f"{real_missing['mean_gap_h']:.1f}/{synth_missing['mean_gap_h']:.1f}",
+            "avg length",
         ],
         [
-            "Max gap real/synth",
-            f"{real_missing['max_gap_h']:.0f}/{synth_missing['max_gap_h']:.0f} h",
-            "longest gap",
+            "Max gap real/synth [h]",
+            f"{real_missing['max_gap_h']:.0f}/{synth_missing['max_gap_h']:.0f}",
+            "longest",
         ],
     ]
 
     fig.add_trace(
         go.Table(
-            columnwidth=[0.32, 0.18, 0.50],
+            columnwidth=[0.34, 0.20, 0.46],
             header=dict(
                 values=["Metric", "Value", "Interpretation"],
                 align="left",
-                font=dict(size=12),
-                height=28,
+                font=dict(size=13),
+                height=34,
+                fill_color="#e8e8e8",
             ),
             cells=dict(
                 values=[
-                    [row[0] for row in table_rows],
-                    [row[1] for row in table_rows],
-                    [row[2] for row in table_rows],
+                    [r[0] for r in table_rows],
+                    [r[1] for r in table_rows],
+                    [r[2] for r in table_rows],
                 ],
                 align="left",
-                font=dict(size=11),
-                height=25,
+                font=dict(size=12),
+                height=38,
             ),
         ),
-        row=2,
+        row=1,
         col=3,
     )
 
-    layout_kwargs = dict(
-        title=(
-            "Synthetic time series validation — Single KPI<br>"
-            f"<sup>W1={fmt_float(w1)}, MMD²={fmt_float(mmd1)}, "
-            f"LS dist={fmt_float(spec_d)}, ACF dist={fmt_float(acf_d)}, "
-            f"Hourly RMSE={fmt_float(hourly_rmse)}</sup>"
+    fig.update_layout(
+        title=dict(
+            text=(
+                "Synthetic time series validation — Single KPI<br>"
+                f"<sup>W1={fmt_float(w1)} · MMD²={fmt_float(mmd1)} · "
+                f"LS dist={fmt_float(spec_d)} · ACF dist={fmt_float(acf_d)} · "
+                f"Hourly RMSE={fmt_float(hourly_rmse)}</sup>"
+            ),
+            x=0.02,
+            xanchor="left",
         ),
-        barmode="overlay",
-        height=750,
-        width=1100,
+        height=850,
+        width=1500,
         template="plotly_white",
-        margin=dict(l=50, r=30, t=140, b=70),
+        margin=dict(l=60, r=30, t=120, b=60),
+        legend=dict(
+            orientation="h",
+            yanchor="bottom",
+            y=1.04,
+            xanchor="center",
+            x=0.5,
+            bgcolor="rgba(255,255,255,0.9)",
+            bordercolor="rgba(0,0,0,0.1)",
+            borderwidth=1,
+            font=dict(size=12),
+        ),
     )
-
-    if use_separate_legends:
-        layout_kwargs.update(
-            legend=dict(
-                title="Distribution",
-                x=0.01,
-                y=0.97,
-                xanchor="left",
-                yanchor="top",
-                bgcolor="rgba(255,255,255,0.75)",
-                borderwidth=1,
-            ),
-            legend2=dict(
-                title="Hourly profile",
-                x=0.70,
-                y=0.97,
-                xanchor="left",
-                yanchor="top",
-                bgcolor="rgba(255,255,255,0.75)",
-                borderwidth=1,
-            ),
-            legend3=dict(
-                title="Lomb-Scargle",
-                x=0.01,
-                y=0.43,
-                xanchor="left",
-                yanchor="top",
-                bgcolor="rgba(255,255,255,0.75)",
-                borderwidth=1,
-            ),
-            legend4=dict(
-                title="ACF",
-                x=0.38,
-                y=0.43,
-                xanchor="left",
-                yanchor="top",
-                bgcolor="rgba(255,255,255,0.75)",
-                borderwidth=1,
-            ),
-        )
-    else:
-        layout_kwargs.update(
-            legend=dict(
-                orientation="h",
-                yanchor="top",
-                y=-0.08,
-                xanchor="center",
-                x=0.5,
-                bgcolor="rgba(255,255,255,0.85)",
-            ),
-            margin=dict(l=50, r=30, t=140, b=130),
-        )
-
-    fig.update_layout(**layout_kwargs)
 
     return fig
 
