@@ -10,7 +10,7 @@ from app.models.auth import TokenPayload
 from app.models.dags import DagRunSummary, TriggerRequest
 from app.models.s3 import DatasetVisualizationResponse, DatasetVisualizationStatusResponse
 from app.services.airflow.errors import AirflowIntegrationError, AirflowNotFound
-from app.services.airflow.runtime import get_airflow_client, get_airflow_service
+from app.services.airflow.runtime import get_airflow_service
 from app.services.airflow.service import AirflowService
 from app.services.s3.pm_schema import (
     unsupported_schema_payload,
@@ -26,6 +26,7 @@ from app.services.s3.visualization_artifacts import (
     status_from_artifact,
     visualization_artifact_key,
 )
+from app.services.spark_dag_conf import build_visualization_dag_conf
 
 DATASET_VISUALIZATION_DAG_ID = "dataset_visualization_spark"
 VISUALIZATION_SPARK_TASK_ID = "run_pm_visualization"
@@ -38,7 +39,7 @@ class VisualizationSchemaError(Exception):
     def __init__(self, payload: TokenPayload) -> None:
         self.payload = payload
         msg = str(payload.message) if payload.message else "Unsupported dataset schema"
-        super().__init__(msg)   
+        super().__init__(msg)
 
 
 def check_dataset_pm_schema(s3_service: S3Service, dataset: Dataset) -> dict[str, Any] | None:
@@ -99,11 +100,11 @@ async def trigger_dataset_visualization(
 
     service = airflow or get_airflow_service()
     run_id = f"genpm_viz_{dataset.id}_{uuid.uuid4().hex[:8]}"
-    conf = {
-        "dataset_id": dataset.id,
-        "s3_key": dataset.s3_key,
-        "file_name": dataset.file_name,
-    }
+    conf = build_visualization_dag_conf(
+        dataset_id=dataset.id,
+        s3_key=dataset.s3_key,
+        file_name=dataset.file_name,
+    ).to_airflow_conf()
 
     action = await service.trigger_dag(
         DATASET_VISUALIZATION_DAG_ID,

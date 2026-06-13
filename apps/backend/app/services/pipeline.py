@@ -1,18 +1,17 @@
 import datetime
-import os
 import uuid
 from typing import Any
 
-import requests  # type: ignore[import-untyped]
 from fastapi import HTTPException
 from sqlalchemy.orm import Session
 
 from app.db.schemas import Dataset, DatasetType, PipelineRun, PipelineRunStatus, PipelineType
-from app.services.preprocessing.conf import (
-    PREPROCESSING_DAG_ID,
-    PreprocessingConfigError,
-    build_preprocessing_dag_args,
-)
+from app.models.dags import TriggerRequest
+from app.models.spark_jobs import PreprocessingConfigError
+from app.services.airflow.errors import AirflowIntegrationError, AirflowNotFound
+from app.services.airflow.runtime import get_airflow_service
+from app.services.preprocessing.conf import PREPROCESSING_DAG_ID
+from app.services.spark_dag_conf import build_preprocessing_dag_conf
 
 DAG_ID_MAP = {
     PipelineType.PREPROCESSING: PREPROCESSING_DAG_ID,
@@ -48,7 +47,7 @@ class PipelineService:
     def get_run(self, run_id: int) -> PipelineRun | None:
         return self._db.query(PipelineRun).filter(PipelineRun.id == run_id).first()
 
-    def create_run(
+    async def create_run(
         self,
         dataset_id: int,
         pipeline_type: PipelineType,
@@ -74,7 +73,7 @@ class PipelineService:
         self._db.commit()
         self._db.refresh(run)
 
-        airflow_run_id = self._trigger_airflow(run, dataset, dag_args or {})
+        airflow_run_id = await self._trigger_airflow(run, dataset, dag_args or {})
         if airflow_run_id:
             run.airflow_run_id = airflow_run_id
             run.status = PipelineRunStatus.RUNNING
@@ -91,14 +90,15 @@ class PipelineService:
             "created_at": run.created_at,
         }
 
-    def _trigger_airflow(
+    async def _trigger_airflow(
         self,
         run: PipelineRun,
         dataset: Dataset,
         dag_args: dict[str, Any],
     ) -> str | None:
-        airflow_url = os.getenv("AIRFLOW_URL", "").rstrip("/")
-        if not airflow_url:
+        try:
+            airflow = get_airflow_service()
+        except RuntimeError:
             return None
 
         dag_id = DAG_ID_MAP.get(run.pipeline_type)
@@ -106,43 +106,39 @@ class PipelineService:
             return None
 
         logical_run_id = f"genpm_pp_{run.id}_{uuid.uuid4().hex[:8]}"
-        conf: dict[str, Any] = {
-            "genpm_run_id": logical_run_id,
-            "dataset_id": run.dataset_id,
-            "s3_key": dataset.s3_key,
-            "file_name": dataset.file_name,
-        }
-
-        if run.pipeline_type == PipelineType.PREPROCESSING:
-            try:
-                resolved_dag_args = build_preprocessing_dag_args(
-                    genpm_run_id=logical_run_id,
-                    raw_s3_key=dataset.s3_key,
-                    user_args=dag_args,
-                )
-            except PreprocessingConfigError as exc:
-                raise HTTPException(status_code=422, detail=str(exc)) from exc
-            conf["dag_args"] = resolved_dag_args
-            conf["process_type"] = "preprocessing_feature_engineering"
 
         try:
-            response = requests.post(
-                f"{airflow_url}/api/v2/dags/{dag_id}/dagRuns",
-                json={
-                    "dag_run_id": logical_run_id,
-                    "conf": conf,
-                },
-                timeout=10,
+            if run.pipeline_type == PipelineType.PREPROCESSING:
+                conf = build_preprocessing_dag_conf(
+                    genpm_run_id=logical_run_id,
+                    dataset_id=run.dataset_id,
+                    s3_key=dataset.s3_key,
+                    file_name=dataset.file_name,
+                    user_dag_args=dag_args,
+                ).to_airflow_conf()
+            else:
+                conf = {
+                    "genpm_run_id": logical_run_id,
+                    "dataset_id": run.dataset_id,
+                    "s3_key": dataset.s3_key,
+                    "file_name": dataset.file_name,
+                    "dag_args": dag_args,
+                }
+
+            action = await airflow.trigger_dag(
+                dag_id,
+                body=TriggerRequest(
+                    conf=conf,
+                    run_id=logical_run_id,
+                    note=f"Pipeline {run.pipeline_type.value}",
+                ),
             )
-            response.raise_for_status()
-            payload = response.json()
-            if isinstance(payload, dict):
-                run_id = payload.get("dag_run_id", logical_run_id)
-                return str(run_id) if run_id is not None else logical_run_id
-            return logical_run_id
+            return action.run_id or logical_run_id
+        except PreprocessingConfigError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
         except HTTPException:
             raise
-        except Exception:
+        except (AirflowNotFound, AirflowIntegrationError):
             return None
 
     def delete_run(self, run_id: int) -> None:

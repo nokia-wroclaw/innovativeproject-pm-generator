@@ -22,6 +22,9 @@ lib/
 lib64/
 !apps/frontend/src/lib/
 !apps/frontend/src/lib/cn.js
+# Airflow DAG helper package (shared spark_config/spark_submit/spark_dag) — must be versioned.
+!apps/airflow/dags/lib/
+!apps/airflow/dags/lib/**
 parts/
 sdist/
 var/

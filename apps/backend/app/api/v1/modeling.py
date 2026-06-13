@@ -1,12 +1,17 @@
 import uuid
-from typing import Literal
+from typing import Any, Literal
 
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 
-from app.core.auth import assert_modeling_admin, get_user_identity, require_auth, require_modeling_admin
+from app.core.auth import (
+    assert_modeling_admin,
+    get_user_identity,
+    require_auth,
+    require_modeling_admin,
+)
 from app.db.database import db_manager
-from app.db.schemas import DagRunStatus, DatasetStatus
+from app.db.schemas import DagRunStatus, DatasetStatus, DatasetType
 from app.models.auth import TokenPayload
 from app.models.dags import TriggerRequest
 from app.models.modeling import (
@@ -22,23 +27,28 @@ from app.models.modeling import (
     ModelingRunStatus,
     ModelingTrainedModelOption,
 )
+from app.models.spark_jobs import PreprocessingConfigError
 from app.services.airflow.errors import AirflowIntegrationError, AirflowNotFound
 from app.services.airflow.runtime import get_airflow_service
 from app.services.airflow.service import AirflowService
 from app.services.preprocessing.conf import (
     PREPROCESSING_DAG_ID,
-    PreprocessingConfigError,
-    build_preprocessing_dag_args,
     preprocessing_artifact_paths,
 )
 from app.services.s3.service import S3Service
+from app.services.spark_dag_conf import build_preprocessing_dag_conf
 
 router = APIRouter(prefix="/modeling", tags=["modeling"])
 
+# Training / generate DAGs are not implemented yet — these ids are intentional placeholders.
+# Triggering them returns AirflowNotFound (handled as a clear 404) until the DAGs are added.
+TRAINING_DAG_ID = "training_dataset_pipeline"
+GENERATE_DAG_ID = "generate_pipeline"
+
 DAG_ID_MAP: dict[ModelingProcessType, str] = {
     "preprocessing_feature_engineering": PREPROCESSING_DAG_ID,
-    "training_dataset": "moj_pierwszy_dag",
-    "generate": "moj_pierwszy_dag",
+    "training_dataset": TRAINING_DAG_ID,
+    "generate": GENERATE_DAG_ID,
 }
 
 # Short dag_run_id prefix — long ids (with full process_type) are harder for Airflow to accept.
@@ -114,6 +124,19 @@ def _get_s3_service(db: Session = Depends(db_manager.get_db)) -> S3Service:
 def _airflow_service() -> AirflowService:
     return get_airflow_service()
 
+
+def _preprocessing_logs(status: DagRunStatus) -> list[str]:
+    logs = [
+        "DAG configuration received from Airflow conf.",
+        "Spark preprocessing job submitted (read RAW + auxiliary parquets).",
+    ]
+    if status in {DagRunStatus.RUNNING, DagRunStatus.SUCCESS, DagRunStatus.FAILED}:
+        logs.append("KPI coverage filtering and windowing in progress.")
+    if status == DagRunStatus.SUCCESS:
+        logs.append("Preprocessed artifacts written to S3. Pipeline completed successfully.")
+    if status == DagRunStatus.FAILED:
+        logs.append("Airflow marked the run as failed. Check task logs in the DAG view.")
+    return logs
 
 
 def _mock_logs(status: DagRunStatus, process_type: ModelingProcessType) -> list[str]:
@@ -350,24 +373,27 @@ async def trigger_modeling_run(
     user_dag_args = dict(body.dag_args)
     if process_type == "preprocessing_feature_engineering":
         try:
-            resolved_dag_args = build_preprocessing_dag_args(
+            conf_model = build_preprocessing_dag_conf(
                 genpm_run_id=run_id,
-                raw_s3_key=dataset.s3_key,
-                user_args=user_dag_args,
+                dataset_id=dataset.id,
+                s3_key=dataset.s3_key,
+                dataset_name=dataset.file_name,
+                user_dag_args=user_dag_args,
+                process_type=process_type,
             )
         except PreprocessingConfigError as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
+        conf = conf_model.to_airflow_conf()
     else:
         resolved_dag_args = {**user_dag_args, "dataset_id": dataset.id}
-
-    conf = {
-        "genpm_run_id": run_id,
-        "dataset_id": dataset.id,
-        "dataset_name": dataset.file_name,
-        "s3_key": dataset.s3_key,
-        "dag_args": resolved_dag_args,
-        "process_type": process_type,
-    }
+        conf = {
+            "genpm_run_id": run_id,
+            "dataset_id": dataset.id,
+            "dataset_name": dataset.file_name,
+            "s3_key": dataset.s3_key,
+            "dag_args": resolved_dag_args,
+            "process_type": process_type,
+        }
     if process_type != "preprocessing_feature_engineering":
         conf["dataset_type"] = body.dataset_type
 

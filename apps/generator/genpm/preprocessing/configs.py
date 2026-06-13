@@ -1,4 +1,14 @@
+from __future__ import annotations
+
 from dataclasses import dataclass
+from typing import Any
+
+
+def _derive_intermediate_path(output_path_prefix: str) -> str:
+    """`<base>/intermediate` sibling of the `<base>/final` output prefix."""
+    prefix = output_path_prefix.rstrip("/")
+    base = prefix[: -len("/final")] if prefix.endswith("/final") else prefix
+    return f"{base}/intermediate"
 
 
 @dataclass
@@ -50,3 +60,38 @@ class PreprocessingConfig:
     impute: bool = True
     # Verbose
     verbose: bool = False
+
+    @classmethod
+    def from_conf(cls, conf: dict[str, Any], *, bucket: str) -> PreprocessingConfig:
+        """Build the internal job config from a finalized `dag_run.conf`.
+
+        Resolves bucket-relative S3 keys to `s3a://` URIs and maps the dag_args namespace onto the
+        dataclass fields. Defaults + required-key validation live in
+        `genpm.preprocessing.defaults.finalize_dag_args`.
+        """
+        from genpm.preprocessing.defaults import finalize_dag_args
+        from genpm.utils.s3_paths import s3a_path
+
+        dag_args = finalize_dag_args(conf=conf)
+        output_prefix = s3a_path(bucket, str(dag_args["output_path_prefix"]))
+
+        min_joint = dag_args.get("min_joint_windows_abs")
+        min_joint_val = int(min_joint) if min_joint not in (None, "", "None", "none") else None
+
+        return cls(
+            pm_data_raw_path=s3a_path(bucket, str(conf["s3_key"])),
+            kpi_definitions_raw_path=s3a_path(bucket, str(dag_args["kpi_definitions_raw_path"])),
+            simple_reports_raw_path=s3a_path(bucket, str(dag_args["simple_reports_raw_path"])),
+            intermediate_path=_derive_intermediate_path(output_prefix),
+            output_path_prefix=output_prefix,
+            kpi_min_global_density=float(dag_args["kpi_min_global_density"]),
+            min_frac_contributing_cells=float(dag_args["kpi_global_min_frac_cells_passing"]),
+            min_imputable_gap_frac=float(dag_args["min_imputable_gap_frac"]),
+            kpi_min_std_val=float(dag_args["kpi_min_std_val"]),
+            max_zero_frac=float(dag_args["max_zero_frac"]),
+            window_width_hours=int(dag_args["window_width_hours"]),
+            stride_hours=int(dag_args["stride_hours"]),
+            max_gap_hours=int(dag_args["max_gap_hours"]),
+            min_joint_windows_abs=min_joint_val,
+            impute=bool(dag_args["impute"]),
+        )

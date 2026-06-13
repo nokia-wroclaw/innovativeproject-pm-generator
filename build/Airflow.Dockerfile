@@ -30,7 +30,9 @@ RUN curl -O https://archive.apache.org/dist/spark/spark-${SPARK_VERSION}/spark-$
 
 # genpm is installed as a package; runtime mount overlays /opt/airflow/generator for dev.
 COPY apps/generator /opt/airflow/generator
-RUN chown -R airflow:root /opt/airflow/generator
+RUN mkdir -p /opt/airflow/artifacts \
+    && python3 -c "import shutil; shutil.make_archive('/opt/airflow/artifacts/genpm', 'zip', '/opt/airflow/generator', 'genpm')" \
+    && chown -R airflow:root /opt/airflow/generator /opt/airflow/artifacts
 
 # Venv must be created as the airflow runtime user — root-owned uv Python is not executable
 # by AIRFLOW_UID (50000), which causes "Permission denied" in Spark PythonRunner.
@@ -44,6 +46,12 @@ RUN uv venv /opt/airflow/genpm-venv --python 3.12 \
         /opt/airflow/genpm-venv/bin/python -c "import distutils; import genpm.utils.spark_session"
 
 ENV GENPM_PYSPARK_PYTHON=/opt/airflow/genpm-venv/bin/python
+ENV GENPM_PY_FILES=/opt/airflow/artifacts/genpm.zip
+ENV GENPM_GENERATOR_ROOT=/opt/airflow/generator
+# Make the (runtime-mounted) genpm package importable by the scheduler / dag-processor / worker
+# python at DAG parse time. The build-time genpm.zip is only a fallback; DAGs rebuild it from the
+# live mount at submit time so driver and cluster executors run identical code.
+ENV PYTHONPATH=/opt/airflow/generator
 ENV JAVA_HOME=/usr/lib/jvm/java-17-openjdk-amd64
 ENV SPARK_HOME=/opt/spark
 ENV PYSPARK_DRIVER_PYTHON=/opt/airflow/genpm-venv/bin/python

@@ -17,6 +17,7 @@ class VisualizationStorageError(RuntimeError):
 
 def _require_s3_bucket() -> str:
     from app.core.config import get_settings
+
     bucket = get_settings().s3_bucket
     if not bucket:
         raise VisualizationStorageError(
