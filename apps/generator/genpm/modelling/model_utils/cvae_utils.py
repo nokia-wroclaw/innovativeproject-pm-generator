@@ -31,22 +31,25 @@ Typical notebook usage (v5)
     save_artifacts(RUN_DIR_PATH, model, data, arch_params={**HP_V5, "arch_version": "v5"})
 """
 
-from __future__ import annotations
-
 import json
 from pathlib import Path
 
+# tsgm MUST be imported before keras — it patches keras internals on import.
+# Importing keras first causes silent failures in model building.
+import tsgm  # noqa: E402, F401, isort:skip
 import joblib
 import keras
 import numpy as np
 import pandas as pd
-import tsgm  # noqa
 from sklearn.preprocessing import LabelEncoder
 
 from genpm.modelling.model_utils.model_utils import (
     cBetaVAE_Hierarchical,
     cVAE_LSTMv5Architecture,
 )
+from genpm.utils.logger import get_logger
+
+logger = get_logger()
 
 SEQ_LEN = 168
 Y_DIM = 6
@@ -139,78 +142,56 @@ def build_y_extended(
 CONST_KPI_STD_THRESHOLD = 0.05
 
 
-def _stack_list_windows(
-    pdf: pd.DataFrame,
-    feat_cols: list[str],
-    seq_len: int,
-) -> tuple[np.ndarray, np.ndarray]:
-    """
-    Convert list-valued KPI columns to (N, seq_len, D).
-
-    Uses vectorized np.vstack when all lists are uniform; falls back row-wise
-    when lengths differ.
-    """
-    try:
-        planes = [np.vstack(pdf[c].to_numpy()) for c in feat_cols]
-        X = np.stack(planes, axis=-1).astype(np.float32)
-        if X.shape[1] != seq_len:
-            raise ValueError("ragged list lengths")
-        valid = ~np.isnan(X).any(axis=(1, 2))
-        return X, valid
-    except (ValueError, TypeError):
-        n, d = len(pdf), len(feat_cols)
-        X = np.full((n, seq_len, d), np.nan, dtype=np.float32)
-        valid = np.ones(n, dtype=bool)
-        for j, col in enumerate(feat_cols):
-            for i, value in enumerate(pdf[col].values):
-                if not valid[i]:
-                    continue
-                arr = np.asarray(value, dtype=np.float32).ravel()
-                if len(arr) != seq_len or np.isnan(arr).any():
-                    valid[i] = False
-                    continue
-                X[i, :, j] = arr
-        valid &= ~np.isnan(X).any(axis=(1, 2))
-        return X, valid
-
-
-def _load_windows_from_list_format(
-    pdf: pd.DataFrame,
-    feat_cols: list[str],
-    cell_id_col: str,
-    anchor_col: str,
-    hour_col: str,
-    holiday_col: str | None,
-    seq_len: int,
-) -> tuple[np.ndarray, np.ndarray, pd.DatetimeIndex, np.ndarray]:
-    """One row per window — KPI columns contain lists of length seq_len."""
-    X, valid = _stack_list_windows(pdf, feat_cols, seq_len)
-
-    if hour_col in pdf.columns:
-        valid &= pdf[hour_col].to_numpy() == seq_len
-
-    n_rejected = int((~valid).sum())
-    if not valid.any():
-        raise ValueError(
-            f"No valid windows found — all {len(pdf)} rows were rejected "
-            f"(expected list length {seq_len}, no NaNs)."
-        )
-    if n_rejected:
-        print(f"Skipped {n_rejected:,} window(s) with wrong length or NaN values")
-
-    pdf_ok = pdf.loc[valid]
-    cell_ids_arr = pdf_ok[cell_id_col].to_numpy()
-    window_anchors = pd.DatetimeIndex(pd.to_datetime(pdf_ok[anchor_col]))
-
-    if holiday_col and holiday_col in pdf_ok.columns:
-        holiday_flags = pdf_ok[holiday_col].fillna(0).astype(np.int32).to_numpy()
-    else:
-        holiday_flags = np.zeros(len(pdf_ok), dtype=np.int32)
-
-    return X[valid], cell_ids_arr, window_anchors, holiday_flags
+# =============================================================================
+# Future format: list/compact (one row per window, KPI columns are lists).
+# Uncomment when preprocessing output changes to this schema.
+#
+# def _stack_list_windows(pdf, feat_cols, seq_len):
+#     """Convert list-valued KPI columns to (N, seq_len, D)."""
+#     try:
+#         planes = [np.vstack(pdf[c].to_numpy()) for c in feat_cols]
+#         X = np.stack(planes, axis=-1).astype(np.float32)
+#         if X.shape[1] != seq_len:
+#             raise ValueError("ragged list lengths")
+#         valid = ~np.isnan(X).any(axis=(1, 2))
+#         return X, valid
+#     except (ValueError, TypeError):
+#         n, d = len(pdf), len(feat_cols)
+#         X = np.full((n, seq_len, d), np.nan, dtype=np.float32)
+#         valid = np.ones(n, dtype=bool)
+#         for j, col in enumerate(feat_cols):
+#             for i, value in enumerate(pdf[col].values):
+#                 if not valid[i]:
+#                     continue
+#                 arr = np.asarray(value, dtype=np.float32).ravel()
+#                 if len(arr) != seq_len or np.isnan(arr).any():
+#                     valid[i] = False
+#                     continue
+#                 X[i, :, j] = arr
+#         valid &= ~np.isnan(X).any(axis=(1, 2))
+#         return X, valid
+#
+# def _load_windows_from_list_format(pdf, feat_cols, cell_id_col, anchor_col, hour_col, holiday_col, seq_len):
+#     """One row per window — KPI columns are lists of length seq_len; n_hours column optional."""
+#     X, valid = _stack_list_windows(pdf, feat_cols, seq_len)
+#     if hour_col in pdf.columns:
+#         valid &= pdf[hour_col].to_numpy() == seq_len
+#     n_rejected = int((~valid).sum())
+#     if not valid.any():
+#         raise ValueError(f"No valid windows — all {len(pdf)} rows rejected.")
+#     if n_rejected:
+#         logger.warning(f"Skipped {n_rejected:,} window(s) with wrong length or NaN values")
+#     pdf_ok = pdf.loc[valid]
+#     holiday_flags = (
+#         pdf_ok[holiday_col].fillna(0).astype(np.int32).to_numpy()
+#         if holiday_col and holiday_col in pdf_ok.columns
+#         else np.zeros(len(pdf_ok), dtype=np.int32)
+#     )
+#     return X[valid], pdf_ok[cell_id_col].to_numpy(), pd.DatetimeIndex(pd.to_datetime(pdf_ok[anchor_col])), holiday_flags
+# =============================================================================
 
 
-def _load_windows_from_long_format(
+def _load_windows_from_hourly_format(
     pdf: pd.DataFrame,
     feat_cols: list[str],
     cell_id_col: str,
@@ -219,28 +200,54 @@ def _load_windows_from_long_format(
     holiday_col: str | None,
     seq_len: int,
 ) -> tuple[np.ndarray, np.ndarray, pd.DatetimeIndex, np.ndarray]:
-    """Legacy format — group 168 hourly rows into one window tensor."""
+    """
+    Long format: one row per hour per window.
+
+    Expected schema:
+        distname       string    — cell identifier
+        window_anchor  timestamp — start of the 168-hour window
+        hour_idx       integer   — 0..seq_len-1 within the window
+        NR_*           double    — KPI values
+
+    Groups by (cell_id_col, anchor_col), sorts by hour_col, stacks into
+    (N, seq_len, n_kpis). Windows with wrong row count or any NaN are skipped.
+    """
     groups, cell_ids_list, anchors_list, holiday_list = [], [], [], []
+    n_skipped = 0
 
+    logger.info(
+        f"Stacking hourly rows into windows — grouping by ({cell_id_col}, {anchor_col}), sorting by {hour_col}"
+    )
     for (cell_id, anchor), g in pdf.groupby([cell_id_col, anchor_col], sort=False):
         g_sorted = g.sort_values(hour_col)
+        if len(g_sorted) != seq_len:
+            n_skipped += 1
+            continue
         kpi = g_sorted[feat_cols].to_numpy(dtype=np.float32)
-        if len(g_sorted) != seq_len or np.isnan(kpi).any():
+        if np.isnan(kpi).any():
+            n_skipped += 1
             continue
         groups.append(kpi)
         cell_ids_list.append(cell_id)
         anchors_list.append(pd.Timestamp(anchor))
-        if holiday_col and holiday_col in g_sorted.columns:
-            holiday_list.append(int(g_sorted[holiday_col].iloc[0]))
-        else:
-            holiday_list.append(0)
+        holiday_list.append(
+            int(g_sorted[holiday_col].iloc[0])
+            if holiday_col and holiday_col in g_sorted.columns
+            else 0
+        )
+
+    if n_skipped:
+        logger.warning(f"Skipped {n_skipped:,} window(s) — wrong row count or NaN values")
 
     if not groups:
         raise ValueError(
-            f"No valid windows found in long format — expected {seq_len} rows "
-            f"per ({cell_id_col}, {anchor_col}) group."
+            f"No valid windows — expected exactly {seq_len} rows "
+            f"per ({cell_id_col}, {anchor_col}) group with no NaNs."
         )
 
+    logger.info(
+        f"Stacked {len(groups):,} windows — shape ({len(groups)}, {seq_len}, {len(feat_cols)})"
+    )
     return (
         np.stack(groups).astype(np.float32),
         np.array(cell_ids_list),
@@ -254,7 +261,7 @@ def prepare_data(
     scaled_params_path: str | Path | None = None,
     cell_id_col: str = "distname",
     anchor_col: str = "window_anchor",
-    hour_col: str = "n_hours",
+    hour_col: str = "hour_idx",
     holiday_col: str | None = None,
     meta_cols: set[str] | None = None,
     drop_constant_kpis: bool = True,
@@ -263,47 +270,42 @@ def prepare_data(
     """
     Load windowed parquet, build X and Y tensors.
 
-    Supports two parquet layouts:
-      - **Compact (new):** one row per window; each KPI column is a list of
-        ``seq_len`` values; optional ``n_hours`` column (must equal 168).
-      - **Long (legacy):** one row per hour; ``hour_idx`` 0..167 per window.
+    Expected schema (hourly format):
+        distname       string    — cell identifier
+        window_anchor  timestamp — start of the 168-hour window
+        hour_idx       integer   — 0..167 within the window
+        NR_*           double    — one column per KPI
 
     Returns dict with keys:
-        X_scaled, y, y_extended, window_anchors, cell_ids, holiday_flags,
+        X_scaled, y, window_anchors, cell_ids, holiday_flags,
         params_df, cell_encoder, kpi_columns, seq_len, feat_dim, n_classes, output_dim
     """
     if meta_cols is None:
         meta_cols = _META_COLS
 
+    logger.info(f"Loading windowed parquet from {wide_scaled_path}")
     pdf = pd.read_parquet(wide_scaled_path)
     feat_cols = sorted([c for c in pdf.columns if c not in meta_cols])
     if not feat_cols:
         raise ValueError(f"No KPI columns found in '{wide_scaled_path}'.")
+    logger.info(f"Found {len(feat_cols)} KPI columns, {len(pdf):,} rows in parquet")
 
     scaled_params_df = None
     if scaled_params_path is not None:
+        logger.info(f"Loading scaling params from {scaled_params_path}")
         scaled_params_df = pd.read_parquet(scaled_params_path)
 
-    if hour_col == "n_hours":
-        X_scaled, cell_ids_arr, window_anchors, holiday_flags = _load_windows_from_list_format(
-            pdf,
-            feat_cols,
-            cell_id_col,
-            anchor_col,
-            hour_col,
-            holiday_col,
-            SEQ_LEN,
-        )
-    else:
-        X_scaled, cell_ids_arr, window_anchors, holiday_flags = _load_windows_from_long_format(
-            pdf,
-            feat_cols,
-            cell_id_col,
-            anchor_col,
-            hour_col,
-            holiday_col,
-            SEQ_LEN,
-        )
+    X_scaled, cell_ids_arr, window_anchors, holiday_flags = _load_windows_from_hourly_format(
+        pdf,
+        feat_cols,
+        cell_id_col,
+        anchor_col,
+        hour_col,
+        holiday_col,
+        SEQ_LEN,
+    )
+
+    logger.info(f"Parsed {len(X_scaled):,} valid windows — shape {X_scaled.shape}")
 
     # dropping constant KPIs decide by threshold
     if drop_constant_kpis:
@@ -311,13 +313,15 @@ def prepare_data(
         const_mask = per_feat_std < const_std_threshold
         if const_mask.any():
             dropped = [c for c, m in zip(feat_cols, const_mask, strict=False) if m]
-            print(
+            logger.warning(
                 f"Dropping {const_mask.sum()} near-constant KPI column(s) "
                 f"(std < {const_std_threshold}): {dropped[:8]}"
                 f"{'...' if len(dropped) > 8 else ''}"
             )
             feat_cols = [c for c, m in zip(feat_cols, const_mask, strict=False) if not m]
             X_scaled = X_scaled[:, :, ~const_mask]
+        else:
+            logger.info("No near-constant KPI columns found")
 
     # encode y
     cell_encoder = LabelEncoder()
@@ -325,11 +329,9 @@ def prepare_data(
     y = build_y(cell_ids_arr, window_anchors, cell_encoder, holiday_flags)
     n_classes = len(cell_encoder.classes_)
 
-    print(
-        f"Loaded {len(X_scaled):,} windows  |  "
-        f"feat_dim={len(feat_cols)}  |  "
-        f"cells={n_classes}  |  "
-        f"y width={y.shape[1]}"
+    logger.info(
+        f"Data ready | windows={len(X_scaled):,}  feat_dim={len(feat_cols)}  "
+        f"cells={n_classes}  y_dim={y.shape[1]}"
     )
 
     return {
@@ -478,6 +480,11 @@ def build_model(
     free_bits_local: float = 0.0,
     output_activation: str = "sigmoid",
 ):
+    logger.info(
+        f"Building model | seq_len={seq_len} feat_dim={feat_dim} n_cells={n_cells} "
+        f"global_latent_dim={global_latent_dim} hidden_dim={hidden_dim} "
+        f"n_layers={n_layers} use_attention={use_attention}"
+    )
     arch = cVAE_LSTMv5Architecture(
         seq_len=seq_len,
         feat_dim=feat_dim,
@@ -503,6 +510,7 @@ def build_model(
         free_bits_local=free_bits_local,
     )
     model.compile(optimizer=keras.optimizers.Adam(learning_rate, clipnorm=1.0))
+    logger.info("Model built and compiled")
     return arch, model
 
 
@@ -621,6 +629,11 @@ def train_model(
     """Train v5 with cyclical KL annealing and optional collapse monitoring."""
     weights_path = Path(weights_path)
     weights_path.parent.mkdir(parents=True, exist_ok=True)
+    logger.info(
+        f"Starting training | epochs={epochs} batch_size={batch_size} "
+        f"target_beta={target_beta} use_cyclical_kl={use_cyclical_kl}"
+    )
+    logger.info(f"Best weights will be saved to {weights_path}")
 
     if use_cyclical_kl:
         kl_cb = CyclicalKLAnneal(
@@ -657,7 +670,9 @@ def train_model(
     ]
     if collapse_monitor and _is_hierarchical_model(model):
         callbacks.append(CollapseMonitor(X_scaled, y))
+        logger.info("CollapseMonitor enabled")
 
+    logger.info(f"Fitting on {len(X_scaled):,} windows")
     return model.fit(
         X_scaled,
         y,
@@ -682,26 +697,35 @@ def save_artifacts(
     """Persist training artifacts needed to reload the model and generate data."""
     out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
+    logger.info(f"Saving artifacts to {out_dir}")
 
     np.save(out_dir / "X_scaled.npy", data["X_scaled"])
+    logger.info(f"Saved X_scaled.npy — shape {data['X_scaled'].shape}")
+
     y_save = data.get("y", data.get("y"))
     np.save(out_dir / "y.npy", y_save)
+    logger.info(f"Saved y.npy — shape {y_save.shape}")
+
     np.save(out_dir / "window_anchors.npy", data["window_anchors"].astype(str))
     np.save(out_dir / "cell_ids.npy", data["cell_ids"])
     np.save(out_dir / "kpi_columns.npy", np.array(data["kpi_columns"]))
+    logger.info(f"Saved window_anchors, cell_ids, kpi_columns ({len(data['kpi_columns'])} KPIs)")
 
     joblib.dump(data["cell_encoder"], out_dir / "cell_encoder.pkl")
+    logger.info(f"Saved cell_encoder.pkl — {len(data['cell_encoder'].classes_)} cells")
 
     if data.get("params_df") is not None:
         data["params_df"].to_parquet(out_dir / "params_df.parquet", index=False)
+        logger.info("Saved params_df.parquet")
 
     arch_params = arch_params or {}
     if "arch_version" not in arch_params and data.get("arch_version"):
         arch_params["arch_version"] = data["arch_version"]
     if arch_params:
         (out_dir / "arch_params.json").write_text(json.dumps(arch_params, indent=2))
+        logger.info(f"Saved arch_params.json — {arch_params}")
 
-    print(f"Artifacts saved to {out_dir}")
+    logger.info(f"All artifacts saved to {out_dir}")
 
 
 # def load_artifacts(
@@ -798,9 +822,10 @@ def load_artifacts(
     y_dim: int = 6,
 ) -> tuple[object, dict]:
     """Reload v5 artifacts and restore trained hierarchical model."""
-
+    logger.info(f"Loading cell_encoder from {run_id_path}")
     cell_encoder = joblib.load(run_id_path / "cell_encoder.pkl")
     n_cells = len(cell_encoder.classes_)
+    logger.info(f"Cell encoder loaded — {n_cells} cells")
 
     _, model = build_model(
         seq_len=168,
@@ -820,11 +845,37 @@ def load_artifacts(
 
     dummy_X = np.zeros((1, seq_len, feat_dim), dtype=np.float32)
     dummy_y = np.zeros((1, y_dim), dtype=np.float32)
+    logger.info("Running dummy forward pass to build model graph")
     model([dummy_X, dummy_y], training=False)
+    logger.info(f"Loading weights from {weights_path}")
     model.load_weights(str(weights_path))
-    print(f"Loaded v5 weights from {weights_path}")
+    logger.info("Weights loaded successfully")
 
     return model, cell_encoder
+
+
+def load_training_data(out_dir: str | Path) -> dict:
+    """Load numpy arrays saved by save_artifacts (X_scaled, y, window_anchors, cell_ids, kpi_columns)."""
+    out_dir = Path(out_dir)
+    logger.info(f"Loading training data from {out_dir}")
+    y_path = out_dir / "y.npy"
+    if not y_path.exists():
+        logger.info("y.npy not found, falling back to y_extended.npy")
+        y_path = out_dir / "y_extended.npy"
+    data = {
+        "X_scaled": np.load(out_dir / "X_scaled.npy"),
+        "y": np.load(y_path),
+        "window_anchors": pd.to_datetime(
+            np.load(out_dir / "window_anchors.npy", allow_pickle=True)
+        ),
+        "cell_ids": np.load(out_dir / "cell_ids.npy", allow_pickle=True),
+        "kpi_columns": np.load(out_dir / "kpi_columns.npy", allow_pickle=True).tolist(),
+    }
+    logger.info(
+        f"Training data loaded | X_scaled={data['X_scaled'].shape} "
+        f"kpi_columns={len(data['kpi_columns'])} cells={len(set(data['cell_ids']))}"
+    )
+    return data
 
 
 # =============================================================================
@@ -1078,7 +1129,9 @@ def generate_timespan(
             f"No windows found for cell_id='{cell_id}' "
             f"date_start={date_start}, date_end={date_end}, holiday={holiday}."
         )
-    print(f"Matched {len(X_m)} windows → {len(X_m) * SEQ_LEN:,} rows")
+    logger.info(
+        f"Matched {len(X_m)} windows for '{cell_id}' [{date_start} → {date_end}] → {len(X_m) * SEQ_LEN:,} rows"
+    )
 
     x_syn = _generate_windows(model, X_m, y_m, rng, batch_size)
     x_inv = x_syn
@@ -1133,8 +1186,9 @@ def generate_n_weeks(
         raise ValueError(f"No windows found for cell_id='{cell_id}' with holiday={holiday}.")
 
     pool_size = len(X_pool)
+    logger.info(f"Pool for '{cell_id}': {pool_size} windows (holiday={holiday})")
     idx = rng.choice(pool_size, size=n_weeks, replace=(n_weeks > pool_size))
-    print(f"Sampled {n_weeks} windows from pool of {pool_size} → {n_weeks * SEQ_LEN:,} rows")
+    logger.info(f"Sampled {n_weeks} windows → {n_weeks * SEQ_LEN:,} rows")
 
     x_syn = _generate_windows(model, X_pool[idx], y_pool[idx], rng, batch_size)
     # x_inv = _inverse_transform_3d(x_syn, params_df, kpi_columns, cell_id)
