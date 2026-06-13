@@ -3,13 +3,13 @@ import json
 import logging
 import time
 from collections.abc import AsyncIterator
-from datetime import UTC
-from typing import Any
+from datetime import UTC, datetime
 
 from fastapi import APIRouter, Depends, Query, Request
 from sse_starlette.sse import EventSourceResponse
 
-from app.core.auth import require_admin
+from app.core.auth import get_user_identity, require_admin
+from app.models.auth import TokenPayload
 from app.models.dags import (
     ActionResponse,
     DagDetails,
@@ -37,9 +37,6 @@ router = APIRouter(
 def _service() -> AirflowService:
     return get_airflow_service()
 
-
-def _identity(payload: dict[str, Any]) -> str | None:
-    return payload.get("preferred_username") or payload.get("email") or payload.get("sub")
 
 
 @router.get("", response_model=list[DagSummary])
@@ -117,13 +114,13 @@ async def get_task_logs(
 async def trigger_dag(
     dag_id: str,
     body: TriggerRequest | None = None,
-    user: dict[str, Any] = Depends(require_admin),
+    user: TokenPayload = Depends(require_admin),
     service: AirflowService = Depends(_service),
 ) -> ActionResponse:
     return await service.trigger_dag(
         dag_id,
         body=body or TriggerRequest(),
-        triggered_by=_identity(user),
+        triggered_by=get_user_identity(user),
     )
 
 
@@ -131,20 +128,20 @@ async def trigger_dag(
 async def stop_dag_run(
     dag_id: str,
     run_id: str,
-    user: dict[str, Any] = Depends(require_admin),
+    user: TokenPayload = Depends(require_admin),
     service: AirflowService = Depends(_service),
 ) -> ActionResponse:
-    return await service.stop_dag_run(dag_id, run_id, triggered_by=_identity(user))
+    return await service.stop_dag_run(dag_id, run_id, triggered_by=get_user_identity(user))
 
 
 @router.post("/{dag_id}/runs/{run_id}/clear", response_model=ActionResponse)
 async def clear_dag_run(
     dag_id: str,
     run_id: str,
-    user: dict[str, Any] = Depends(require_admin),
+    user: TokenPayload = Depends(require_admin),
     service: AirflowService = Depends(_service),
 ) -> ActionResponse:
-    return await service.clear_dag_run(dag_id, run_id, triggered_by=_identity(user))
+    return await service.clear_dag_run(dag_id, run_id, triggered_by=get_user_identity(user))
 
 
 @router.post(
@@ -156,7 +153,7 @@ async def clear_task_instance(
     run_id: str,
     task_id: str,
     downstream: bool = Query(False),
-    user: dict[str, Any] = Depends(require_admin),
+    user: TokenPayload = Depends(require_admin),
     service: AirflowService = Depends(_service),
 ) -> ActionResponse:
     return await service.clear_task_instance(
@@ -164,7 +161,7 @@ async def clear_task_instance(
         run_id,
         task_id,
         downstream=downstream,
-        triggered_by=_identity(user),
+        triggered_by=get_user_identity(user),
     )
 
 
@@ -177,21 +174,19 @@ async def stream_task_logs(
     try_number: int = Query(..., ge=1),
     service: AirflowService = Depends(_service),
 ) -> EventSourceResponse:
+    """Streams task logs via Server-Sent Events (SSE)."""
     settings = get_airflow_settings()
     max_duration = settings.log_stream_max_duration_seconds
-    heartbeat = settings.log_stream_heartbeat_seconds
+    heartbeat_interval = settings.log_stream_heartbeat_seconds
 
     async def event_stream() -> AsyncIterator[dict[str, str]]:
         started_at = time.monotonic()
+        heartbeat = HeartbeatTimer(heartbeat_interval)
         seq = 0
         token: str | None = None
-        last_heartbeat = started_at
+
         logger.info(
-            "SSE log stream open: dag=%s run=%s task=%s try=%d",
-            dag_id,
-            run_id,
-            task_id,
-            try_number,
+            f"SSE log stream opened: dag={dag_id} run={run_id} task={task_id} try={try_number}"
         )
 
         try:
@@ -201,92 +196,72 @@ async def stream_task_logs(
 
                 now = time.monotonic()
                 if now - started_at > max_duration:
-                    yield {
-                        "event": "end",
-                        "data": json.dumps({"reason": "max_duration"}),
-                    }
+                    yield _build_sse_event("end", {"reason": "max_duration"})
                     return
 
                 try:
                     chunk = await service.get_task_logs_page(
-                        dag_id,
-                        run_id,
-                        task_id,
-                        try_number=try_number,
-                        token=token,
-                        seq=seq,
+                        dag_id, run_id, task_id, try_number=try_number, token=token, seq=seq
                     )
                 except AirflowIntegrationError as exc:
                     logger.warning(
-                        "SSE log stream error: dag=%s task=%s seq=%d code=%s msg=%s",
-                        dag_id,
-                        task_id,
-                        seq,
-                        exc.code,
-                        exc.message,
+                        f"SSE log stream error: task={task_id} seq={seq} code={exc.code} msg={exc.message}"
                     )
-                    yield {
-                        "event": "error",
-                        "data": json.dumps({"error": exc.code, "message": exc.message}),
-                    }
+                    yield _build_sse_event("error", {"error": exc.code, "message": exc.message})
                     return
 
-                payload_has_lines = bool(chunk.lines)
-                logger.info(
-                    "SSE log chunk: dag=%s task=%s seq=%d lines=%d has_more=%s",
-                    dag_id,
-                    task_id,
-                    seq,
-                    len(chunk.lines),
-                    chunk.has_more,
-                )
-                if payload_has_lines:
-                    yield {
-                        "event": "chunk",
-                        "data": chunk.model_dump_json(),
-                    }
+                if chunk.lines:
+                    yield _build_sse_event("chunk", chunk.model_dump_json())
                     seq += 1
 
                 token = chunk.continuation
 
                 if token is None:
+                    # No more logs available at the moment, check if task is finished
                     try:
                         task_instance = await service.get_task_instance(dag_id, run_id, task_id)
+                        if str(task_instance.status) in {"success", "failed", "skipped"}:
+                            yield _build_sse_event("end", {"reason": "task_finished"})
+                            return
                     except AirflowIntegrationError:
-                        await asyncio.sleep(2)
-                        continue
-                    if task_instance.status in {
-                        "success",
-                        "failed",
-                        "skipped",
-                    }:
-                        yield {
-                            "event": "end",
-                            "data": json.dumps({"reason": "task_finished"}),
-                        }
-                        return
+                        # Ignore temporary Airflow issues and retry later
+                        pass
 
-                    if (time.monotonic() - last_heartbeat) >= heartbeat:
-                        yield {
-                            "event": "heartbeat",
-                            "data": json.dumps({"ts": _utc_now_iso()}),
-                        }
-                        last_heartbeat = time.monotonic()
+                    # Send heartbeat to keep connection alive
+                    if heartbeat.should_beat():
+                        yield _build_sse_event("heartbeat", {"ts": _utc_now_iso()})
 
                     await asyncio.sleep(2)
                 else:
                     await asyncio.sleep(0.1)
+
         except asyncio.CancelledError:
-            yield {
-                "event": "end",
-                "data": json.dumps({"reason": "user_disconnect"}),
-            }
+            yield _build_sse_event("end", {"reason": "user_disconnect"})
             raise
 
     return EventSourceResponse(event_stream())
 
 
-def _utc_now_iso() -> str:
-    from datetime import datetime
+class HeartbeatTimer:
+    """Helper to track when to send SSE heartbeats."""
 
+    def __init__(self, interval_seconds: int | float):
+        self.interval = interval_seconds
+        self.last_beat = time.monotonic()
+
+    def should_beat(self) -> bool:
+        if time.monotonic() - self.last_beat >= self.interval:
+            self.last_beat = time.monotonic()
+            return True
+        return False
+
+
+def _build_sse_event(event_type: str, payload: dict | str) -> dict[str, str]:
+    """Helper to construct Server-Sent Events (SSE) messages."""
+    data_str = payload if isinstance(payload, str) else json.dumps(payload)
+    return {"event": event_type, "data": data_str}
+
+
+def _utc_now_iso() -> str:
+    """Returns current UTC time in ISO format."""
     return datetime.now(tz=UTC).isoformat()

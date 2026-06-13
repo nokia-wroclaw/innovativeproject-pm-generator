@@ -8,7 +8,7 @@ from fastapi import FastAPI, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 from starlette.middleware.base import RequestResponseEndpoint
 
-from app.api.v1 import airflow, dags, generation, modeling, pipeline, s3
+from app.api.v1 import dags, generation, modeling, pipeline, s3
 from app.core.error_handlers import register_error_handlers
 from app.core.logging import setup_logging
 from app.db import schemas
@@ -79,7 +79,6 @@ async def add_security_and_request_id(
 register_error_handlers(app)
 
 app.include_router(generation.router, prefix="/api/v1")
-app.include_router(airflow.router, prefix="/api/v1")
 app.include_router(dags.router, prefix="/api/v1")
 app.include_router(s3.router, prefix="/api/v1")
 app.include_router(pipeline.router, prefix="/api/v1")

@@ -1,12 +1,13 @@
 import uuid
-from typing import Any, Literal
+from typing import Literal
 
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 
-from app.core.auth import assert_modeling_admin, require_auth, require_modeling_admin
+from app.core.auth import assert_modeling_admin, get_user_identity, require_auth, require_modeling_admin
 from app.db.database import db_manager
 from app.db.schemas import DagRunStatus, DatasetStatus
+from app.models.auth import TokenPayload
 from app.models.dags import TriggerRequest
 from app.models.modeling import (
     GenerateRunRequest,
@@ -108,9 +109,6 @@ def _airflow_service() -> AirflowService:
     return get_airflow_service()
 
 
-def _identity(payload: dict[str, Any]) -> str | None:
-    return payload.get("preferred_username") or payload.get("email") or payload.get("sub")
-
 
 def _mock_logs(status: DagRunStatus, process_type: ModelingProcessType) -> list[str]:
     if process_type == "generate":
@@ -197,14 +195,14 @@ def _mock_artifacts(
 
 @router.get("/models", response_model=list[ModelingTrainedModelOption])
 def list_trained_models(
-    _user: dict[str, Any] = Depends(require_auth),
+    _user: TokenPayload = Depends(require_auth),
 ) -> list[ModelingTrainedModelOption]:
     return _MOCK_TRAINED_MODELS
 
 
 @router.get("/datasets", response_model=list[ModelingDatasetOption])
 def list_modeling_datasets(
-    _user: dict[str, Any] = Depends(require_modeling_admin),
+    _user: TokenPayload = Depends(require_modeling_admin),
     service: S3Service = Depends(_get_s3_service),
 ) -> list[ModelingDatasetOption]:
     return [
@@ -220,7 +218,7 @@ def list_modeling_datasets(
 )
 def get_form_schema(
     process_type: ModelingProcessType,
-    _user: dict[str, Any] = Depends(require_modeling_admin),
+    _user: TokenPayload = Depends(require_modeling_admin),
 ) -> ModelingFormSchema:
     return ModelingFormSchema(
         process_type=process_type,
@@ -235,7 +233,7 @@ def get_form_schema(
 )
 async def trigger_generate_run(
     body: GenerateRunRequest,
-    user: dict[str, Any] = Depends(require_auth),
+    user: TokenPayload = Depends(require_auth),
     airflow: AirflowService = Depends(_airflow_service),
 ) -> ModelingRunCreated:
     process_type: Literal["generate"] = "generate"
@@ -263,7 +261,7 @@ async def trigger_generate_run(
                 dag_run_id=run_id,
                 note="Modeling process generate",
             ),
-            triggered_by=_identity(user),
+            triggered_by=get_user_identity(user),
         )
     except AirflowNotFound as exc:
         raise HTTPException(
@@ -295,7 +293,7 @@ async def trigger_generate_run(
 async def trigger_modeling_run(
     process_type: Literal["preprocessing_feature_engineering", "training_dataset"],
     body: ModelingRunRequest,
-    user: dict[str, Any] = Depends(require_modeling_admin),
+    user: TokenPayload = Depends(require_modeling_admin),
     service: S3Service = Depends(_get_s3_service),
     airflow: AirflowService = Depends(_airflow_service),
 ) -> ModelingRunCreated:
@@ -330,7 +328,7 @@ async def trigger_modeling_run(
                 dag_run_id=run_id,
                 note=f"Modeling process {process_type}",
             ),
-            triggered_by=_identity(user),
+            triggered_by=get_user_identity(user),
         )
     except AirflowNotFound as exc:
         raise HTTPException(
@@ -362,7 +360,7 @@ async def trigger_modeling_run(
 async def get_modeling_run_status(
     process_type: ModelingProcessType,
     run_id: str,
-    user: dict[str, Any] = Depends(require_auth),
+    user: TokenPayload = Depends(require_auth),
     airflow: AirflowService = Depends(_airflow_service),
 ) -> ModelingRunStatus:
     if process_type != "generate":

@@ -100,8 +100,8 @@ class PipelineService:
             response.raise_for_status()
             payload = response.json()
             if isinstance(payload, dict):
-                dag_run_id = payload.get("dag_run_id", logical_run_id)
-                return str(dag_run_id) if dag_run_id is not None else logical_run_id
+                run_id = payload.get("dag_run_id", logical_run_id)
+                return str(run_id) if run_id is not None else logical_run_id
             return logical_run_id
         except Exception:
             return None

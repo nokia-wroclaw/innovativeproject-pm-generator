@@ -7,62 +7,16 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, cast
 
-from app.db.schemas import LogLevel, RunType
+from app.db.schemas import LogLevel
 from app.models.dags import (
-    DagDetails,
     DagGraph,
-    DagRunStatus,
-    DagRunSummary,
-    DagStats,
-    DagSummary,
     LogChunk,
     LogLine,
     TaskEdge,
-    TaskInstance,
     TaskNode,
-    TaskStatus,
-    TaskTry,
 )
 
 logger = logging.getLogger(__name__)
-
-_TASK_STATUS_MAP: dict[str, TaskStatus] = {
-    "success": TaskStatus.SUCCESS,
-    "running": TaskStatus.RUNNING,
-    "failed": TaskStatus.FAILED,
-    "upstream_failed": TaskStatus.FAILED,
-    "up_for_retry": TaskStatus.UP_FOR_RETRY,
-    "up_for_reschedule": TaskStatus.UP_FOR_RETRY,
-    "restarting": TaskStatus.UP_FOR_RETRY,
-    "queued": TaskStatus.QUEUED,
-    "scheduled": TaskStatus.QUEUED,
-    "deferred": TaskStatus.QUEUED,
-    "skipped": TaskStatus.SKIPPED,
-    "removed": TaskStatus.NONE,
-    "none": TaskStatus.NONE,
-}
-
-_DAG_RUN_STATUS_MAP: dict[str, DagRunStatus] = {
-    "success": DagRunStatus.SUCCESS,
-    "running": DagRunStatus.RUNNING,
-    "failed": DagRunStatus.FAILED,
-    "queued": DagRunStatus.QUEUED,
-    "scheduled": DagRunStatus.QUEUED,
-    "up_for_retry": DagRunStatus.RUNNING,
-    "restarting": DagRunStatus.RUNNING,
-}
-
-
-def normalize_task_status(raw_state: str | None) -> TaskStatus:
-    if raw_state is None:
-        return TaskStatus.NONE
-    return _TASK_STATUS_MAP.get(raw_state.lower(), TaskStatus.NONE)
-
-
-def normalize_dag_run_status(raw_state: str | None) -> DagRunStatus:
-    if raw_state is None:
-        return DagRunStatus.QUEUED
-    return _DAG_RUN_STATUS_MAP.get(raw_state.lower(), DagRunStatus.QUEUED)
 
 
 def _parse_dt(value: Any) -> datetime | None:
@@ -85,96 +39,6 @@ def _parse_dt(value: Any) -> datetime | None:
             dt = dt.replace(tzinfo=UTC)
         return dt
     return None
-
-
-def _duration_ms(start: datetime | None, end: datetime | None, raw: Any = None) -> int | None:
-    if isinstance(raw, int | float) and raw >= 0:
-        return int(raw * 1000)
-    if start is not None and end is not None:
-        return max(0, int((end - start).total_seconds() * 1000))
-    return None
-
-
-def _schedule_str(value: Any) -> str | None:
-    if value is None:
-        return None
-    if isinstance(value, str):
-        return value
-    if isinstance(value, dict):
-        return value.get("value") or value.get("expression")
-    return str(value)
-
-
-def _run_type(value: str | None) -> RunType:
-    allowed: frozenset[RunType] = frozenset({"manual", "scheduled", "backfill", "asset_triggered"})
-    if value in allowed:
-        return cast(RunType, value)
-    if value == "dataset_triggered":
-        return "asset_triggered"
-    return "manual"
-
-
-def _tags(value: Any) -> list[str]:
-    if not isinstance(value, list):
-        return []
-    out: list[str] = []
-    for tag in value:
-        if isinstance(tag, str):
-            out.append(tag)
-        elif isinstance(tag, dict) and "name" in tag:
-            out.append(str(tag["name"]))
-    return out
-
-
-def map_dag_run(raw: dict[str, Any]) -> DagRunSummary:
-    start = _parse_dt(raw.get("start_date"))
-    end = _parse_dt(raw.get("end_date"))
-    logical = _parse_dt(raw.get("logical_date"))
-    state = raw.get("state")
-    return DagRunSummary(
-        run_id=str(raw.get("dag_run_id") or ""),
-        logical_date=logical or start or datetime.now(tz=UTC),
-        start_date=start,
-        end_date=end,
-        duration_ms=_duration_ms(start, end),
-        status=normalize_dag_run_status(state),
-        raw_state=str(state or "queued"),
-        run_type=_run_type(raw.get("run_type")),
-        triggered_by=_triggered_by_from_note(raw.get("note")),
-    )
-
-
-_TRIGGERED_BY_RE = re.compile(r"triggered_by=([\w.\-]+)")
-
-
-def _triggered_by_from_note(note: Any) -> str | None:
-    if not isinstance(note, str):
-        return None
-    match = _TRIGGERED_BY_RE.search(note)
-    return match.group(1) if match else None
-
-
-def map_dag_summary(
-    raw: dict[str, Any],
-    *,
-    last_run: DagRunSummary | None = None,
-    stats: DagStats | None = None,
-) -> DagSummary:
-    dag_id = str(raw.get("dag_id") or "")
-    display_name = str(raw.get("dag_display_name") or dag_id)
-    return DagSummary(
-        dag_id=dag_id,
-        display_name=display_name,
-        description=raw.get("description") or None,
-        owners=[str(o) for o in (raw.get("owners") or [])],
-        tags=_tags(raw.get("tags")),
-        is_paused=bool(raw.get("is_paused", False)),
-        is_active=bool(raw.get("is_active", True)),
-        schedule=_schedule_str(raw.get("timetable_summary")),
-        next_run_at=_parse_dt(raw.get("next_dagrun_run_after")),
-        last_run=last_run,
-        stats_24h=stats or DagStats(),
-    )
 
 
 def map_dag_graph(raw: dict[str, Any], *, dag_id: str | None = None) -> DagGraph:
@@ -434,63 +298,6 @@ def _operator_from_class_ref(class_ref: Any) -> str | None:
     return None
 
 
-def map_dag_details(
-    *, summary: DagSummary, graph: DagGraph, recent_runs: list[DagRunSummary]
-) -> DagDetails:
-    return DagDetails(summary=summary, graph=graph, recent_runs=recent_runs)
-
-
-def map_task_instance(raw: dict[str, Any]) -> TaskInstance:
-    start = _parse_dt(raw.get("start_date"))
-    end = _parse_dt(raw.get("end_date"))
-    state = raw.get("state")
-    return TaskInstance(
-        task_id=str(raw.get("task_id") or ""),
-        run_id=str(raw.get("dag_run_id") or ""),
-        status=normalize_task_status(state),
-        raw_state=str(state or "none"),
-        try_number=int(raw.get("try_number") or 0),
-        max_tries=int(raw.get("max_tries") or 0),
-        start_date=start,
-        end_date=end,
-        duration_ms=_duration_ms(start, end, raw.get("duration")),
-        operator=str(raw.get("operator") or "Operator"),
-        pool=str(raw.get("pool") or "default_pool"),
-        queue=str(raw.get("queue") or "default"),
-        executor_config=_coerce_executor_config(raw.get("executor_config")),
-        note=raw.get("note") or None,
-    )
-
-
-def _coerce_executor_config(value: Any) -> dict[str, Any]:
-    if value is None or value == "":
-        return {}
-    if isinstance(value, dict):
-        return value
-    if isinstance(value, str):
-        try:
-            parsed = json.loads(value)
-        except (json.JSONDecodeError, ValueError):
-            try:
-                parsed = ast.literal_eval(value)
-            except (ValueError, SyntaxError):
-                return {"raw": value}
-        return parsed if isinstance(parsed, dict) else {"raw": value}
-    return {}
-
-
-def map_task_try(raw: dict[str, Any]) -> TaskTry:
-    start = _parse_dt(raw.get("start_date"))
-    end = _parse_dt(raw.get("end_date"))
-    return TaskTry(
-        try_number=int(raw.get("try_number") or 0),
-        status=normalize_task_status(raw.get("state")),
-        start_date=start,
-        end_date=end,
-        duration_ms=_duration_ms(start, end, raw.get("duration")),
-    )
-
-
 _LOG_PREFIX_RE = re.compile(
     r"^\[(?P<ts>[^\]]+)\]\s*"
     r"(?:\{(?P<source>[^}]+)\}\s*)?"
@@ -526,7 +333,7 @@ def map_log_chunk(
 
     if not lines and content:
         logger.warning(
-            "map_log_chunk: unknown content shape (type=%s); " "emitting raw fallback. Sample=%s",
+            "map_log_chunk: unknown content shape (type=%s); emitting raw fallback. Sample=%s",
             type(content).__name__,
             repr(content[0])[:300]
             if isinstance(content, list) and content

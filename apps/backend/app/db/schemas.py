@@ -9,8 +9,11 @@ from sqlalchemy.orm import Mapped, mapped_column
 
 from app.db.database import Base
 
+RunType = Literal["manual", "scheduled", "backfill", "asset_triggered"]
+LogLevel = Literal["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"]
 
-class DatasetStatus(enum.Enum):
+
+class DatasetStatus(enum.StrEnum):
     PENDING = "PENDING"
     UPLOADING = "UPLOADING"
     COMPLETED = "COMPLETED"
@@ -25,13 +28,13 @@ class DatasetType(enum.StrEnum):
     SIMPLE_REPORTS = "SIMPLE_REPORTS"
 
 
-class PipelineType(enum.Enum):
+class PipelineType(enum.StrEnum):
     PREPROCESSING = "PREPROCESSING"
     FEATURE_ENGINEERING = "FEATURE_ENGINEERING"
     TRAINING = "TRAINING"
 
 
-class PipelineRunStatus(enum.Enum):
+class PipelineRunStatus(enum.StrEnum):
     PENDING = "PENDING"
     RUNNING = "RUNNING"
     COMPLETED = "COMPLETED"
@@ -54,16 +57,6 @@ class DagRunStatus(enum.StrEnum):
     FAILED = "failed"
     QUEUED = "queued"
 
-
-RunType = Literal["manual", "scheduled", "backfill", "asset_triggered"]
-LogLevel = Literal["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"]
-
-
-class Scenario(Base):
-    __tablename__ = "scenarios"
-
-    id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
-    name: Mapped[str] = mapped_column(String)
 
 
 class Generation(Base):
