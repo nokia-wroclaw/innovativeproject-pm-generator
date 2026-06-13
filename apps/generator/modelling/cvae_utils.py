@@ -40,6 +40,7 @@ import joblib
 import keras
 import numpy as np
 import pandas as pd
+import tsgm  # noqa
 from model_utils import (
     cBetaVAE_Hierarchical,
     cVAE_LSTMv5Architecture,
@@ -702,8 +703,83 @@ def save_artifacts(
     print(f"Artifacts saved to {out_dir}")
 
 
+# def load_artifacts(
+#     out_dir: str | Path,
+#     weights_path: str | Path,
+#     scaling_params_path: str | Path | None = None,
+#     global_latent_dim: int = HP_V5["global_latent_dim"],
+#     local_latent_dim: int = HP_V5["local_latent_dim"],
+#     cell_embed_dim: int = HP_V5["cell_embed_dim"],
+#     hidden_dim: int = 256,
+#     n_layers: int = 2,
+#     use_attention: bool = True,
+#     n_heads: int = 4,
+#     free_bits_global: float = HP_V5["free_bits_global"],
+#     free_bits_local: float = HP_V5["free_bits_local"],
+#     output_activation: str = HP_V5["output_activation"],
+# ) -> tuple[object, dict]:
+#     """Reload v5 artifacts and restore trained hierarchical model."""
+#     out_dir = Path(out_dir)
+#     scaling_params_path = (
+#         Path(scaling_params_path)
+#         if scaling_params_path is not None
+#         else out_dir / "params_df.parquet"
+#     )
+
+#     X_scaled = np.load(out_dir / "X_scaled.npy")
+#     y_path = out_dir / "y.npy"
+#     y = np.load(y_path if y_path.exists() else out_dir / "y_extended.npy")
+#     window_anchors = pd.to_datetime(np.load(out_dir / "window_anchors.npy", allow_pickle=True))
+#     cell_ids = np.load(out_dir / "cell_ids.npy", allow_pickle=True)
+#     kpi_columns = np.load(out_dir / "kpi_columns.npy", allow_pickle=True).tolist()
+#     cell_encoder = joblib.load(out_dir / "cell_encoder.pkl")
+#     params_df = pd.read_parquet(scaling_params_path) if scaling_params_path.exists() else None
+
+#     seq_len = X_scaled.shape[1]
+#     feat_dim = X_scaled.shape[2]
+#     n_cells = len(cell_encoder.classes_)
+
+#     _, model = build_model(
+#         seq_len=seq_len,
+#         feat_dim=feat_dim,
+#         n_cells=n_cells,
+#         global_latent_dim=global_latent_dim,
+#         local_latent_dim=local_latent_dim,
+#         cell_embed_dim=cell_embed_dim,
+#         hidden_dim=hidden_dim,
+#         n_layers=n_layers,
+#         use_attention=use_attention,
+#         n_heads=n_heads,
+#         free_bits_global=free_bits_global,
+#         free_bits_local=free_bits_local,
+#         output_activation=output_activation,
+#     )
+
+#     dummy_X = np.zeros((1, seq_len, feat_dim), dtype=np.float32)
+#     dummy_y = np.zeros((1, Y_DIM), dtype=np.float32)
+#     model([dummy_X, dummy_y], training=False)
+#     model.load_weights(str(weights_path))
+#     print(f"Loaded v5 weights from {weights_path}")
+
+#     data = {
+#         "X_scaled": X_scaled,
+#         "y": y,
+#         "window_anchors": window_anchors,
+#         "cell_ids": cell_ids,
+#         "params_df": params_df,
+#         "cell_encoder": cell_encoder,
+#         "kpi_columns": kpi_columns,
+#         "seq_len": seq_len,
+#         "feat_dim": feat_dim,
+#         "n_classes": n_cells,
+#         "output_dim": Y_DIM,
+#         "arch_version": "v5",
+#     }
+#     return model, data
+
+
 def load_artifacts(
-    out_dir: str | Path,
+    run_id_path: str | Path,
     weights_path: str | Path,
     scaling_params_path: str | Path | None = None,
     global_latent_dim: int = HP_V5["global_latent_dim"],
@@ -716,31 +792,18 @@ def load_artifacts(
     free_bits_global: float = HP_V5["free_bits_global"],
     free_bits_local: float = HP_V5["free_bits_local"],
     output_activation: str = HP_V5["output_activation"],
+    seq_len: int = 168,
+    feat_dim: int = 235,
+    y_dim: int = 6,
 ) -> tuple[object, dict]:
     """Reload v5 artifacts and restore trained hierarchical model."""
-    out_dir = Path(out_dir)
-    scaling_params_path = (
-        Path(scaling_params_path)
-        if scaling_params_path is not None
-        else out_dir / "params_df.parquet"
-    )
 
-    X_scaled = np.load(out_dir / "X_scaled.npy")
-    y_path = out_dir / "y.npy"
-    y = np.load(y_path if y_path.exists() else out_dir / "y_extended.npy")
-    window_anchors = pd.to_datetime(np.load(out_dir / "window_anchors.npy", allow_pickle=True))
-    cell_ids = np.load(out_dir / "cell_ids.npy", allow_pickle=True)
-    kpi_columns = np.load(out_dir / "kpi_columns.npy", allow_pickle=True).tolist()
-    cell_encoder = joblib.load(out_dir / "cell_encoder.pkl")
-    params_df = pd.read_parquet(scaling_params_path) if scaling_params_path.exists() else None
-
-    seq_len = X_scaled.shape[1]
-    feat_dim = X_scaled.shape[2]
+    cell_encoder = joblib.load(run_id_path / "cell_encoder.pkl")
     n_cells = len(cell_encoder.classes_)
 
     _, model = build_model(
-        seq_len=seq_len,
-        feat_dim=feat_dim,
+        seq_len=168,
+        feat_dim=235,
         n_cells=n_cells,
         global_latent_dim=global_latent_dim,
         local_latent_dim=local_latent_dim,
@@ -755,26 +818,12 @@ def load_artifacts(
     )
 
     dummy_X = np.zeros((1, seq_len, feat_dim), dtype=np.float32)
-    dummy_y = np.zeros((1, Y_DIM), dtype=np.float32)
+    dummy_y = np.zeros((1, y_dim), dtype=np.float32)
     model([dummy_X, dummy_y], training=False)
     model.load_weights(str(weights_path))
     print(f"Loaded v5 weights from {weights_path}")
 
-    data = {
-        "X_scaled": X_scaled,
-        "y": y,
-        "window_anchors": window_anchors,
-        "cell_ids": cell_ids,
-        "params_df": params_df,
-        "cell_encoder": cell_encoder,
-        "kpi_columns": kpi_columns,
-        "seq_len": seq_len,
-        "feat_dim": feat_dim,
-        "n_classes": n_cells,
-        "output_dim": Y_DIM,
-        "arch_version": "v5",
-    }
-    return model, data
+    return model, cell_encoder
 
 
 # =============================================================================
