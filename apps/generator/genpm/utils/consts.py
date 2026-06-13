@@ -30,10 +30,15 @@ SPARK_CONFIGS = {
         "spark.sql.adaptive.coalescePartitions.enabled": "true",
         "spark.sql.adaptive.skewJoin.enabled": "true",
         "spark.serializer": "org.apache.spark.serializer.KryoSerializer",
+        # "spark.kryo.registrator": "com.nvidia.spark.rapids.GpuKryoRegistrator",
         "spark.sql.files.maxPartitionBytes": "256MB",
         "spark.sql.autoBroadcastJoinThreshold": "100MB",
         "spark.driver.extraJavaOptions": "-XX:+UseG1GC",
         "spark.sql.execution.arrow.pyspark.enabled": "true",
+        # Disable RAPIDS
+        "spark.plugins": "",
+        "spark.rapids.sql.enabled": "false",
+        "spark.kryo.registrator": "",
     },
     # ============================================================
     # 2. ONLY HALF
@@ -50,11 +55,17 @@ SPARK_CONFIGS = {
         "spark.sql.adaptive.enabled": "true",
         "spark.sql.adaptive.coalescePartitions.enabled": "true",
         "spark.sql.adaptive.skewJoin.enabled": "true",
+        "spark.jars.packages": "com.nvidia:rapids-spark_2.12:23.10.0",
         "spark.serializer": "org.apache.spark.serializer.KryoSerializer",
+        # "spark.kryo.registrator": "com.nvidia.spark.rapids.GpuKryoRegistrator",
         "spark.sql.files.maxPartitionBytes": "128MB",
         "spark.sql.autoBroadcastJoinThreshold": "50MB",
         "spark.driver.extraJavaOptions": "-XX:+UseG1GC",
         "spark.sql.execution.arrow.pyspark.enabled": "true",
+        # Disable RAPIDS
+        "spark.plugins": "",
+        "spark.rapids.sql.enabled": "false",
+        "spark.kryo.registrator": "",
     },
     # ============================================================
     # 3. STANDARD (A FIFTH)
@@ -99,6 +110,10 @@ SPARK_CONFIGS = {
         "spark.sql.files.maxPartitionBytes": "128MB",
         "spark.driver.extraJavaOptions": "-XX:+UseG1GC",
         "spark.sql.execution.arrow.pyspark.enabled": "true",
+        # Disable RAPIDS
+        "spark.plugins": "",
+        "spark.rapids.sql.enabled": "false",
+        "spark.kryo.registrator": "",
     },
     # ============================================================
     # 5. JOIN HEAVY (Full Resources Tuned)
@@ -119,6 +134,10 @@ SPARK_CONFIGS = {
         "spark.sql.files.maxPartitionBytes": "256MB",
         "spark.driver.extraJavaOptions": "-XX:+UseG1GC",
         "spark.sql.execution.arrow.pyspark.enabled": "true",
+        # Disable RAPIDS
+        "spark.plugins": "",
+        "spark.rapids.sql.enabled": "false",
+        "spark.kryo.registrator": "",
     },
     # ============================================================
     # 6. AGGREGATION HEAVY (Full Resources Tuned)
@@ -138,6 +157,10 @@ SPARK_CONFIGS = {
         "spark.sql.files.maxPartitionBytes": "256MB",
         "spark.driver.extraJavaOptions": "-XX:+UseG1GC",
         "spark.sql.execution.arrow.pyspark.enabled": "true",
+        # Disable RAPIDS
+        "spark.plugins": "",
+        "spark.rapids.sql.enabled": "false",
+        "spark.kryo.registrator": "",
     },
     # RAPIDS
     "RAPIDS": {
