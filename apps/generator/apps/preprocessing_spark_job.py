@@ -99,9 +99,7 @@ def _build_config() -> PreprocessingConfig:
         simple_reports_raw_path=_s3a_path(simple_reports_key),
         output_path_prefix=_s3a_path(output_prefix),
         kpi_min_global_density=_env_float("GENPM_KPI_MIN_GLOBAL_DENSITY", 0.5),
-        kpi_global_min_frac_cells_passing=_env_float(
-            "GENPM_KPI_GLOBAL_MIN_FRAC_CELLS_PASSING", 0.8
-        ),
+        min_frac_contributing_cells=_env_float("GENPM_KPI_GLOBAL_MIN_FRAC_CELLS_PASSING", 0.5),
         min_imputable_gap_frac=_env_float("GENPM_MIN_IMPUTABLE_GAP_FRAC", 0.8),
         kpi_min_std_val=_env_float("GENPM_KPI_MIN_STD_VAL", 0.01),
         max_zero_frac=_env_float("GENPM_MAX_ZERO_FRAC", 0.95),

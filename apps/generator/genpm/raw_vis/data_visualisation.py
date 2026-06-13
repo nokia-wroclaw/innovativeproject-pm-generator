@@ -16,6 +16,7 @@ from genpm.raw_vis.data_vis_utils import (
 )
 from genpm.raw_vis.pm_schema import (
     PM_REQUIRED_COLUMNS,
+    normalize_pm_dataframe,
     unsupported_schema_payload,
     validate_pm_schema,
 )
@@ -26,6 +27,7 @@ MAX_KPI_TIMELINE_PLOTS = 5
 
 def make_summary(raw_df: DataFrame, *, spark_version: str | None = None) -> dict[str, Any]:
     """Build visualization summary payload for S3 and the API."""
+    raw_df = normalize_pm_dataframe(raw_df)
     ok, missing = validate_pm_schema(raw_df)
     if not ok:
         payload = unsupported_schema_payload(missing)

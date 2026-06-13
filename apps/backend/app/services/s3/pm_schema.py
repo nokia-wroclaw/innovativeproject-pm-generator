@@ -39,12 +39,30 @@ def _schema_path() -> Path:
 
 _SCHEMA_PATH = _schema_path()
 with _SCHEMA_PATH.open(encoding="utf-8") as f:
-    PM_REQUIRED_COLUMNS: tuple[str, ...] = tuple(json.load(f)["required_columns"])
+    _SCHEMA = json.load(f)
+
+PM_REQUIRED_COLUMNS: tuple[str, ...] = tuple(_SCHEMA["required_columns"])
+PM_COLUMN_ALIASES: dict[str, tuple[str, ...]] = {
+    canonical: tuple(aliases) for canonical, aliases in _SCHEMA.get("column_aliases", {}).items()
+}
+PM_DERIVED_COLUMNS: dict[str, str] = dict(_SCHEMA.get("derived_columns", {}))
+
+
+def _column_satisfied(canonical: str, present: set[str]) -> bool:
+    if canonical in present:
+        return True
+    for alias in PM_COLUMN_ALIASES.get(canonical, ()):
+        if alias in present:
+            return True
+    source = PM_DERIVED_COLUMNS.get(canonical)
+    if source is not None and _column_satisfied(source, present):
+        return True
+    return False
 
 
 def validate_pm_columns(columns: list[str]) -> tuple[bool, list[str]]:
     present = {name.strip() for name in columns if name}
-    missing = [col for col in PM_REQUIRED_COLUMNS if col not in present]
+    missing = [col for col in PM_REQUIRED_COLUMNS if not _column_satisfied(col, present)]
     return len(missing) == 0, missing
 
 

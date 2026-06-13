@@ -43,13 +43,53 @@ def _schema_path() -> Path:
 
 _SCHEMA_PATH = _schema_path()
 with _SCHEMA_PATH.open(encoding="utf-8") as f:
-    PM_REQUIRED_COLUMNS: tuple[str, ...] = tuple(json.load(f)["required_columns"])
+    _SCHEMA = json.load(f)
+
+PM_REQUIRED_COLUMNS: tuple[str, ...] = tuple(_SCHEMA["required_columns"])
+PM_COLUMN_ALIASES: dict[str, tuple[str, ...]] = {
+    canonical: tuple(aliases) for canonical, aliases in _SCHEMA.get("column_aliases", {}).items()
+}
+PM_DERIVED_COLUMNS: dict[str, str] = dict(_SCHEMA.get("derived_columns", {}))
+
+
+def _column_satisfied(canonical: str, present: set[str]) -> bool:
+    if canonical in present:
+        return True
+    for alias in PM_COLUMN_ALIASES.get(canonical, ()):
+        if alias in present:
+            return True
+    source = PM_DERIVED_COLUMNS.get(canonical)
+    if source is not None and _column_satisfied(source, present):
+        return True
+    return False
 
 
 def validate_pm_schema(df: DataFrame) -> tuple[bool, list[str]]:
     present = set(df.columns)
-    missing = [col for col in PM_REQUIRED_COLUMNS if col not in present]
+    missing = [col for col in PM_REQUIRED_COLUMNS if not _column_satisfied(col, present)]
     return len(missing) == 0, missing
+
+
+def normalize_pm_dataframe(df: DataFrame) -> DataFrame:
+    """Rename known aliases and derive missing canonical columns (e.g. start_date)."""
+    from pyspark.sql import functions as spark_f
+
+    result = df
+    for canonical, aliases in PM_COLUMN_ALIASES.items():
+        if canonical in result.columns:
+            continue
+        for alias in aliases:
+            if alias in result.columns:
+                result = result.withColumnRenamed(alias, canonical)
+                break
+
+    for canonical, source in PM_DERIVED_COLUMNS.items():
+        if canonical in result.columns:
+            continue
+        if source in result.columns:
+            result = result.withColumn(canonical, spark_f.to_date(source))
+
+    return result
 
 
 def unsupported_schema_payload(missing: list[str]) -> dict:

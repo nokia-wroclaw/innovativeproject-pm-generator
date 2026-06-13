@@ -7,13 +7,17 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, cast
 
-from app.db.schemas import LogLevel
+from app.db.schemas import LogLevel, RunType
 from app.models.dags import (
     DagGraph,
+    DagRunSummary,
+    DagStats,
+    DagSummary,
     LogChunk,
     LogLine,
     TaskEdge,
     TaskNode,
+    parse_dag_run_status,
 )
 
 logger = logging.getLogger(__name__)
@@ -93,7 +97,7 @@ def map_dag_run(raw: dict[str, Any]) -> DagRunSummary:
         start_date=start,
         end_date=end,
         duration_ms=_duration_ms(start, end),
-        status=normalize_dag_run_status(state),
+        status=parse_dag_run_status(state),
         raw_state=str(state or "queued"),
         run_type=_run_type(raw.get("run_type")),
         triggered_by=_triggered_by_from_note(raw.get("note")),

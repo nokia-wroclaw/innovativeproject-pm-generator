@@ -3,6 +3,7 @@ from pyspark.sql import functions as f
 
 from genpm.preprocessing.configs import PreprocessingConfig
 from genpm.preprocessing.logic import imputing, kpi_coverage, scaling, simple_logic
+from genpm.raw_vis.pm_schema import normalize_pm_dataframe
 from genpm.utils.consts import MAX_IMPUTABLE_GAP, SHARED_DIR_PATH
 from genpm.utils.logger import get_logger
 from genpm.utils.spark_session import SparkDataManager

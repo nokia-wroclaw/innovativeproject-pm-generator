@@ -19,6 +19,7 @@ from app.services.s3.pm_schema import (
 from app.services.s3.service import S3Service
 from app.services.s3.visualization_artifacts import (
     VisualizationStorageError,
+    delete_visualization_error_artifact,
     load_kpi_analysis_artifact,
     load_visualization_artifact,
     persist_unsupported_schema_artifact,
@@ -94,6 +95,7 @@ async def trigger_dataset_visualization(
         if schema_error is not None:
             persist_unsupported_schema_artifact(dataset.s3_key, schema_error)
             raise VisualizationSchemaError(schema_error)
+        delete_visualization_error_artifact(dataset.s3_key)
 
     service = airflow or get_airflow_service()
     run_id = f"genpm_viz_{dataset.id}_{uuid.uuid4().hex[:8]}"
@@ -416,6 +418,15 @@ async def get_dataset_visualization_status(
             status="unavailable",
             message=str(exc),
         )
+
+    if artifact is not None and artifact.get("status") == "unsupported_schema":
+        logger.info(
+            "Ignoring stale unsupported_schema artifact for dataset_id=%s "
+            "(dataset columns match PM schema under current rules)",
+            dataset_id,
+        )
+        delete_visualization_error_artifact(dataset.s3_key)
+        artifact = None
 
     if artifact is not None:
         kpi_analysis = None

@@ -44,6 +44,20 @@ def _ensure_pyspark_python() -> None:
 _ensure_pyspark_python()
 _ensure_spark_pythonpath()
 
+from pyspark.sql import SparkSession  # noqa: E402
+
+from genpm.raw_vis.data_visualisation import (  # noqa: E402
+    make_kpi_analysis,
+    make_summary,
+    top_kpis_for_analysis,
+)
+from genpm.raw_vis.pm_schema import normalize_pm_dataframe  # noqa: E402
+from genpm.raw_vis.s3_layout import visualization_artifact_key  # noqa: E402
+from genpm.utils.spark_session import (  # noqa: E402
+    build_cluster_spark_session,
+    minio_spark_conf,
+)
+
 
 def _env(name: str, default: str = "") -> str:
     return os.environ.get(name, default)
@@ -90,6 +104,7 @@ def main() -> None:
     read_path = f"s3a://{bucket}/{s3_key.lstrip('/')}"
     print(f"Reading dataset from {read_path}")
     raw_df = spark.read.parquet(read_path)
+    raw_df = normalize_pm_dataframe(raw_df)
 
     summary = make_summary(raw_df, spark_version=spark_version)
     artifact_name = (
