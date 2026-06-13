@@ -22,7 +22,7 @@ from pyspark.sql import functions as F
 from scipy.spatial.distance import jensenshannon, pdist
 from scipy.stats import gaussian_kde, wasserstein_distance
 
-from genpm.data_similarity.fake_timeseries import (
+from scripts.fake_timeseries import (
     make_multi,
     make_series,
     multi_schema,
