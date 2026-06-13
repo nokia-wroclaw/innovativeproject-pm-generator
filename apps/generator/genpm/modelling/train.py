@@ -3,12 +3,10 @@
 from pathlib import Path
 
 from genpm.modelling.configs import TrainConfig
-from genpm.modelling.model_utils.cvae_utils import (
-    build_model,
-    prepare_data,
-    save_artifacts,
-    train_model,
-)
+from genpm.modelling.model_utils.artifacts import save_training_artifacts
+from genpm.modelling.model_utils.data import load_training_windows
+from genpm.modelling.model_utils.model import build_cvae_lstm
+from genpm.modelling.model_utils.training import train_cvae
 from genpm.utils.logger import get_logger
 
 logger = get_logger()
@@ -17,7 +15,7 @@ logger = get_logger()
 def run_training(cfg: TrainConfig):
     """Run the full training pipeline: load data → build model → train → save artifacts."""
     logger.info(f"Loading training data from {cfg.training_data_path}")
-    data = prepare_data(
+    data = load_training_windows(
         Path(cfg.training_data_path),
         drop_constant_kpis=cfg.drop_constant_kpis,
     )
@@ -26,7 +24,7 @@ def run_training(cfg: TrainConfig):
         f"Building model: global_latent_dim={cfg.global_latent_dim}, "
         f"hidden_dim={cfg.hidden_dim}, n_layers={cfg.n_layers}"
     )
-    _, model = build_model(
+    _, model = build_cvae_lstm(
         seq_len=data["seq_len"],
         feat_dim=data["feat_dim"],
         n_cells=data["n_classes"],
@@ -45,7 +43,7 @@ def run_training(cfg: TrainConfig):
     )
 
     logger.info(f"Training for up to {cfg.epochs} epochs → {cfg.weights_path}")
-    history = train_model(
+    history = train_cvae(
         model,
         data["X_scaled"],
         data["y"],
@@ -64,7 +62,7 @@ def run_training(cfg: TrainConfig):
     )
 
     logger.info(f"Saving artifacts to {cfg.run_dir_path}")
-    save_artifacts(
+    save_training_artifacts(
         Path(cfg.run_dir_path),
         data,
         arch_params={
