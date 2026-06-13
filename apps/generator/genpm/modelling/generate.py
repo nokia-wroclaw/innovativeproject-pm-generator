@@ -3,7 +3,8 @@
 import numpy as np
 import pandas as pd
 
-from genpm.modelling.model_utils.cvae_utils import _to_numpy, seasonal_features
+from genpm.modelling.model_utils.data import encode_seasonal_features
+from genpm.modelling.model_utils.generation import _to_numpy
 
 
 def _run_batched_generation(model, y_windows: np.ndarray, batch_size: int) -> np.ndarray:
@@ -34,7 +35,7 @@ def generate_windows(
     y_windows = []
     for week in range(n_weeks):
         anchor = pd.Timestamp(anchor_date) + pd.Timedelta(weeks=week)
-        seasonal = seasonal_features(anchor)
+        seasonal = encode_seasonal_features(anchor)
         y_windows.append([cell_idx, holiday, *seasonal])
         anchors.append(anchor)
 

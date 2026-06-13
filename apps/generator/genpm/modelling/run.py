@@ -2,7 +2,7 @@ from pathlib import Path
 
 from genpm.modelling.configs import GenerateConfig
 from genpm.modelling.generate import generate_windows
-from genpm.modelling.model_utils.cvae_utils import load_artifacts
+from genpm.modelling.model_utils.artifacts import load_trained_model
 from genpm.utils.logger import get_logger
 
 logger = get_logger()
@@ -10,7 +10,7 @@ logger = get_logger()
 
 def run_generation(cfg: GenerateConfig) -> None:
     logger.info(f"Loading artifacts from {cfg.run_dir_path}")
-    model, cell_encoder = load_artifacts(
+    model, cell_encoder = load_trained_model(
         run_id_path=Path(cfg.run_dir_path),
         weights_path=Path(cfg.weights_path),
         global_latent_dim=cfg.global_latent_dim,
