@@ -1031,7 +1031,8 @@ def generate_timespan(
     print(f"Matched {len(X_m)} windows → {len(X_m) * SEQ_LEN:,} rows")
 
     x_syn = _generate_windows(model, X_m, y_m, rng, batch_size)
-    x_inv = _inverse_transform_3d(x_syn, params_df, kpi_columns, cell_id)
+    x_inv = x_syn
+    # x_inv = _inverse_transform_3d(x_syn, params_df, kpi_columns, cell_id)
 
     n_windows, seq_len, n_kpis = x_inv.shape
     anchors_arr = anchors_m.to_numpy()
@@ -1086,7 +1087,8 @@ def generate_n_weeks(
     print(f"Sampled {n_weeks} windows from pool of {pool_size} → {n_weeks * SEQ_LEN:,} rows")
 
     x_syn = _generate_windows(model, X_pool[idx], y_pool[idx], rng, batch_size)
-    x_inv = _inverse_transform_3d(x_syn, params_df, kpi_columns, cell_id)
+    # x_inv = _inverse_transform_3d(x_syn, params_df, kpi_columns, cell_id)
+    x_inv = x_syn
     n_w, seq_len, n_kpis = x_inv.shape
     week_idx = np.repeat(np.arange(n_w), seq_len)
     hour_in_week = np.tile(np.arange(seq_len), n_w)
