@@ -41,11 +41,12 @@ import keras
 import numpy as np
 import pandas as pd
 import tsgm  # noqa
-from model_utils import (
+from sklearn.preprocessing import LabelEncoder
+
+from genpm.modelling.model_utils.model_utils import (
     cBetaVAE_Hierarchical,
     cVAE_LSTMv5Architecture,
 )
-from sklearn.preprocessing import LabelEncoder
 
 SEQ_LEN = 168
 Y_DIM = 6
