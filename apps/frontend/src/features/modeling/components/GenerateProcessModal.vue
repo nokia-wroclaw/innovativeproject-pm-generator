@@ -41,7 +41,7 @@
         />
 
         <ModelingFormSelect
-          v-if="form.model_id"
+          v-if="isAdmin && form.model_id"
           v-model="form.comparison_dataset_id"
           label="Comparison dataset"
           hint="Dataset used to compare generated results."
@@ -51,7 +51,7 @@
         />
 
         <ModelingFormInput
-          v-if="form.model_id"
+          v-if="isAdmin && form.model_id"
           v-model="form.encoder_s3_key"
           label="Encoder S3 Key"
           placeholder="e.g. models/my_encoder.pkl"
@@ -59,7 +59,7 @@
         />
 
         <ModelingFormInput
-          v-if="form.model_id"
+          v-if="isAdmin && form.model_id"
           v-model="form.config_s3_key"
           label="Config S3 Key"
           placeholder="e.g. models/my_config.json"
@@ -101,8 +101,8 @@ import { useModelingModels, useModelingDatasets } from '../composables/queries.j
 import { useModelingProcessRun } from '../composables/useModelingProcessRun.js';
 import ModelingFormInput from './form-fields/ModelingFormInput.vue';
 import ModelingFormSelect from './form-fields/ModelingFormSelect.vue';
-import ModelingFormTextarea from './form-fields/ModelingFormTextarea.vue';
 import ModelingRunStatusPanel from './ModelingRunStatusPanel.vue';
+import { isAdmin } from '@/auth/keycloak';
 
 const props = defineProps({
   show: { type: Boolean, required: true },
@@ -116,14 +116,17 @@ const models = computed(() => modelsQuery.data.value ?? []);
 const modelsError = computed(() => modelsQuery.error.value);
 const isModelsLoading = computed(() => modelsQuery.isLoading.value);
 
-const datasetsQuery = useModelingDatasets();
+const datasetsQuery = useModelingDatasets({
+  enabled: computed(() => isAdmin.value),
+});
 const datasets = computed(() => datasetsQuery.data.value ?? []);
-const datasetOptions = computed(() =>
-  datasets.value.map((dataset) => ({
+const datasetOptions = computed(() => {
+  if (!isAdmin.value) return [];
+  return datasets.value.map((dataset) => ({
     value: dataset.id,
     label: `#${dataset.id} · ${dataset.file_name} (${dataset.type})`,
-  })),
-);
+  }));
+});
 
 const {
   phase,
@@ -241,3 +244,4 @@ function onClose() {
   emit('close');
 }
 </script>
+

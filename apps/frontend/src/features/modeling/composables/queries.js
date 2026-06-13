@@ -21,11 +21,12 @@ export const modelingQueryKeys = {
   ],
 };
 
-export function useModelingDatasets() {
+export function useModelingDatasets(options = {}) {
   return useQuery({
     queryKey: modelingQueryKeys.datasets(),
     queryFn: Api.listModelingDatasets,
     refetchInterval: FIFTEEN_SECONDS,
+    ...options,
   });
 }
 
