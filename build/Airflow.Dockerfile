@@ -28,29 +28,31 @@ RUN curl -O https://archive.apache.org/dist/spark/spark-${SPARK_VERSION}/spark-$
   && chmod -R 755 /opt/spark-${SPARK_VERSION}-bin-hadoop${HADOOP_VERSION} \
   && chmod +x /opt/spark-${SPARK_VERSION}-bin-hadoop${HADOOP_VERSION}/bin/*
 
-# genpm is installed as a package; runtime mount overlays /opt/airflow/generator for dev.
+# genpm source is kept in the image for: building the wheel, DAG-parse-time imports (via PYTHONPATH),
+# and the SparkSubmit launcher scripts under apps/. The dev compose mounts over it for live edits.
 COPY apps/generator /opt/airflow/generator
-RUN mkdir -p /opt/airflow/artifacts \
-    && python3 -c "import shutil; shutil.make_archive('/opt/airflow/artifacts/genpm', 'zip', '/opt/airflow/generator', 'genpm')" \
-    && chown -R airflow:root /opt/airflow/generator /opt/airflow/artifacts
+RUN chown -R airflow:root /opt/airflow/generator
 
 # Venv must be created as the airflow runtime user — root-owned uv Python is not executable
 # by AIRFLOW_UID (50000), which causes "Permission denied" in Spark PythonRunner.
 USER airflow
+# Build genpm as a pinned wheel and install it (--no-deps) into the Spark driver venv. This is the
+# reproducible distribution artifact; the matching wheel is installed in the Spark executor image.
 RUN uv venv /opt/airflow/genpm-venv --python 3.12 \
     && uv pip install --python /opt/airflow/genpm-venv/bin/python --no-cache \
         numpy pandas scipy plotly boto3 pyarrow python-dotenv setuptools \
-    && uv pip install --python /opt/airflow/genpm-venv/bin/python --no-cache \
-        -e /opt/airflow/generator --no-deps \
+    && uv build --wheel --out-dir /opt/airflow/artifacts /opt/airflow/generator \
+    && uv pip install --python /opt/airflow/genpm-venv/bin/python --no-cache --no-deps \
+        /opt/airflow/artifacts/genpm_generator-*.whl \
     && PYTHONPATH="/opt/spark/python:/opt/spark/python/lib/py4j-0.10.9.7-src.zip" \
         /opt/airflow/genpm-venv/bin/python -c "import distutils; import genpm.utils.spark_session"
 
 ENV GENPM_PYSPARK_PYTHON=/opt/airflow/genpm-venv/bin/python
-ENV GENPM_PY_FILES=/opt/airflow/artifacts/genpm.zip
 ENV GENPM_GENERATOR_ROOT=/opt/airflow/generator
-# Make the (runtime-mounted) genpm package importable by the scheduler / dag-processor / worker
-# python at DAG parse time. The build-time genpm.zip is only a fallback; DAGs rebuild it from the
-# live mount at submit time so driver and cluster executors run identical code.
+# Make the genpm package importable by the scheduler / dag-processor / worker python at DAG parse
+# time. /opt/airflow/generator holds the COPYed source in prod and the live mount in dev.
+# GENPM_PY_FILES is intentionally unset: prod uses the installed wheel; the dev compose sets it to
+# turn on the --py-files live-code override for executors.
 ENV PYTHONPATH=/opt/airflow/generator
 ENV JAVA_HOME=/usr/lib/jvm/java-17-openjdk-amd64
 ENV SPARK_HOME=/opt/spark

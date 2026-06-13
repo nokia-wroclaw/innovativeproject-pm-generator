@@ -26,6 +26,9 @@ x-airflow-common:
     GENPM_PYSPARK_PYTHON: /opt/airflow/genpm-venv/bin/python
     GENPM_SPARK_EXECUTOR_PYTHON: ${GENPM_SPARK_EXECUTOR_PYTHON:-/home/${USER:-hostuser}/app/.venv/bin/python3}
     GENPM_SCHEMA_PATH: /opt/airflow/shared/pm_schema_columns.json
+    # Dev override: ship the live-mounted genpm to executors via --py-files at submit time so code
+    # edits run without rebuilding images. Unset in prod, where the pinned wheel in the image is used.
+    GENPM_PY_FILES: /opt/airflow/artifacts/genpm.zip
 
   volumes:
     - ${AIRFLOW_PROJ_DIR:-.}/dags:/opt/airflow/dags

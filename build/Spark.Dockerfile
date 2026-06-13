@@ -81,9 +81,14 @@ COPY --chown=$USERNAME:$USERNAME apps/generator/ ./apps/generator/
 COPY --chown=$USERNAME:$USERNAME apps/backend/pyproject.toml ./apps/backend/pyproject.toml
 
 # PySpark requires the same minor Python on driver (Airflow) and executors (this venv).
+# uv sync installs the heavy deps; then overlay the pinned genpm wheel (--no-deps) so executors run
+# the exact same versioned genpm as the Airflow driver (no editable/snapshot skew).
 RUN uv python install 3.12 \
     && uv sync --frozen --python 3.12 \
-    && $APP_HOME/.venv/bin/python -c "import sys; assert sys.version_info[:2] == (3, 12), sys.version"
+    && uv build --wheel --out-dir /tmp/genpm-dist ./apps/generator \
+    && uv pip install --python $APP_HOME/.venv/bin/python --no-deps /tmp/genpm-dist/genpm_generator-*.whl \
+    && $APP_HOME/.venv/bin/python -c "import sys; assert sys.version_info[:2] == (3, 12), sys.version" \
+    && $APP_HOME/.venv/bin/python -c "import genpm.preprocessing.__main__, genpm.raw_vis.__main__"
 RUN $APP_HOME/.venv/bin/python -m ipykernel install --prefix=$APP_HOME/.venv --name=spark-env --display-name "Python (Spark Project)"
 
 ENV PATH="$APP_HOME/.venv/bin:$PATH"

@@ -19,11 +19,12 @@ from lib.spark_config import (
 
 
 def rebuild_py_files() -> str | None:
-    """Zip the *live* genpm package into GENPM_PY_FILES at submit time.
+    """Dev-only: zip the *live* genpm package into GENPM_PY_FILES at submit time.
 
-    The Airflow image bakes a genpm.zip at build time, but the compose file mounts the source over
-    /opt/airflow/generator at runtime — so the baked zip goes stale. Rebuilding here guarantees the
-    driver and the cluster executors run identical code. Returns the zip path, or None if disabled.
+    In prod, GENPM_PY_FILES is unset and executors use the pinned genpm wheel installed in the Spark
+    image — this returns None and no --py-files is attached. In dev (compose sets GENPM_PY_FILES and
+    mounts the source), we rebuild the zip from the live mount so executors run the edited code
+    without an image rebuild; the zip is prepended to the executor sys.path, shadowing the wheel.
     """
     if not GENPM_PY_FILES:
         return None

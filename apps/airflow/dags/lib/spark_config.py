@@ -18,10 +18,20 @@ from genpm.utils.spark_bootstrap import spark_pythonpath
 SPARK_CONN_ID = "spark_default"
 
 GENPM_GENERATOR_ROOT = os.environ.get("GENPM_GENERATOR_ROOT", "/opt/airflow/generator")
-GENPM_PY_FILES = os.environ.get("GENPM_PY_FILES", "/opt/airflow/artifacts/genpm.zip")
+# Dev-only override: when set, genpm is shipped to executors via --py-files (live code). In prod it
+# is left unset and executors use the pinned wheel installed in the image. See lib/spark_submit.py.
+GENPM_PY_FILES = os.environ.get("GENPM_PY_FILES")
 
-PREPROCESSING_APPLICATION = f"{GENPM_GENERATOR_ROOT}/genpm/preprocessing/__main__.py"
-VISUALIZATION_APPLICATION = f"{GENPM_GENERATOR_ROOT}/genpm/raw_vis/__main__.py"
+# SparkSubmitOperator.application must be a file path. We use stable launcher scripts that delegate
+# to the installed genpm package (wheel in prod, live mount in dev), so the path is independent of
+# where genpm itself is installed. The launchers live under <generator>/apps, which exists both in
+# the image (COPY) and via the dev mount; spark-submit ships the file to the cluster in cluster mode.
+GENPM_SPARK_APPS_DIR = os.environ.get(
+    "GENPM_SPARK_APPS_DIR", f"{GENPM_GENERATOR_ROOT}/apps"
+)
+
+PREPROCESSING_APPLICATION = f"{GENPM_SPARK_APPS_DIR}/run_preprocessing.py"
+VISUALIZATION_APPLICATION = f"{GENPM_SPARK_APPS_DIR}/run_visualization.py"
 
 DEFAULT_SPARK_PRESET = "HALF_SAFE"
 
@@ -72,6 +82,19 @@ def spark_submit_conf(preset: str = DEFAULT_SPARK_PRESET) -> dict[str, str]:
     }
 
 
+def _driver_pythonpath() -> str:
+    """PYTHONPATH for the Spark driver process.
+
+    Prod: just SPARK_HOME/python + py4j — the driver imports the pinned genpm wheel from its venv.
+    Dev (GENPM_PY_FILES set): prepend GENPM_GENERATOR_ROOT so the live-mounted source shadows the
+    wheel and driver-side changes are picked up without an image rebuild.
+    """
+    base = spark_pythonpath()
+    if GENPM_PY_FILES:
+        return f"{GENPM_GENERATOR_ROOT}:{base}"
+    return base
+
+
 def infra_env_vars(*, extra: dict[str, str] | None = None) -> dict[str, str]:
     """Infrastructure env vars forwarded to the Spark job — no dag_run business parameters."""
     env_vars = {
@@ -88,7 +111,7 @@ def infra_env_vars(*, extra: dict[str, str] | None = None) -> dict[str, str]:
             hint="MinIO/S3 secret key is required for the Spark job.",
         ),
         "PYSPARK_DRIVER_PYTHON": spark_driver_python(),
-        "PYTHONPATH": spark_pythonpath(),
+        "PYTHONPATH": _driver_pythonpath(),
     }
     if extra:
         env_vars.update(extra)
