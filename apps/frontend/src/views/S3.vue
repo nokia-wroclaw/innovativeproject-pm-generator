@@ -6,6 +6,7 @@ import BaseModal from '../components/BaseModal.vue';
 import S3StorageTabBody from '../components/S3StorageTabBody.vue';
 import DeleteAction from '../components/DeleteAction.vue';
 import DatasetPreviewContent from '../features/storage/components/DatasetPreviewContent.vue';
+import RegisterS3ModelModal from '../features/modeling/components/RegisterS3ModelModal.vue';
 import { Tabs } from '@/components/ui';
 import {
   fetchS3DatasetsPage,
@@ -20,6 +21,8 @@ import {
   abortMultipartUpload,
   registerExistingS3Dataset,
   fetchDatasetPreview,
+  fetchS3ModelsPage,
+  deleteS3Model,
 } from '../services/s3';
 import { isAdmin } from '../auth/keycloak';
 
@@ -31,6 +34,7 @@ const TAB_KPI_DEFINITIONS = 'kpi_definitions';
 const TAB_SIMPLE_REPORTS = 'simple_reports';
 const TAB_PREPROCESSED = 'preprocessed';
 const TAB_GENERATED = 'generated';
+const TAB_MODELS = 'models';
 
 const TAB_TO_DATASET_TYPE = {
   [TAB_RAW]: DatasetType.RAW,
@@ -46,9 +50,13 @@ const ADMIN_TABS = [
   { value: TAB_SIMPLE_REPORTS, label: 'Simple Reports' },
   { value: TAB_PREPROCESSED, label: 'Preprocessed' },
   { value: TAB_GENERATED, label: 'Generated' },
+  { value: TAB_MODELS, label: 'Models' },
 ];
 
-const USER_TABS = [{ value: TAB_GENERATED, label: 'Generated' }];
+const USER_TABS = [
+  { value: TAB_GENERATED, label: 'Generated' },
+  { value: TAB_MODELS, label: 'Models' },
+];
 
 const TAB_DESCRIPTIONS = {
   [TAB_RAW]: 'Upload and manage raw datasets before preprocessing.',
@@ -56,6 +64,7 @@ const TAB_DESCRIPTIONS = {
   [TAB_SIMPLE_REPORTS]: 'Upload and manage simple report parquet files.',
   [TAB_PREPROCESSED]: 'Datasets produced by preprocessing pipelines.',
   [TAB_GENERATED]: 'Synthetic event logs available for download and preview.',
+  [TAB_MODELS]: 'Upload and manage trained Keras models.',
 };
 
 const TABLE_COLUMNS = [
@@ -65,6 +74,21 @@ const TABLE_COLUMNS = [
   { key: 'status', label: 'Status' },
   { key: 'actions', label: 'Actions' },
 ];
+
+const modelTableColumns = computed(() => {
+  const cols = [
+    { key: 'id', label: 'ID' },
+    { key: 'name', label: 'Name' },
+    { key: 'path', label: 'Path' },
+    { key: 'encoder_s3_key', label: 'Encoder S3 Key' },
+    { key: 'config_s3_key', label: 'Config S3 Key' },
+  ];
+  if (isAdmin.value) {
+    cols.push({ key: 'dataset_id', label: 'Dataset ID' });
+    cols.push({ key: 'actions', label: 'Actions' });
+  }
+  return cols;
+});
 
 const route = useRoute();
 const router = useRouter();
@@ -87,6 +111,8 @@ const canAddDataset = computed(
       activeTab.value === TAB_SIMPLE_REPORTS),
 );
 
+const canAddModel = computed(() => isAdmin.value && activeTab.value === TAB_MODELS);
+
 const rowActions = computed(() => {
   const actions = [
     { id: 'analyze', label: 'Preview dataset', class: 's3-action-analyze' },
@@ -97,11 +123,28 @@ const rowActions = computed(() => {
   return actions;
 });
 
+const modelRowActions = computed(() => {
+  const actions = [];
+  if (isAdmin.value) {
+    actions.push({ id: 'edit', label: 'Edit', class: 's3-action-edit' });
+    actions.push({ id: 'delete', label: 'Delete', class: 's3-action-delete' });
+  }
+  return actions;
+});
+
+const activeDeleteService = computed(() => {
+  if (activeTab.value === TAB_MODELS) {
+    return deleteS3Model;
+  }
+  return deleteS3Dataset;
+});
+
 const rawTabBodyRef = ref(null);
 const kpiDefinitionsTabBodyRef = ref(null);
 const simpleReportsTabBodyRef = ref(null);
 const preprocessedTabBodyRef = ref(null);
 const generatedTabBodyRef = ref(null);
+const modelsTabBodyRef = ref(null);
 
 const tabBodyRefs = {
   [TAB_RAW]: rawTabBodyRef,
@@ -109,6 +152,7 @@ const tabBodyRefs = {
   [TAB_SIMPLE_REPORTS]: simpleReportsTabBodyRef,
   [TAB_PREPROCESSED]: preprocessedTabBodyRef,
   [TAB_GENERATED]: generatedTabBodyRef,
+  [TAB_MODELS]: modelsTabBodyRef,
 };
 
 const isAddModalOpen = ref(false);
@@ -120,6 +164,8 @@ const isPreviewLoading = ref(false);
 const previewError = ref('');
 const previewData = ref(null);
 const activeUploads = ref([]);
+const isRegisterModelModalOpen = ref(false);
+const isEditModelModalOpen = ref(false);
 
 const uploadMode = ref('upload');
 const formData = ref({ file_name: '', s3_key: '', file: null });
@@ -263,6 +309,8 @@ function handleRowAction({ type, row }) {
     openDatasetPreview(row);
   } else if (type === 'delete') {
     showDeleteModal.value = true;
+  } else if (type === 'edit') {
+    isEditModelModalOpen.value = true;
   }
 }
 
@@ -489,6 +537,7 @@ const tableProviders = {
   [TAB_SIMPLE_REPORTS]: makeTableProvider(TAB_SIMPLE_REPORTS),
   [TAB_PREPROCESSED]: makeTableProvider(TAB_PREPROCESSED),
   [TAB_GENERATED]: makeTableProvider(TAB_GENERATED),
+  [TAB_MODELS]: fetchS3ModelsPage,
 };
 
 onMounted(() => {
@@ -594,6 +643,23 @@ onBeforeUnmount(() => {
           :allow-failed-delete="isAdmin"
           @row-action="handleRowAction"
           @open-dataset="openDatasetDetail"
+        />
+      </template>
+
+      <template #models>
+        <S3StorageTabBody
+          ref="modelsTabBodyRef"
+          :description="TAB_DESCRIPTIONS[TAB_MODELS]"
+          :show-add-button="canAddModel"
+          :columns="modelTableColumns"
+          :provider="tableProviders[TAB_MODELS]"
+          :row-actions="modelRowActions"
+          :uploading-status="''"
+          :completed-status="''"
+          :failed-status="''"
+          add-button-label="Register S3 Model"
+          @add-dataset="isRegisterModelModalOpen = true"
+          @row-action="handleRowAction"
         />
       </template>
     </Tabs>
@@ -765,10 +831,19 @@ onBeforeUnmount(() => {
     <DeleteAction
       v-if="showDeleteModal && isAdmin"
       :item="activeRow"
-      :delete-service="deleteS3Dataset"
-      :ask-storage-scope="activeRow?.status === DatasetStatus.COMPLETED"
+      :delete-service="activeDeleteService"
+      :ask-storage-scope="activeRow?.status === DatasetStatus.COMPLETED || activeTab === TAB_MODELS"
       @success="onDeleteSuccess"
       @close="showDeleteModal = false"
+    />
+
+    <RegisterS3ModelModal
+      v-if="isRegisterModelModalOpen || isEditModelModalOpen"
+      :show="isRegisterModelModalOpen || isEditModelModalOpen"
+      :model="isEditModelModalOpen ? activeRow : null"
+      @close="isRegisterModelModalOpen = false; isEditModelModalOpen = false"
+      @registered="refreshActiveTable"
+      @updated="refreshActiveTable"
     />
   </div>
 </template>

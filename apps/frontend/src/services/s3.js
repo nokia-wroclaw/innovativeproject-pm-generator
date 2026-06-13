@@ -114,3 +114,40 @@ export const requestDatasetVisualization = async (datasetId) => {
     method: 'POST',
   });
 };
+
+export const fetchS3ModelsPage = async ({ page, limit }) => {
+  const models = await authorizedRequest('/api/v1/modeling/models');
+  const safeModels = Array.isArray(models) ? models : [];
+  const perPage = Number(limit) > 0 ? Number(limit) : 10;
+  const currentPage = Number(page) > 0 ? Number(page) : 1;
+  const start = (currentPage - 1) * perPage;
+  const end = start + perPage;
+
+  return {
+    data: safeModels.slice(start, end).map((model) => ({
+      id: model.id,
+      name: model.name,
+      s3_key: model.path ? model.path.replace(/^s3:\/\/[^\/]+\//, '') : '',
+      path: model.path,
+      encoder_s3_key: model.encoder_s3_key,
+      config_s3_key: model.config_s3_key,
+      dataset_id: model.dataset_id,
+    })),
+    total: safeModels.length,
+  };
+};
+
+export const deleteS3Model = async (modelId, { deleteFromS3 = false } = {}) => {
+  return await authorizedRequest(`/api/v1/modeling/models/${modelId}?delete_from_s3=${Boolean(deleteFromS3)}`, {
+    method: 'DELETE',
+  });
+};
+
+export const updateS3Model = async (modelId, modelData) => {
+  return await authorizedRequest(`/api/v1/modeling/models/${modelId}`, {
+    method: 'PATCH',
+    body: JSON.stringify(modelData),
+  });
+};
+
+

@@ -1,12 +1,21 @@
 <template>
   <div class="space-y-6">
     <section class="rounded-xl border border-border-default bg-surface p-5 shadow-sm">
-      <div>
-        <h2 class="text-lg font-semibold text-fg">Synthetic data generation</h2>
-        <p class="mt-1 text-sm text-fg-muted">
-          Select a trained model and provide a prompt to generate synthetic data.
-          Run status remains available when you navigate to other sections.
-        </p>
+      <div class="flex flex-wrap items-start justify-between gap-4">
+        <div>
+          <h2 class="text-lg font-semibold text-fg">Synthetic data generation</h2>
+          <p class="mt-1 text-sm text-fg-muted">
+            Select a trained model and provide a prompt to generate synthetic data.
+            Run status remains available when you navigate to other sections.
+          </p>
+        </div>
+        <Button
+          variant="secondary"
+          size="sm"
+          @click="isRegisterModalOpen = true"
+        >
+          Register S3 Model
+        </Button>
       </div>
     </section>
 
@@ -26,14 +35,22 @@
       @close="isModalOpen = false"
       @started="onProcessStarted"
     />
+
+    <RegisterS3ModelModal
+      v-if="isRegisterModalOpen"
+      :show="isRegisterModalOpen"
+      @close="isRegisterModalOpen = false"
+    />
   </div>
 </template>
 
 <script setup>
 import { computed, ref } from 'vue';
 
+import { Button } from '@/components/ui';
 import GenerateProcessModal from '../components/GenerateProcessModal.vue';
 import ModelingProcessCard from '../components/ModelingProcessCard.vue';
+import RegisterS3ModelModal from '../components/RegisterS3ModelModal.vue';
 import {
   getLatestRunForProcess,
   refreshTrackedModelingRun,
@@ -57,6 +74,7 @@ const processDefinition = {
 };
 
 const isModalOpen = ref(false);
+const isRegisterModalOpen = ref(false);
 
 const generateProcessCard = computed(() => {
   const run = getLatestRunForProcess(GENERATE_PROCESS);

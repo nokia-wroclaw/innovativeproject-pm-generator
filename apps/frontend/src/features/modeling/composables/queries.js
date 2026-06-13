@@ -57,6 +57,36 @@ export function useTriggerModelingRun() {
   });
 }
 
+export function useCreateTrainedModel() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (body) => Api.createTrainedModel(body),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: modelingQueryKeys.models() });
+    },
+  });
+}
+
+export function useUpdateTrainedModel() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({ id, body }) => Api.updateTrainedModel(id, body),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: modelingQueryKeys.models() });
+    },
+  });
+}
+
+export function useDeleteTrainedModel() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({ id, deleteFromS3 }) => Api.deleteTrainedModel(id, deleteFromS3),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: modelingQueryKeys.models() });
+    },
+  });
+}
+
 export function useModelingRunStatus(processTypeRef, runIdRef) {
   return useQuery({
     queryKey: computed(() => modelingQueryKeys.runStatus(processTypeRef, runIdRef)),

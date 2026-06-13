@@ -4,7 +4,7 @@
 
     <div v-if="showAddButton" class="s3-toolbar">
       <button type="button" class="btn-primary" @click="$emit('add-dataset')">
-        Add dataset
+        {{ addButtonLabel }}
       </button>
     </div>
 
@@ -46,7 +46,7 @@
 
       <template #cell-actions="{ row }">
         <DynamicActions
-          v-if="row.status === completedStatus"
+          v-if="row.status === completedStatus || !row.status"
           :row="row"
           :actions="rowActions"
           @action="$emit('row-action', $event)"
@@ -85,6 +85,7 @@ defineProps({
   failedStatus: { type: String, required: true },
   allowFailedDelete: { type: Boolean, default: false },
   linkableName: { type: Boolean, default: true },
+  addButtonLabel: { type: String, default: 'Add dataset' },
 });
 
 defineEmits(['add-dataset', 'row-action', 'open-dataset']);

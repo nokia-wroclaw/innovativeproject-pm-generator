@@ -1,7 +1,10 @@
+import re
+import unicodedata
 import uuid
+from pathlib import Path
 from typing import Any, Literal
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 
 from app.core.auth import (
@@ -10,11 +13,13 @@ from app.core.auth import (
     require_auth,
     require_modeling_admin,
 )
+from app.core.config import get_settings
 from app.db.database import db_manager
-from app.db.schemas import DagRunStatus, DatasetStatus, DatasetType
+from app.db.schemas import DagRunStatus, Dataset, DatasetStatus, DatasetType, TrainedModel
 from app.models.auth import TokenPayload
 from app.models.dags import TriggerRequest
 from app.models.modeling import (
+    DeleteModelResponse,
     GenerateRunRequest,
     ModelingArtifact,
     ModelingDatasetOption,
@@ -26,6 +31,10 @@ from app.models.modeling import (
     ModelingRunRequest,
     ModelingRunStatus,
     ModelingTrainedModelOption,
+    ModelUploadInitiateRequest,
+    ModelUploadInitiateResponse,
+    TrainedModelCreate,
+    TrainedModelUpdate,
 )
 from app.models.spark_jobs import PreprocessingConfigError
 from app.services.airflow.errors import AirflowIntegrationError, AirflowNotFound
@@ -35,7 +44,7 @@ from app.services.preprocessing.conf import (
     PREPROCESSING_DAG_ID,
     preprocessing_artifact_paths,
 )
-from app.services.s3.service import S3Service
+from app.services.s3.service import S3Service, get_s3_client_external, get_s3_client_internal
 from app.services.spark_dag_conf import build_preprocessing_dag_conf
 
 router = APIRouter(prefix="/modeling", tags=["modeling"])
@@ -92,29 +101,7 @@ _PROCESS_TITLES: dict[ModelingProcessType, str] = {
     "generate": "Synthetic data generation",
 }
 
-_MOCK_TRAINED_MODELS: list[ModelingTrainedModelOption] = [
-    ModelingTrainedModelOption(
-        id="model_001",
-        name="PM predictor v1 (working days)",
-        source_run_id="genpm_td_a1b2c3d4e5f6",
-        path="s3://genpm-modeling/models/model_001.pkl",
-        created_at="2026-05-20T14:30:00Z",
-    ),
-    ModelingTrainedModelOption(
-        id="model_002",
-        name="PM predictor v1 (weekends)",
-        source_run_id="genpm_td_b2c3d4e5f6a1",
-        path="s3://genpm-modeling/models/model_002.pkl",
-        created_at="2026-05-22T09:15:00Z",
-    ),
-    ModelingTrainedModelOption(
-        id="model_003",
-        name="PM predictor v2 (ensemble)",
-        source_run_id="genpm_td_c3d4e5f6a1b2",
-        path="s3://genpm-modeling/models/model_003.pkl",
-        created_at="2026-05-28T16:45:00Z",
-    ),
-]
+
 
 
 def _get_s3_service(db: Session = Depends(db_manager.get_db)) -> S3Service:
@@ -164,7 +151,7 @@ def _mock_logs(status: DagRunStatus, process_type: ModelingProcessType) -> list[
         logs.append("Feature engineering: generated calendar features and aggregates.")
         logs.append("Model training: saving checkpoints and metrics in progress.")
     if status == DagRunStatus.SUCCESS:
-        logs.append("Model saved as a pickle file. Pipeline completed successfully.")
+        logs.append("Model saved as a .weights.h5 file. Pipeline completed successfully.")
     if status == DagRunStatus.FAILED:
         logs.append("Airflow marked the run as failed. Check task logs in the DAG view.")
     return logs
@@ -244,7 +231,7 @@ def _mock_artifacts(
         ),
         ModelingArtifact(
             kind="model_pickle",
-            path=f"{base}/model.pkl",
+            path=f"{base}/model.weights.h5",
             status=saved,
         ),
     ]
@@ -252,9 +239,282 @@ def _mock_artifacts(
 
 @router.get("/models", response_model=list[ModelingTrainedModelOption])
 def list_trained_models(
+    db: Session = Depends(db_manager.get_db),
     _user: TokenPayload = Depends(require_auth),
 ) -> list[ModelingTrainedModelOption]:
-    return _MOCK_TRAINED_MODELS
+    db_models = db.query(TrainedModel).all()
+    return [
+        ModelingTrainedModelOption(
+            id=str(db_m.id),
+            name=db_m.name,
+            path=f"s3://{get_settings().s3_bucket}/{db_m.s3_key}",
+            encoder_s3_key=db_m.encoder_s3_key,
+            config_s3_key=db_m.config_s3_key,
+            dataset_id=db_m.dataset_id,
+            created_at=db_m.created_at.isoformat() + "Z" if db_m.created_at else None,
+        )
+        for db_m in db_models
+    ]
+
+
+@router.post("/models", response_model=ModelingTrainedModelOption)
+def create_trained_model(
+    body: TrainedModelCreate,
+    db: Session = Depends(db_manager.get_db),
+    user: TokenPayload = Depends(require_auth),
+) -> ModelingTrainedModelOption:
+    dataset = db.query(Dataset).filter(Dataset.id == body.dataset_id).first()
+    if not dataset:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Dataset with ID {body.dataset_id} does not exist",
+        )
+    if dataset.type != DatasetType.PREPROCESSED:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"Dataset with ID {body.dataset_id} is of type {dataset.type}, "
+                f"must be {DatasetType.PREPROCESSED}"
+            ),
+        )
+
+    if not body.s3_key.lower().endswith(".weights.h5"):
+        raise HTTPException(
+            status_code=400,
+            detail="Model file must have .weights.h5 extension.",
+        )
+
+    s3_client = get_s3_client_internal()
+    try:
+        s3_client.head_object(Bucket=get_settings().s3_bucket, Key=body.s3_key)
+    except Exception as e:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Model file not found on S3 or access denied: {str(e)}",
+        ) from e
+
+    try:
+        s3_client.head_object(Bucket=get_settings().s3_bucket, Key=body.encoder_s3_key)
+    except Exception as e:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Encoder file not found on S3 or access denied: {str(e)}",
+        ) from e
+
+    try:
+        s3_client.head_object(Bucket=get_settings().s3_bucket, Key=body.config_s3_key)
+    except Exception as e:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Config file not found on S3 or access denied: {str(e)}",
+        ) from e
+
+    existing = db.query(TrainedModel).filter(TrainedModel.s3_key == body.s3_key).first()
+    if existing:
+        raise HTTPException(status_code=400, detail="Model with this S3 key already exists")
+
+    db_model = TrainedModel(
+        user_uuid=user.get_uuid(),
+        name=body.name,
+        s3_key=body.s3_key,
+        encoder_s3_key=body.encoder_s3_key,
+        config_s3_key=body.config_s3_key,
+        dataset_id=body.dataset_id,
+    )
+    db.add(db_model)
+    db.commit()
+    db.refresh(db_model)
+
+    return ModelingTrainedModelOption(
+        id=str(db_model.id),
+        name=db_model.name,
+        path=f"s3://{get_settings().s3_bucket}/{db_model.s3_key}",
+        encoder_s3_key=db_model.encoder_s3_key,
+        config_s3_key=db_model.config_s3_key,
+        dataset_id=db_model.dataset_id,
+        created_at=db_model.created_at.isoformat() + "Z" if db_model.created_at else None,
+    )
+
+
+@router.patch("/models/{model_id}", response_model=ModelingTrainedModelOption)
+def update_trained_model(
+    model_id: int,
+    body: TrainedModelUpdate,
+    db: Session = Depends(db_manager.get_db),
+    _user: TokenPayload = Depends(require_modeling_admin),
+) -> ModelingTrainedModelOption:
+    model = db.query(TrainedModel).filter(TrainedModel.id == model_id).first()
+    if not model:
+        raise HTTPException(status_code=404, detail="Model not found")
+
+    if body.name is not None:
+        model.name = body.name
+
+    if body.s3_key is not None:
+        if not body.s3_key.lower().endswith(".weights.h5"):
+            raise HTTPException(
+                status_code=400,
+                detail="Model file must have .weights.h5 extension.",
+            )
+        # Check if it exists on S3
+        s3_client = get_s3_client_internal()
+        try:
+            s3_client.head_object(Bucket=get_settings().s3_bucket, Key=body.s3_key)
+        except Exception as e:
+            raise HTTPException(
+                status_code=404,
+                detail=f"Model file not found on S3 or access denied: {str(e)}",
+            ) from e
+        model.s3_key = body.s3_key
+
+    if body.encoder_s3_key is not None:
+        # Check if it exists on S3
+        s3_client = get_s3_client_internal()
+        try:
+            s3_client.head_object(Bucket=get_settings().s3_bucket, Key=body.encoder_s3_key)
+        except Exception as e:
+            raise HTTPException(
+                status_code=404,
+                detail=f"Encoder file not found on S3 or access denied: {str(e)}",
+            ) from e
+        model.encoder_s3_key = body.encoder_s3_key
+
+    if body.config_s3_key is not None:
+        # Check if it exists on S3
+        s3_client = get_s3_client_internal()
+        try:
+            s3_client.head_object(Bucket=get_settings().s3_bucket, Key=body.config_s3_key)
+        except Exception as e:
+            raise HTTPException(
+                status_code=404,
+                detail=f"Config file not found on S3 or access denied: {str(e)}",
+            ) from e
+        model.config_s3_key = body.config_s3_key
+
+    if body.dataset_id is not None:
+        dataset = db.query(Dataset).filter(Dataset.id == body.dataset_id).first()
+        if not dataset:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Dataset with ID {body.dataset_id} does not exist",
+            )
+        if dataset.type != DatasetType.PREPROCESSED:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    f"Dataset with ID {body.dataset_id} is of type {dataset.type}, "
+                    f"must be {DatasetType.PREPROCESSED}"
+                ),
+            )
+        model.dataset_id = body.dataset_id
+
+    db.commit()
+    db.refresh(model)
+    return ModelingTrainedModelOption(
+        id=str(model.id),
+        name=model.name,
+        path=f"s3://{get_settings().s3_bucket}/{model.s3_key}",
+        encoder_s3_key=model.encoder_s3_key,
+        config_s3_key=model.config_s3_key,
+        dataset_id=model.dataset_id,
+        created_at=model.created_at.isoformat() + "Z" if model.created_at else None,
+    )
+
+
+@router.delete("/models/{model_id}", response_model=DeleteModelResponse)
+def delete_trained_model(
+    model_id: int,
+    delete_from_s3: bool = Query(default=False),
+    db: Session = Depends(db_manager.get_db),
+    _user: TokenPayload = Depends(require_modeling_admin),
+) -> DeleteModelResponse:
+    model = db.query(TrainedModel).filter(TrainedModel.id == model_id).first()
+    if not model:
+        raise HTTPException(status_code=404, detail="Model not found")
+    if delete_from_s3:
+        s3_client = get_s3_client_internal()
+        try:
+            s3_client.delete_object(Bucket=get_settings().s3_bucket, Key=model.s3_key)
+        except Exception as e:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Error deleting file from S3: {str(e)}",
+            ) from e
+    db.delete(model)
+    db.commit()
+    return DeleteModelResponse(
+        message="Model deleted successfully",
+        model_id=model_id,
+        deleted_from_s3=delete_from_s3,
+    )
+
+
+@router.post("/models/upload/initiate", response_model=ModelUploadInitiateResponse)
+def initiate_model_upload(
+    body: ModelUploadInitiateRequest,
+    db: Session = Depends(db_manager.get_db),
+    user: TokenPayload = Depends(require_auth),
+) -> ModelUploadInitiateResponse:
+    dataset = db.query(Dataset).filter(Dataset.id == body.dataset_id).first()
+    if not dataset:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Dataset with ID {body.dataset_id} does not exist",
+        )
+    if dataset.type != DatasetType.PREPROCESSED:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"Dataset with ID {body.dataset_id} is of type {dataset.type}, "
+                f"must be {DatasetType.PREPROCESSED}"
+            ),
+        )
+
+    if not body.file_name.lower().endswith(".weights.h5"):
+        raise HTTPException(
+            status_code=400,
+            detail="Model file must have .weights.h5 extension.",
+        )
+
+    unique_id = str(uuid.uuid4())
+    name = Path(body.file_name).name
+    name = unicodedata.normalize("NFKD", name).encode("ascii", "ignore").decode("ascii")
+    name = re.sub(r"[^\w\.\-]", "_", name)
+    s3_key = f"models/{unique_id}_{name}"
+
+    db_model = TrainedModel(
+        user_uuid=user.get_uuid(),
+        name=body.name,
+        s3_key=s3_key,
+        dataset_id=body.dataset_id,
+    )
+    db.add(db_model)
+    db.commit()
+    db.refresh(db_model)
+
+    s3_client = get_s3_client_external()
+    try:
+        upload_url = s3_client.generate_presigned_url(
+            ClientMethod="put_object",
+            Params={
+                "Bucket": get_settings().s3_bucket,
+                "Key": s3_key,
+            },
+            ExpiresIn=3600,
+        )
+    except Exception as e:
+        db.delete(db_model)
+        db.commit()
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to generate presigned upload URL: {str(e)}",
+        ) from e
+
+    return ModelUploadInitiateResponse(
+        model_id=db_model.id,
+        s3_key=s3_key,
+        upload_url=upload_url,
+    )
 
 
 @router.get("/datasets", response_model=list[ModelingDatasetOption])
@@ -284,19 +544,69 @@ def get_form_schema(
     )
 
 
+def _validate_s3_key(key: str) -> None:
+    if key.startswith("s3://"):
+        raise HTTPException(
+            status_code=400,
+            detail=f"Invalid S3 key format: '{key}'. Should be a key relative to the bucket, not a full s3:// URL.",
+        )
+    s3_client = get_s3_client_internal()
+    try:
+        s3_client.head_object(Bucket=get_settings().s3_bucket, Key=key)
+    except Exception as e:
+        raise HTTPException(
+            status_code=404,
+            detail=f"S3 object not found or access denied for key '{key}': {str(e)}",
+        ) from e
+
+
 @router.post(
     "/processes/generate/runs",
     response_model=ModelingRunCreated,
 )
 async def trigger_generate_run(
     body: GenerateRunRequest,
+    db: Session = Depends(db_manager.get_db),
     user: TokenPayload = Depends(require_auth),
     airflow: AirflowService = Depends(_airflow_service),
 ) -> ModelingRunCreated:
     process_type: Literal["generate"] = "generate"
-    model = next((m for m in _MOCK_TRAINED_MODELS if m.id == body.model_id), None)
-    if not model:
+    model = None
+    db_model = None
+    if body.model_id.isdigit():
+        db_model = db.query(TrainedModel).filter(TrainedModel.id == int(body.model_id)).first()
+        if db_model:
+            model = ModelingTrainedModelOption(
+                id=str(db_model.id),
+                name=db_model.name,
+                path=f"s3://{get_settings().s3_bucket}/{db_model.s3_key}",
+                encoder_s3_key=db_model.encoder_s3_key,
+                config_s3_key=db_model.config_s3_key,
+                dataset_id=db_model.dataset_id,
+                created_at=db_model.created_at.isoformat() + "Z" if db_model.created_at else None,
+            )
+
+    if not model or not db_model:
         raise HTTPException(status_code=404, detail=f"Model not found: {body.model_id}")
+
+    comparison_dataset_path = None
+    if body.comparison_dataset_id is not None:
+        dataset = db.query(Dataset).filter(Dataset.id == body.comparison_dataset_id).first()
+        if not dataset:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    f"Comparison dataset with ID {body.comparison_dataset_id} "
+                    "does not exist"
+                ),
+            )
+        comparison_dataset_path = dataset.s3_key
+
+    encoder_s3_key = body.encoder_s3_key.strip()
+    _validate_s3_key(encoder_s3_key)
+
+    config_s3_key = body.config_s3_key.strip()
+    _validate_s3_key(config_s3_key)
 
     dag_id = DAG_ID_MAP[process_type]
     run_id = f"genpm_{_RUN_ID_PREFIX[process_type]}_{uuid.uuid4().hex[:12]}"
@@ -304,8 +614,11 @@ async def trigger_generate_run(
         "genpm_run_id": run_id,
         "model_id": body.model_id,
         "model_name": model.name,
-        "model_path": model.path,
+        "model_path": db_model.s3_key,
+        "encoder_path": encoder_s3_key,
+        "config_path": config_s3_key,
         "prompt": body.prompt,
+        "comparison_dataset_path": comparison_dataset_path,
         "process_type": process_type,
         "dag_args": body.dag_args,
     }
