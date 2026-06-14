@@ -1,76 +1,102 @@
-"""Spark session helpers for Airflow cluster submit and SDM (no yaml/config deps)."""
+"""Spark session helpers for Airflow cluster submit and local CLI runs (no yaml/config deps).
+
+One session contract for both execution models:
+
+* Under Airflow ``SparkSubmitOperator`` the master / memory / cores are supplied by
+  ``spark-submit --master ... --conf ...``. We must **not** override ``spark.master`` here, or
+  compute silently collapses to local mode inside the Airflow worker.
+* When run as a bare CLI (``python -m genpm.preprocessing ...``) or a notebook there is no
+  spark-submit, so we fall back to ``local[N]`` sized from ``SPARK_CORE_NUMBER``.
+"""
+
+from __future__ import annotations
 
 import atexit
 import os
 import signal
 from pathlib import Path
 
+from pyspark import SparkConf
 from pyspark.sql import DataFrame, SparkSession
 
 from .logger import get_logger
 
 logger = get_logger()
 
+# App-level (non-resource) defaults that are safe in every execution mode. Resource sizing
+# (master / memory / cores / shuffle partitions) is intentionally NOT set here — it comes from
+# spark-submit under Airflow, or from the local[N] fallback below.
+_APP_CONF: dict[str, str] = {
+    "spark.log.level": "WARN",
+    "spark.sql.adaptive.enabled": "true",
+    "spark.sql.adaptive.coalescePartitions.enabled": "true",
+    "spark.sql.adaptive.skewJoin.enabled": "true",
+    "spark.sql.execution.arrow.pyspark.enabled": "true",
+    # RAPIDS is enabled by default in the Spark image's spark-defaults.conf, but the genpm
+    # pipeline relies on operations the plugin may not accelerate; keep it off for correctness.
+    "spark.plugins": "",
+    "spark.rapids.sql.enabled": "false",
+    "spark.kryo.registrator": "",
+}
+
 
 class SparkDataManager:
     def __init__(self, app_name: str | None = None, additional_conf: dict | None = None) -> None:
-        SPARK_CORE_NUMBER = os.getenv("SPARK_CORE_NUMBER") or "8"
-        SPARK_EXECUTOR_MEMORY = os.getenv("SPARK_EXECUTOR_MEMORY") or "10g"
-        SPARK_DRIVER_MEMORY = os.getenv("SPARK_DRIVER_MEMORY") or "6g"
-        SPARK_PARALLELISM_COUNT = os.getenv("SPARK_PARALLELISM_COUNT") or "8"
         logger.info("\tSPARK DATA MANAGER")
 
-        app_name = app_name or "GenPM"
+        builder = SparkSession.builder.appName(app_name or "GenPM")  # type: ignore[attr-defined]
 
-        # spark session builder
-        builder = (
-            SparkSession.builder.master(f"local[{SPARK_CORE_NUMBER}]")  # type: ignore
-            .appName(app_name)
-            .config("spark.executor.memory", SPARK_EXECUTOR_MEMORY)
-            .config("spark.driver.memory", SPARK_DRIVER_MEMORY)
-            .config("spark.sql.shuffle.partitions", "200")
-            .config("spark.default.parallelism", SPARK_PARALLELISM_COUNT)
-            .config("spark.log.level", "WARN")
-            # Additional Spark optimizations
-            .config("spark.sql.adaptive.enabled", "true")
-            .config("spark.sql.adaptive.skewJoin.enabled", "true")
-            # Disable RAPIDS
-            .config("spark.plugins", "")
-            .config("spark.rapids.sql.enabled", "false")
-            .config("spark.kryo.registrator", "")
-        )
+        for conf, val in _APP_CONF.items():
+            builder = builder.config(conf, val)
 
         for conf, val in minio_spark_conf().items():
             builder = builder.config(conf, val)
 
-        if additional_conf is not None:
-            logger.info(f"ADDITIONALL SPARK CONFIG ADDED: {additional_conf}")
+        # Only pick a master / sizing when spark-submit did not already supply one.
+        if not _submit_master_present():
+            cores = os.getenv("SPARK_CORE_NUMBER") or "8"
+            logger.info(f"No spark.master from spark-submit — defaulting to local[{cores}]")
+            builder = (
+                builder.master(f"local[{cores}]")
+                .config("spark.driver.memory", os.getenv("SPARK_DRIVER_MEMORY") or "6g")
+                .config("spark.executor.memory", os.getenv("SPARK_EXECUTOR_MEMORY") or "10g")
+                .config(
+                    "spark.sql.shuffle.partitions", os.getenv("SPARK_PARALLELISM_COUNT") or "200"
+                )
+            )
+
+        if additional_conf:
+            logger.info(f"Additional Spark config added: {additional_conf}")
             for conf, val in additional_conf.items():
                 builder = builder.config(conf, val)
 
         self.spark: SparkSession = builder.getOrCreate()
+        logger.info(f"Spark master: {self.spark.sparkContext.master}")
 
-        # STOPPING FUNCTIONS TO RESERVE SPACE AT ALL TIMES
+        # Always release the cluster slot, even on crash / container stop / Ctrl+C.
+        atexit.register(self.stop)
+        signal.signal(signal.SIGTERM, lambda *_: self.stop())
+        signal.signal(signal.SIGINT, lambda *_: self.stop())
 
-        # Fires on normal exit and unhandled exceptions
-        atexit.register(self._stop_spark)
-
-        # Fires on SIGTERM (e.g. container stop, Airflow kill)
-        signal.signal(signal.SIGTERM, lambda sig, frame: self._stop_spark())
-        # Fires on SIGINT (Ctrl+C)
-        signal.signal(signal.SIGINT, lambda sig, frame: self._stop_spark())
-
-    def _stop_spark(self):
-        if self.spark:
+    def stop(self) -> None:
+        if getattr(self, "spark", None) is not None:
             self.spark.stop()
-            self.spark = None  # type: ignore
+            self.spark = None  # type: ignore[assignment]
+
+    # Backwards-compatible alias for existing callers.
+    _stop_spark = stop
+
+    def __enter__(self) -> SparkDataManager:
+        return self
+
+    def __exit__(self, *_exc) -> None:
+        self.stop()
 
     @staticmethod
     def minio_spark_conf() -> dict[str, str]:
         return minio_spark_conf()
 
     def read_parquet(self, path: Path | str, **options) -> DataFrame:
-        # TODO: S3 compatability will be introduced here
         logger.info(f"Reading Dataframe from {str(path)} ...")
         return self.spark.read.parquet(str(path), **options)
 
@@ -83,14 +109,29 @@ class SparkDataManager:
         return self.read_parquet(path)
 
 
+def _submit_master_present() -> bool:
+    """True when spark-submit (or the environment) already chose a master.
+
+    ``SparkConf()`` loads the system properties / env that ``spark-submit --master`` populates,
+    so this is reliable under Airflow and empty for a bare CLI invocation.
+    """
+    if os.environ.get("MASTER") or os.environ.get("SPARK_MASTER"):
+        return True
+    return bool(SparkConf().get("spark.master", None))
+
+
 def minio_spark_conf() -> dict[str, str]:
     """Hadoop s3a settings for MinIO / S3-compatible storage (from env)."""
+    access_key = os.getenv("AWS_ACCESS_KEY_ID", "")
+    secret_key = os.getenv("AWS_SECRET_ACCESS_KEY", "")
+    if not access_key or not secret_key:
+        logger.warning(
+            "AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY not set — s3a reads/writes will fail."
+        )
     return {
         "spark.hadoop.fs.s3a.endpoint": os.getenv("S3_URL", "http://minio:9000"),
-        "spark.hadoop.fs.s3a.access.key": os.getenv("AWS_ACCESS_KEY_ID", "your_default_access_key"),
-        "spark.hadoop.fs.s3a.secret.key": os.getenv(
-            "AWS_SECRET_ACCESS_KEY", "your_default_secret_key"
-        ),
+        "spark.hadoop.fs.s3a.access.key": access_key,
+        "spark.hadoop.fs.s3a.secret.key": secret_key,
         "spark.hadoop.fs.s3a.path.style.access": "true",
         "spark.hadoop.fs.s3a.connection.ssl.enabled": "false",
         "spark.hadoop.fs.s3a.impl": "org.apache.hadoop.fs.s3a.S3AFileSystem",

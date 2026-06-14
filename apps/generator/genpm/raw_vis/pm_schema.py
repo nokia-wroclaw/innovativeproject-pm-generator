@@ -1,9 +1,15 @@
-"""PM dataset schema validation for raw visualizations."""
+"""PM dataset schema validation for raw visualizations.
+
+The schema JSON is loaded **lazily** on first use, not at import time, so importing this module never
+requires the file to be present (image build, DAG parse, offline tooling). The file is only read when
+a function actually needs the schema, then cached.
+"""
 
 from __future__ import annotations
 
 import json
 import os
+from functools import lru_cache
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -41,22 +47,91 @@ def _schema_path() -> Path:
     )
 
 
-_SCHEMA_PATH = _schema_path()
-with _SCHEMA_PATH.open(encoding="utf-8") as f:
-    PM_REQUIRED_COLUMNS: tuple[str, ...] = tuple(json.load(f)["required_columns"])
+@lru_cache(maxsize=1)
+def _load_schema() -> dict:
+    with _schema_path().open(encoding="utf-8") as f:
+        return json.load(f)
+
+
+@lru_cache(maxsize=1)
+def required_columns() -> tuple[str, ...]:
+    return tuple(_load_schema()["required_columns"])
+
+
+@lru_cache(maxsize=1)
+def column_aliases() -> dict[str, tuple[str, ...]]:
+    return {
+        canonical: tuple(aliases)
+        for canonical, aliases in _load_schema().get("column_aliases", {}).items()
+    }
+
+
+@lru_cache(maxsize=1)
+def derived_columns() -> dict[str, str]:
+    return dict(_load_schema().get("derived_columns", {}))
+
+
+# PEP 562: keep PM_REQUIRED_COLUMNS / PM_COLUMN_ALIASES / PM_DERIVED_COLUMNS importable for external
+# callers without reading the schema file at import time — resolved (and cached) on first access.
+_LAZY_ATTRS = {
+    "PM_REQUIRED_COLUMNS": required_columns,
+    "PM_COLUMN_ALIASES": column_aliases,
+    "PM_DERIVED_COLUMNS": derived_columns,
+}
+
+
+def __getattr__(name: str):
+    loader = _LAZY_ATTRS.get(name)
+    if loader is not None:
+        return loader()
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+
+
+def _column_satisfied(canonical: str, present: set[str]) -> bool:
+    if canonical in present:
+        return True
+    for alias in column_aliases().get(canonical, ()):
+        if alias in present:
+            return True
+    source = derived_columns().get(canonical)
+    if source is not None and _column_satisfied(source, present):
+        return True
+    return False
 
 
 def validate_pm_schema(df: DataFrame) -> tuple[bool, list[str]]:
     present = set(df.columns)
-    missing = [col for col in PM_REQUIRED_COLUMNS if col not in present]
+    missing = [col for col in required_columns() if not _column_satisfied(col, present)]
     return len(missing) == 0, missing
+
+
+def normalize_pm_dataframe(df: DataFrame) -> DataFrame:
+    """Rename known aliases and derive missing canonical columns (e.g. start_date)."""
+    from pyspark.sql import functions as spark_f
+
+    result = df
+    for canonical, aliases in column_aliases().items():
+        if canonical in result.columns:
+            continue
+        for alias in aliases:
+            if alias in result.columns:
+                result = result.withColumnRenamed(alias, canonical)
+                break
+
+    for canonical, source in derived_columns().items():
+        if canonical in result.columns:
+            continue
+        if source in result.columns:
+            result = result.withColumn(canonical, spark_f.to_date(source))
+
+    return result
 
 
 def unsupported_schema_payload(missing: list[str]) -> dict:
     return {
         "status": "unsupported_schema",
         "missing_columns": missing,
-        "required_columns": list(PM_REQUIRED_COLUMNS),
+        "required_columns": list(required_columns()),
         "message": (
             "Dataset does not match PM schema required for visualizations. "
             f"Missing columns: {', '.join(missing)}."

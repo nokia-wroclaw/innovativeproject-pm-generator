@@ -3,6 +3,7 @@ from pyspark.sql import functions as f
 
 from genpm.preprocessing.configs import PreprocessingConfig
 from genpm.preprocessing.logic import imputing, kpi_coverage, scaling, simple_logic
+from genpm.raw_vis.pm_schema import normalize_pm_dataframe
 from genpm.utils.consts import MAX_IMPUTABLE_GAP, SHARED_DIR_PATH
 from genpm.utils.logger import get_logger
 from genpm.utils.spark_session import SparkDataManager
@@ -10,10 +11,16 @@ from genpm.utils.utils import validate_windowed_pm
 
 logger = get_logger()
 
+VERBOSE_DIAGNOSTICS = False
 
-PREPROCESSED_DATASET_PATH = SHARED_DIR_PATH / "preprocessed_dataset"
 
-VERBOSE_DIAGNOSTICS = True
+def _intermediate_path(output_path_prefix: str, artifact: str) -> str:
+    prefix = output_path_prefix.rstrip("/")
+    if prefix.endswith("/final"):
+        base = prefix[: -len("/final")]
+    else:
+        base = prefix
+    return f"{base}/intermediate/{artifact}"
 
 
 def _log_pm_diag(label: str, df: DataFrame, group_cols: tuple[str, ...], verbose: bool) -> None:

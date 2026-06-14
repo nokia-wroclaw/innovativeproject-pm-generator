@@ -38,7 +38,6 @@ def _service() -> AirflowService:
     return get_airflow_service()
 
 
-
 @router.get("", response_model=list[DagSummary])
 async def list_dags(
     service: AirflowService = Depends(_service),
@@ -205,7 +204,11 @@ async def stream_task_logs(
                     )
                 except AirflowIntegrationError as exc:
                     logger.warning(
-                        f"SSE log stream error: task={task_id} seq={seq} code={exc.code} msg={exc.message}"
+                        "SSE log stream error: task=%s seq=%s code=%s msg=%s",
+                        task_id,
+                        seq,
+                        exc.code,
+                        exc.message,
                     )
                     yield _build_sse_event("error", {"error": exc.code, "message": exc.message})
                     return

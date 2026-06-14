@@ -94,7 +94,9 @@ async def airflow_conflict_handler(request: Request, exc: AirflowConflict) -> JS
     )
 
 
-async def airflow_integration_handler(request: Request, exc: AirflowIntegrationError) -> JSONResponse:
+async def airflow_integration_handler(
+    request: Request, exc: AirflowIntegrationError
+) -> JSONResponse:
     logger.exception("Unhandled Airflow integration error: %s", exc.message)
     return _envelope(
         code=exc.code,
@@ -105,7 +107,9 @@ async def airflow_integration_handler(request: Request, exc: AirflowIntegrationE
     )
 
 
-async def validation_exception_handler(request: Request, exc: RequestValidationError) -> JSONResponse:
+async def validation_exception_handler(
+    request: Request, exc: RequestValidationError
+) -> JSONResponse:
     return _envelope(
         code="VALIDATION_ERROR",
         message="Request payload failed validation.",
@@ -115,7 +119,9 @@ async def validation_exception_handler(request: Request, exc: RequestValidationE
     )
 
 
-async def visualization_schema_handler(request: Request, exc: VisualizationSchemaError) -> JSONResponse:
+async def visualization_schema_handler(
+    request: Request, exc: VisualizationSchemaError
+) -> JSONResponse:
     return _envelope(
         code="VISUALIZATION_SCHEMA_ERROR",
         message=str(exc),
@@ -125,7 +131,9 @@ async def visualization_schema_handler(request: Request, exc: VisualizationSchem
     )
 
 
-async def visualization_storage_handler(request: Request, exc: VisualizationStorageError) -> JSONResponse:
+async def visualization_storage_handler(
+    request: Request, exc: VisualizationStorageError
+) -> JSONResponse:
     logger.error("Visualization storage error: %s", exc)
     return _envelope(
         code="VISUALIZATION_STORAGE_ERROR",

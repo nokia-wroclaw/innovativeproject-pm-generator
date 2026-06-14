@@ -48,8 +48,13 @@ const apiUnsupported = computed(
   () => status.value?.status === 'unsupported_schema',
 );
 
+/** API still has an old summary_error.json while preview columns already match PM schema. */
+const staleSchemaResult = computed(
+  () => previewSchema.value.ok && apiUnsupported.value,
+);
+
 const showUnsupported = computed(
-  () => previewUnsupported.value || apiUnsupported.value,
+  () => previewUnsupported.value || (apiUnsupported.value && !previewSchema.value.ok),
 );
 
 const unsupportedSummary = computed(() => {
@@ -135,6 +140,9 @@ const showRetry = computed(() => {
   if (showResults.value || showUnsupported.value) {
     return false;
   }
+  if (staleSchemaResult.value) {
+    return true;
+  }
   return (
     pollTimedOut.value ||
     pipelineTimedOut.value ||
@@ -146,6 +154,9 @@ const showRetry = computed(() => {
 });
 
 const problemTitle = computed(() => {
+  if (staleSchemaResult.value) {
+    return 'Visualization needs to be re-run';
+  }
   if (pollError.value) {
     return 'Could not load visualization status';
   }
@@ -165,6 +176,13 @@ const problemTitle = computed(() => {
 });
 
 const problemMessage = computed(() => {
+  if (staleSchemaResult.value) {
+    return (
+      'An older pipeline run marked this dataset as incompatible, but its columns ' +
+      'match the PM schema now (e.g. bts_anon / distname_anon aliases). ' +
+      'Retry to regenerate visualizations.'
+    );
+  }
   if (pollError.value) {
     return pollError.value;
   }
@@ -238,7 +256,7 @@ const problemMessage = computed(() => {
     </div>
 
     <div
-      v-else-if="showRetry || status?.status === 'failed' || status?.status === 'unavailable'"
+      v-else-if="showRetry || staleSchemaResult || status?.status === 'failed' || status?.status === 'unavailable'"
       class="s3-dataset-viz-problem"
     >
       <VisualizationDagLink

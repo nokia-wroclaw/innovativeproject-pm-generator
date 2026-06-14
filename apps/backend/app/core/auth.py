@@ -221,4 +221,6 @@ def require_modeling_admin(payload: TokenPayload = Depends(require_auth)) -> Tok
 
 
 def get_user_identity(payload: TokenPayload) -> str:
-    return payload.preferred_username or payload.email or payload.sub or payload.user_id or "unknown"
+    return (
+        payload.preferred_username or payload.email or payload.sub or payload.user_id or "unknown"
+    )

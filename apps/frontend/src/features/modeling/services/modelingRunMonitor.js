@@ -3,7 +3,7 @@ import { reactive } from 'vue';
 import { getModelingRunStatus } from './modelingApi.js';
 
 const TERMINAL_STATUSES = new Set(['success', 'failed']);
-const POLL_INTERVAL_MS = 3_000;
+const POLL_INTERVAL_MS = 10_000;
 const TOAST_TTL_MS = 6_000;
 const STORAGE_KEY = 'genpm_modeling_runs';
 const AUTH_ERROR_CODES = new Set([

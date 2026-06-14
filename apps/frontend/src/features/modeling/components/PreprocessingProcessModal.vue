@@ -8,7 +8,10 @@
     <div class="space-y-4">
       <p class="text-sm text-fg-muted">
         Process configuration
-        <span class="font-mono text-fg">preprocessing_feature_engineering</span>.
+        <span class="font-mono text-fg">preprocessing_feature_engineering</span>
+        · DAG
+        <span class="font-mono text-fg">preprocessing_pipeline</span>.
+        Output path is assigned automatically by the backend.
       </p>
 
       <ModelingRunStatusPanel
@@ -139,12 +142,6 @@ const sections = [
     fields: [
       { key: 'kpi_definitions_raw_path', label: 'KPI definitions raw path', type: 'select', required: true, placeholder: 'Select KPI definitions parquet' },
       { key: 'simple_reports_raw_path', label: 'Simple reports raw path', type: 'select', required: true, placeholder: 'Select simple reports parquet' },
-    ],
-  },
-  {
-    title: 'Output paths',
-    fields: [
-      { key: 'output_path_prefix', label: 'Output path prefix', required: true, placeholder: '.../preprocessed_dataset' },
     ],
   },
   {
@@ -325,7 +322,7 @@ watch(
       return;
     }
     formError.value = '';
-    form.dataset_id = props.datasets[0]?.id ?? '';
+    form.dataset_id = props.datasets.find((dataset) => dataset.type === 'RAW')?.id ?? '';
     Object.assign(form, preprocessingDefaults);
   },
   { immediate: true },
@@ -333,12 +330,18 @@ watch(
 
 function buildDagArgs() {
   return Object.fromEntries(
-    allFields.map((field) => {
-      const value = form[field.key];
-      if (field.key === 'min_joint_windows_abs') return [field.key, value === '' ? null : value];
-      if (field.type === 'checkbox' || field.valueType === 'number') return [field.key, value];
-      return [field.key, String(value).trim()];
-    }),
+    allFields
+      .map((field) => {
+        const value = form[field.key];
+        if (field.key === 'min_joint_windows_abs') {
+          return [field.key, value === '' ? null : value];
+        }
+        if (field.type === 'checkbox' || field.valueType === 'number') {
+          return [field.key, value];
+        }
+        return [field.key, String(value).trim()];
+      })
+      .filter(([, value]) => value !== '' && value !== null),
   );
 }
 

@@ -19,6 +19,9 @@ x-airflow-common:
     AIRFLOW__API_AUTH__JWT_SECRET: ${AIRFLOW__API_AUTH__JWT_SECRET:-airflow_jwt_secret}
     AIRFLOW__API_AUTH__JWT_ISSUER: ${AIRFLOW__API_AUTH__JWT_ISSUER:-airflow}
     AIRFLOW__SCHEDULER__ENABLE_HEALTH_CHECK: 'true'
+    AIRFLOW__DATABASE__SQL_ALCHEMY_POOL_SIZE: '20'
+    AIRFLOW__DATABASE__SQL_ALCHEMY_MAX_OVERFLOW: '20'
+    AIRFLOW__DATABASE__SQL_ALCHEMY_POOL_RECYCLE: '1800'
     _PIP_ADDITIONAL_REQUIREMENTS: ${_PIP_ADDITIONAL_REQUIREMENTS:-apache-airflow-providers-apache-spark}
     AIRFLOW_CONN_SPARK_DEFAULT: "spark://${USER}-genpm-spark:7077"
     AIRFLOW_CONFIG: '/opt/airflow/config/airflow.cfg'
@@ -26,6 +29,9 @@ x-airflow-common:
     GENPM_PYSPARK_PYTHON: /opt/airflow/genpm-venv/bin/python
     GENPM_SPARK_EXECUTOR_PYTHON: ${GENPM_SPARK_EXECUTOR_PYTHON:-/home/${USER:-hostuser}/app/.venv/bin/python3}
     GENPM_SCHEMA_PATH: /opt/airflow/shared/pm_schema_columns.json
+    # Dev override: ship the live-mounted genpm to executors via --py-files at submit time so code
+    # edits run without rebuilding images. Unset in prod, where the pinned wheel in the image is used.
+    GENPM_PY_FILES: /opt/airflow/artifacts/genpm.zip
 
   volumes:
     - ${AIRFLOW_PROJ_DIR:-.}/dags:/opt/airflow/dags

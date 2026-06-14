@@ -4,9 +4,9 @@ from pathlib import PurePosixPath
 from typing import Any
 
 from botocore.exceptions import ClientError  # type: ignore[import-untyped]
-from app.services.s3.service import get_s3_client_internal
 
 from app.models.auth import TokenPayload
+from app.services.s3.service import get_s3_client_internal
 
 logger = logging.getLogger(__name__)
 
@@ -17,6 +17,7 @@ class VisualizationStorageError(RuntimeError):
 
 def _require_s3_bucket() -> str:
     from app.core.config import get_settings
+
     bucket = get_settings().s3_bucket
     if not bucket:
         raise VisualizationStorageError(
@@ -81,6 +82,20 @@ def load_visualization_artifact(dataset_s3_key: str) -> dict[str, Any] | None:
     return None
 
 
+def delete_visualization_error_artifact(dataset_s3_key: str) -> None:
+    """Remove a stale summary_error.json written by an older schema check or Spark run."""
+    bucket = _require_s3_bucket()
+    _, error_key = visualization_artifact_keys(dataset_s3_key)
+    try:
+        get_s3_client_internal().delete_object(Bucket=bucket, Key=error_key)
+    except ClientError as exc:
+        logger.warning(
+            "Failed to delete visualization error artifact for s3_key=%s: %s",
+            dataset_s3_key,
+            exc,
+        )
+
+
 def persist_unsupported_schema_artifact(dataset_s3_key: str, payload: TokenPayload) -> None:
     bucket = _require_s3_bucket()
     _, error_key = visualization_artifact_keys(dataset_s3_key)
@@ -93,7 +108,9 @@ def persist_unsupported_schema_artifact(dataset_s3_key: str, payload: TokenPaylo
             ContentType="application/json",
         )
     except ClientError as exc:
-        logger.warning(f"Failed to write unsupported_schema artifact for s3_key={dataset_s3_key}: {exc}")
+        logger.warning(
+            "Failed to write unsupported_schema artifact for s3_key=%s: %s", dataset_s3_key, exc
+        )
 
 
 def status_from_artifact(artifact: dict[str, Any]) -> str:

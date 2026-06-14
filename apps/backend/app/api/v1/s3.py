@@ -1,5 +1,3 @@
-import uuid
-
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 
@@ -53,7 +51,6 @@ def get_s3_service(
 
 def _airflow_service() -> AirflowService:
     return get_airflow_service()
-
 
 
 @router.post("/datasets", response_model=DatasetRead)
@@ -122,7 +119,9 @@ async def complete_multipart(
     assert_raw_dataset(dataset, context="upload")
 
     parts_dicts = [{"PartNumber": p.PartNumber, "ETag": p.ETag} for p in request.parts]
-    response_dict = service.complete_multipart_upload(dataset.s3_key, request.upload_id, parts_dicts)
+    response_dict = service.complete_multipart_upload(
+        dataset.s3_key, request.upload_id, parts_dicts
+    )
     return CompleteMultipartResponse.model_validate(response_dict)
 
 

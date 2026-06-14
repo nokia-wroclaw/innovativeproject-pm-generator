@@ -93,9 +93,9 @@ const processDefinitions = {
   [PREPROCESSING_PROCESS]: {
     processType: PREPROCESSING_PROCESS,
     title: 'Preprocessing + Feature Engineering',
-    dagId: 'moj_pierwszy_dag',
-    description: 'Runs preprocessing and feature engineering in one asynchronous DAG.',
-    emptyText: 'This process saves a preprocessed dataset and a featured dataset.',
+    dagId: 'preprocessing_pipeline',
+    description: 'Runs Spark preprocessing on RAW PM data and writes parquet artifacts to S3.',
+    emptyText: 'Outputs include wide/long indexed windows and scaling params under the dataset prefix.',
   },
   [TRAINING_DATASET_PROCESS]: {
     processType: TRAINING_DATASET_PROCESS,

@@ -6,5 +6,12 @@
     "kpi_value",
     "start_date",
     "distname"
-  ]
+  ],
+  "column_aliases": {
+    "bts_id": ["bts_anon"],
+    "distname": ["distname_anon"]
+  },
+  "derived_columns": {
+    "start_date": "start_time"
+  }
 }

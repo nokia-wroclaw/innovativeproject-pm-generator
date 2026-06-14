@@ -1,12 +1,17 @@
 import uuid
-from typing import Literal
+from typing import Any, Literal
 
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 
-from app.core.auth import assert_modeling_admin, get_user_identity, require_auth, require_modeling_admin
+from app.core.auth import (
+    assert_modeling_admin,
+    get_user_identity,
+    require_auth,
+    require_modeling_admin,
+)
 from app.db.database import db_manager
-from app.db.schemas import DagRunStatus, DatasetStatus
+from app.db.schemas import DagRunStatus, DatasetStatus, DatasetType
 from app.models.auth import TokenPayload
 from app.models.dags import TriggerRequest
 from app.models.modeling import (
@@ -22,17 +27,28 @@ from app.models.modeling import (
     ModelingRunStatus,
     ModelingTrainedModelOption,
 )
+from app.models.spark_jobs import PreprocessingConfigError
 from app.services.airflow.errors import AirflowIntegrationError, AirflowNotFound
 from app.services.airflow.runtime import get_airflow_service
 from app.services.airflow.service import AirflowService
+from app.services.preprocessing.conf import (
+    PREPROCESSING_DAG_ID,
+    preprocessing_artifact_paths,
+)
 from app.services.s3.service import S3Service
+from app.services.spark_dag_conf import build_preprocessing_dag_conf
 
 router = APIRouter(prefix="/modeling", tags=["modeling"])
 
+# Training / generate DAGs are not implemented yet — these ids are intentional placeholders.
+# Triggering them returns AirflowNotFound (handled as a clear 404) until the DAGs are added.
+TRAINING_DAG_ID = "training_dataset_pipeline"
+GENERATE_DAG_ID = "generate_pipeline"
+
 DAG_ID_MAP: dict[ModelingProcessType, str] = {
-    "preprocessing_feature_engineering": "moj_pierwszy_dag",
-    "training_dataset": "moj_pierwszy_dag",
-    "generate": "moj_pierwszy_dag",
+    "preprocessing_feature_engineering": PREPROCESSING_DAG_ID,
+    "training_dataset": TRAINING_DAG_ID,
+    "generate": GENERATE_DAG_ID,
 }
 
 # Short dag_run_id prefix — long ids (with full process_type) are harder for Airflow to accept.
@@ -109,6 +125,19 @@ def _airflow_service() -> AirflowService:
     return get_airflow_service()
 
 
+def _preprocessing_logs(status: DagRunStatus) -> list[str]:
+    logs = [
+        "DAG configuration received from Airflow conf.",
+        "Spark preprocessing job submitted (read RAW + auxiliary parquets).",
+    ]
+    if status in {DagRunStatus.RUNNING, DagRunStatus.SUCCESS, DagRunStatus.FAILED}:
+        logs.append("KPI coverage filtering and windowing in progress.")
+    if status == DagRunStatus.SUCCESS:
+        logs.append("Preprocessed artifacts written to S3. Pipeline completed successfully.")
+    if status == DagRunStatus.FAILED:
+        logs.append("Airflow marked the run as failed. Check task logs in the DAG view.")
+    return logs
+
 
 def _mock_logs(status: DagRunStatus, process_type: ModelingProcessType) -> list[str]:
     if process_type == "generate":
@@ -123,6 +152,9 @@ def _mock_logs(status: DagRunStatus, process_type: ModelingProcessType) -> list[
         if status == DagRunStatus.FAILED:
             logs.append("Generation failed. Check task logs in the DAG view.")
         return logs
+
+    if process_type == "preprocessing_feature_engineering":
+        return _preprocessing_logs(status)
 
     logs = [
         "DAG configuration received from Airflow conf.",
@@ -143,29 +175,54 @@ def _mock_metrics(
 ) -> dict[str, float] | None:
     if status != DagRunStatus.SUCCESS:
         return None
+    if process_type == "preprocessing_feature_engineering":
+        return None
     if process_type == "generate":
         return {"traces": 128.0, "events": 45210.0, "avg_trace_length": 353.2}
     return {"mae": 0.083, "rmse": 0.127, "mape": 4.82, "validation_loss": 0.018}
 
 
-def _mock_artifacts(
-    status: DagRunStatus, run_id: str, process_type: ModelingProcessType
+def _preprocessing_artifacts(
+    status: DagRunStatus,
+    conf: dict[str, Any] | None,
 ) -> list[ModelingArtifact]:
     saved: Literal["pending", "saved"] = "saved" if status == DagRunStatus.SUCCESS else "pending"
-    base = f"s3://genpm-modeling/{run_id}"
-    if process_type == "preprocessing_feature_engineering":
+    dag_args = (conf or {}).get("dag_args") if isinstance(conf, dict) else None
+    output_prefix = (
+        str(dag_args.get("output_path_prefix")).strip()
+        if isinstance(dag_args, dict) and dag_args.get("output_path_prefix")
+        else ""
+    )
+    if output_prefix:
+        paths = preprocessing_artifact_paths(output_prefix)
         return [
             ModelingArtifact(
                 kind="preprocessed_dataset",
-                path=f"{base}/preprocessed_dataset.parquet",
+                path=paths["pm_df_long_indexed_winds"],
                 status=saved,
             ),
             ModelingArtifact(
                 kind="featured_dataset",
-                path=f"{base}/featured_dataset.parquet",
-                status=saved,
+                path=paths["scaling_params_df"],
+                status="pending",
             ),
         ]
+    return [
+        ModelingArtifact(kind="preprocessed_dataset", path="", status="pending"),
+        ModelingArtifact(kind="featured_dataset", path="", status="pending"),
+    ]
+
+
+def _mock_artifacts(
+    status: DagRunStatus,
+    run_id: str,
+    process_type: ModelingProcessType,
+    conf: dict[str, Any] | None = None,
+) -> list[ModelingArtifact]:
+    saved: Literal["pending", "saved"] = "saved" if status == DagRunStatus.SUCCESS else "pending"
+    base = f"s3://genpm-modeling/{run_id}"
+    if process_type == "preprocessing_feature_engineering":
+        return _preprocessing_artifacts(status, conf)
     if process_type == "generate":
         return [
             ModelingArtifact(
@@ -305,18 +362,38 @@ async def trigger_modeling_run(
             status_code=409,
             detail="Dataset must be COMPLETED before modeling can start",
         )
+    if process_type == "preprocessing_feature_engineering" and dataset.type != DatasetType.RAW:
+        raise HTTPException(
+            status_code=409,
+            detail="Preprocessing requires a RAW dataset as input",
+        )
 
     dag_id = DAG_ID_MAP[process_type]
     run_id = f"genpm_{_RUN_ID_PREFIX[process_type]}_{uuid.uuid4().hex[:12]}"
-    dag_args = {**body.dag_args, "dataset_id": dataset.id}
-    conf = {
-        "genpm_run_id": run_id,
-        "dataset_id": dataset.id,
-        "dataset_name": dataset.file_name,
-        "s3_key": dataset.s3_key,
-        "dag_args": dag_args,
-        "process_type": process_type,
-    }
+    user_dag_args = dict(body.dag_args)
+    if process_type == "preprocessing_feature_engineering":
+        try:
+            conf_model = build_preprocessing_dag_conf(
+                genpm_run_id=run_id,
+                dataset_id=dataset.id,
+                s3_key=dataset.s3_key,
+                dataset_name=dataset.file_name,
+                user_dag_args=user_dag_args,
+                process_type=process_type,
+            )
+        except PreprocessingConfigError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        conf = conf_model.to_airflow_conf()
+    else:
+        resolved_dag_args = {**user_dag_args, "dataset_id": dataset.id}
+        conf = {
+            "genpm_run_id": run_id,
+            "dataset_id": dataset.id,
+            "dataset_name": dataset.file_name,
+            "s3_key": dataset.s3_key,
+            "dag_args": resolved_dag_args,
+            "process_type": process_type,
+        }
     if process_type != "preprocessing_feature_engineering":
         conf["dataset_type"] = body.dataset_type
 
@@ -405,5 +482,5 @@ async def get_modeling_run_status(
         duration_ms=run.duration_ms,
         logs=_mock_logs(run.status, process_type),
         metrics=_mock_metrics(run.status, process_type),
-        artifacts=_mock_artifacts(run.status, run.run_id, process_type),
+        artifacts=_mock_artifacts(run.status, run.run_id, process_type, run.conf),
     )

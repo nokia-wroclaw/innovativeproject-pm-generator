@@ -1,5 +1,3 @@
-from typing import Any
-
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
 
@@ -26,7 +24,7 @@ def get_pipeline_service(
     "/pipelines",
     response_model=list[PipelineRunRead],
 )
-def list_pipeline_runs(
+async def list_pipeline_runs(
     service: PipelineService = Depends(get_pipeline_service),
 ) -> list[PipelineRunRead]:
     runs = service.get_runs()
@@ -38,11 +36,15 @@ def list_pipeline_runs(
     response_model=PipelineRunRead,
     status_code=status.HTTP_201_CREATED,
 )
-def create_pipeline_run(
+async def create_pipeline_run(
     body: PipelineRunCreate,
     service: PipelineService = Depends(get_pipeline_service),
 ) -> PipelineRunRead:
-    new_run = service.create_run(body.dataset_id, body.pipeline_type)
+    new_run = await service.create_run(
+        body.dataset_id,
+        body.pipeline_type,
+        body.dag_args,
+    )
     return PipelineRunRead.model_validate(new_run)
 
 
@@ -59,8 +61,8 @@ def delete_pipeline_run(
     if not run:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Pipeline run with ID {run_id} not found."
+            detail=f"Pipeline run with ID {run_id} not found.",
         )
-    
+
     service.delete_run(run_id)
     return PipelineRunDeleteResponse(message="deleted", run_id=run_id)
