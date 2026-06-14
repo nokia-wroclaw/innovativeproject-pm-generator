@@ -1,5 +1,6 @@
 """Dataset metadata extraction for the wide windowed PM parquet."""
 
+import datetime
 import json
 import os
 from pathlib import Path
@@ -25,7 +26,9 @@ def get_kpi_list(df: DataFrame) -> list[str]:
 def get_metadata(df: DataFrame) -> dict[str, Any]:
     kpi_cols = get_kpi_list(df)
 
-    temporal = df.agg(
+    agg_row = df.agg(
+        f.count("*").alias("n_rows"),
+        f.countDistinct("distname").alias("n_cells"),
         f.min("window_anchor").alias("window_min"),
         f.max("window_anchor").alias("window_max"),
         f.countDistinct("window_anchor").alias("n_windows"),
@@ -36,24 +39,25 @@ def get_metadata(df: DataFrame) -> dict[str, Any]:
 
     spatial_rows = (
         df.groupBy("bts_id")
-        .agg(f.countDistinct("distname").alias("n_cells"))
+        .agg(f.countDistinct("distname").alias("n_cells_in_bts"))
         .orderBy("bts_id")
         .collect()
     )
-    cells_per_bts = {r["bts_id"]: r["n_cells"] for r in spatial_rows}
+    cells_per_bts = {r["bts_id"]: r["n_cells_in_bts"] for r in spatial_rows}
 
     return {
+        "n_rows": int(agg_row["n_rows"]),
         "temporal": {
-            "window_anchor_min": str(temporal["window_min"]),
-            "window_anchor_max": str(temporal["window_max"]),
-            "n_windows": int(temporal["n_windows"]),
-            "hour_idx_range": [int(temporal["hour_min"]), int(temporal["hour_max"])],
-            "hours_per_window": int(temporal["hours_per_window"]),
+            "window_anchor_min": str(agg_row["window_min"]),
+            "window_anchor_max": str(agg_row["window_max"]),
+            "n_windows": int(agg_row["n_windows"]),
+            "hour_idx_range": [int(agg_row["hour_min"]), int(agg_row["hour_max"])],
+            "hours_per_window": int(agg_row["hours_per_window"]),
         },
         "spatial": {
             "n_bts": len(cells_per_bts),
             "bts_ids": sorted(cells_per_bts.keys()),
-            "n_cells": int(sum(cells_per_bts.values())),
+            "n_cells": int(agg_row["n_cells"]),
             "cells_per_bts": {k: int(v) for k, v in cells_per_bts.items()},
         },
         "kpis": {
@@ -98,6 +102,7 @@ def get_summary_df(df: DataFrame) -> pd.DataFrame:
 def build_metadata_json(df: DataFrame, dataset_path: str | None = None) -> dict[str, Any]:
     kpi_cols = get_kpi_list(df)
     metadata = get_metadata(df)
+    n_rows = metadata.pop("n_rows")
     summary = get_summary_df(df)
 
     kpi_stats = {
@@ -106,9 +111,10 @@ def build_metadata_json(df: DataFrame, dataset_path: str | None = None) -> dict[
     }
 
     return {
+        "created_at": datetime.datetime.now(datetime.UTC).isoformat(),
         "dataset": {
             **({"path": dataset_path} if dataset_path else {}),
-            "n_rows": df.count(),
+            "n_rows": n_rows,
             "n_columns": len(df.columns),
             "meta_columns": sorted(_META_COLS),
             "kpi_count": len(kpi_cols),

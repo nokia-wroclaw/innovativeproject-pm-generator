@@ -3,6 +3,9 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
+from genpm.preprocessing.defaults import finalize_dag_args
+from genpm.utils.s3_paths import s3a_path
+
 
 def _derive_intermediate_path(output_path_prefix: str) -> str:
     """`<base>/intermediate` sibling of the `<base>/final` output prefix."""
@@ -17,7 +20,8 @@ class PreprocessingConfig:
     pm_data_raw_path: str
     kpi_definitions_raw_path: str
     simple_reports_raw_path: str
-    # Intermediate for saving
+    # Output paths
+    output_path_prefix: str
     intermediate_path: str
     # KPI coverage - filter thresholds
     # Minimum non-null fraction over a series' own active range (Stage 0 density check)
@@ -67,8 +71,6 @@ class PreprocessingConfig:
         dataclass fields. Defaults + required-key validation live in
         `genpm.preprocessing.defaults.finalize_dag_args`.
         """
-        from genpm.preprocessing.defaults import finalize_dag_args
-        from genpm.utils.s3_paths import s3a_path
 
         dag_args = finalize_dag_args(conf=conf)
         output_prefix = s3a_path(bucket, str(dag_args["output_path_prefix"]))

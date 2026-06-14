@@ -3,9 +3,8 @@ from pyspark.sql import functions as f
 
 from genpm.preprocessing.configs import PreprocessingConfig
 from genpm.preprocessing.logic import imputing, kpi_coverage, scaling, simple_logic
-from genpm.raw_vis.pm_schema import normalize_pm_dataframe
 from genpm.preprocessing.metadata import dump_metadata_json
-from genpm.utils.consts import MAX_IMPUTABLE_GAP, SHARED_DIR_PATH
+from genpm.utils.consts import MAX_IMPUTABLE_GAP
 from genpm.utils.logger import get_logger
 from genpm.utils.spark_session import SparkDataManager
 from genpm.utils.utils import validate_windowed_pm
@@ -355,12 +354,12 @@ def run_preprocessing(sdm: SparkDataManager, preprocessing_cfg: PreprocessingCon
     #     mode="overwrite",
     # )
 
-    pm_df_long_scaled = sdm.read_parquet(
-        PREPROCESSED_DATASET_PATH / "intermediate" / "pm_df_long_scaled"
-    )
-    good_windows_selected = sdm.read_parquet(
-        PREPROCESSED_DATASET_PATH / "intermediate" / "good_windows_selected"
-    )
+    # pm_df_long_scaled = sdm.read_parquet(
+    #     PREPROCESSED_DATASET_PATH / "intermediate" / "pm_df_long_scaled"
+    # )
+    # good_windows_selected = sdm.read_parquet(
+    #     PREPROCESSED_DATASET_PATH / "intermediate" / "good_windows_selected"
+    # )
 
     # This list, has to be created here, as it is brought from filtered
     selected_kpis = [r["kpi_id"] for r in pm_df_long_scaled.select("kpi_id").distinct().collect()]
@@ -414,9 +413,6 @@ def run_preprocessing(sdm: SparkDataManager, preprocessing_cfg: PreprocessingCon
     )
     logger.info(f"Windows materialized — {len(_KPI_COLS)} KPI columns")
 
-    # HELPER DFS:
-    unique_kpis = pm_df_long_indexed_winds.select("kpi_id").distinct()
-
     # Save preprocessed data
 
     dataset_paths_and_dfs: dict[str, DataFrame] = {
@@ -426,7 +422,6 @@ def run_preprocessing(sdm: SparkDataManager, preprocessing_cfg: PreprocessingCon
         "scaling_params_df": params_df,
         # Visual and forms HELPER dfs
         "HELPER_pm_data_const_kpi": pm_df_const_kpi,
-        "HELPER_unique_kpis": unique_kpis,
         "HELPER_simple_reports": simple_reports_pivoted,
         "HELPER_kpi_definitions": kpi_definitions,
         # TODO: add other helpers
@@ -447,12 +442,14 @@ def run_preprocessing(sdm: SparkDataManager, preprocessing_cfg: PreprocessingCon
             mode="overwrite",
         )
 
-    logger.info("Preprocessing pipeline complete")
-
     metadata_json_path = "/".join([preprocessing_cfg.output_path_prefix, "pm_metadata.json"])
     logger.info(f"Writing dataset metadata JSON to {metadata_json_path}")
     dump_metadata_json(
         pm_df_wide_materialized_windows,
         output_path=metadata_json_path,
-        dataset_path="/".join([preprocessing_cfg.output_path_prefix, "pm_df_wide_indexed_winds"]),
+        dataset_path="/".join(
+            [preprocessing_cfg.output_path_prefix, "pm_df_wide_materialized_windows"]
+        ),
     )
+
+    logger.info("Preprocessing pipeline complete")
