@@ -17,6 +17,7 @@ from app.services.airflow.runtime import (
     start_airflow_runtime,
     stop_airflow_runtime,
 )
+from app.services.runs.poller import ProcessRunPoller
 
 logger = logging.getLogger(__name__)
 
@@ -25,6 +26,7 @@ logger = logging.getLogger(__name__)
 async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
     schemas.Base.metadata.create_all(bind=db_manager.engine)
     setup_logging()
+    poller = ProcessRunPoller()
     try:
         await start_airflow_runtime()
     except Exception:
@@ -32,9 +34,11 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
             "Airflow runtime failed to start — DAG endpoints will be unavailable "
             "until AIRFLOW_URL / AIRFLOW_USERNAME / AIRFLOW_PASSWORD are configured."
         )
+    await poller.start()
     try:
         yield
     finally:
+        await poller.stop()
         await stop_airflow_runtime()
 
 

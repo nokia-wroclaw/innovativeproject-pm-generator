@@ -107,6 +107,9 @@ def _driver_pythonpath() -> str:
 def infra_env_vars(*, extra: dict[str, str] | None = None) -> dict[str, str]:
     """Infrastructure env vars forwarded to the Spark job — no dag_run business parameters."""
     env_vars = {
+        # Tells SparkDataManager it's a cluster submit so it leaves spark-submit's --master alone
+        # (otherwise it would override it with local[N] inside the Airflow worker).
+        "GENPM_SPARK_SUBMIT": "1",
         "GENPM_PYSPARK_PYTHON": spark_driver_python(),
         "GENPM_SPARK_EXECUTOR_PYTHON": spark_executor_python(),
         "S3_URL": os.environ.get("S3_URL", "http://minio:9000"),
