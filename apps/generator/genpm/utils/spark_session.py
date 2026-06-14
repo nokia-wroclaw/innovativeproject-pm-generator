@@ -16,7 +16,6 @@ import os
 import signal
 from pathlib import Path
 
-from pyspark import SparkConf
 from pyspark.sql import DataFrame, SparkSession
 
 from .logger import get_logger
@@ -52,10 +51,14 @@ class SparkDataManager:
         for conf, val in minio_spark_conf().items():
             builder = builder.config(conf, val)
 
-        # Only pick a master / sizing when spark-submit did not already supply one.
-        if not _submit_master_present():
+        # Under spark-submit (Airflow) the master / memory / cores come from --master / --conf — we
+        # must NOT set them here or compute collapses to local mode in the Airflow worker. Only a
+        # genuine bare-CLI / notebook run (no spark-submit) needs the local[N] fallback.
+        if _running_under_spark_submit():
+            logger.info("Running under spark-submit — using its master/conf (no local override)")
+        else:
             cores = os.getenv("SPARK_CORE_NUMBER") or "8"
-            logger.info(f"No spark.master from spark-submit — defaulting to local[{cores}]")
+            logger.info(f"No spark-submit detected — defaulting to local[{cores}]")
             builder = (
                 builder.master(f"local[{cores}]")
                 .config("spark.driver.memory", os.getenv("SPARK_DRIVER_MEMORY") or "6g")
@@ -109,15 +112,17 @@ class SparkDataManager:
         return self.read_parquet(path)
 
 
-def _submit_master_present() -> bool:
-    """True when spark-submit (or the environment) already chose a master.
+def _running_under_spark_submit() -> bool:
+    """True when this process was launched by spark-submit (so a master is already configured).
 
-    ``SparkConf()`` loads the system properties / env that ``spark-submit --master`` populates,
-    so this is reliable under Airflow and empty for a bare CLI invocation.
+    Must be decidable *before* the Spark gateway/JVM exists — a fresh ``SparkConf()`` is empty at
+    that point and cannot see the CLI ``--master``. We instead use deterministic env signals:
+
+    * ``GENPM_SPARK_SUBMIT=1`` — set by our Airflow DAG layer (``lib.spark_config.infra_env_vars``).
+    * ``PYSPARK_GATEWAY_PORT`` — set by spark-submit's ``PythonRunner`` for any submitted Python app
+      (covers a manual ``spark-submit run_*.py`` too).
     """
-    if os.environ.get("MASTER") or os.environ.get("SPARK_MASTER"):
-        return True
-    return bool(SparkConf().get("spark.master", None))
+    return os.environ.get("GENPM_SPARK_SUBMIT") == "1" or "PYSPARK_GATEWAY_PORT" in os.environ
 
 
 def minio_spark_conf() -> dict[str, str]:

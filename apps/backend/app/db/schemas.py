@@ -59,7 +59,6 @@ class DagRunStatus(enum.StrEnum):
     QUEUED = "queued"
 
 
-
 class Generation(Base):
     __tablename__ = "generations"
 
@@ -86,9 +85,7 @@ class Dataset(Base):
         primary_key=True,
     )
 
-    __table_args__ = (
-        UniqueConstraint("s3_key", "type", name="uq_dataset_s3_key_type"),
-    )
+    __table_args__ = (UniqueConstraint("s3_key", "type", name="uq_dataset_s3_key_type"),)
 
 
 class PipelineRun(Base):
@@ -103,6 +100,33 @@ class PipelineRun(Base):
         DateTime, default=datetime.datetime.utcnow
     )
 
+
+class ProcessRun(Base):
+    """In-flight modeling/process run tracked by the backend poller.
+
+    Created when a process DAG (currently preprocessing) is triggered, advanced by the background
+    poller, which on success registers the output as a PREPROCESSED dataset in this (the user's) DB.
+    """
+
+    __tablename__ = "process_runs"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    run_id: Mapped[str] = mapped_column(String, nullable=False, unique=True, index=True)
+    dag_id: Mapped[str] = mapped_column(String, nullable=False)
+    process_type: Mapped[str] = mapped_column(String, nullable=False)
+    user_uuid: Mapped[uuid.UUID] = mapped_column(Uuid, index=True)
+    input_dataset_id: Mapped[int | None] = mapped_column(
+        Integer, ForeignKey("datasets.id", ondelete="SET NULL"), nullable=True
+    )
+    output_s3_key: Mapped[str] = mapped_column(String, nullable=False)
+    output_name: Mapped[str] = mapped_column(String, nullable=False)
+    status: Mapped[PipelineRunStatus] = mapped_column(default=PipelineRunStatus.RUNNING, index=True)
+    registered_dataset_id: Mapped[int | None] = mapped_column(
+        Integer, ForeignKey("datasets.id", ondelete="SET NULL"), nullable=True
+    )
+    created_at: Mapped[datetime.datetime] = mapped_column(
+        DateTime, default=datetime.datetime.utcnow
+    )
 
 
 class TrainedModel(Base):
@@ -124,4 +148,3 @@ class TrainedModel(Base):
     @property
     def path(self) -> str:
         return f"s3://{get_settings().s3_bucket}/{self.s3_key}"
-

@@ -1,3 +1,4 @@
+import logging
 import json
 import re
 import unicodedata
@@ -16,7 +17,15 @@ from app.core.auth import (
 )
 from app.core.config import get_settings
 from app.db.database import db_manager
-from app.db.schemas import DagRunStatus, Dataset, DatasetStatus, DatasetType, TrainedModel
+from app.db.schemas import (
+    DagRunStatus,
+    Dataset,
+    DatasetStatus,
+    DatasetType,
+    PipelineRunStatus,
+    ProcessRun,
+    TrainedModel,
+)
 from app.models.auth import TokenPayload
 from app.models.dags import TriggerRequest
 from app.models.modeling import (
@@ -47,6 +56,8 @@ from app.services.preprocessing.conf import (
 )
 from app.services.s3.service import S3Service, get_s3_client_external, get_s3_client_internal
 from app.services.spark_dag_conf import build_preprocessing_dag_conf
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/modeling", tags=["modeling"])
 
@@ -103,10 +114,42 @@ _PROCESS_TITLES: dict[ModelingProcessType, str] = {
 }
 
 
-
-
 def _get_s3_service(db: Session = Depends(db_manager.get_db)) -> S3Service:
     return S3Service(db=db)
+
+
+def _record_process_run(
+    db: Session,
+    *,
+    run_id: str,
+    dag_id: str,
+    process_type: str,
+    user_uuid: uuid.UUID,
+    input_dataset_id: int,
+    output_s3_key: str,
+    output_name: str,
+) -> None:
+    """Persist an in-flight run so the backend poller can register its output on completion.
+
+    Best-effort: a failure here must not fail the trigger request (the DAG is already running).
+    """
+    try:
+        db.add(
+            ProcessRun(
+                run_id=run_id,
+                dag_id=dag_id,
+                process_type=process_type,
+                user_uuid=user_uuid,
+                input_dataset_id=input_dataset_id,
+                output_s3_key=output_s3_key,
+                output_name=output_name,
+                status=PipelineRunStatus.RUNNING,
+            )
+        )
+        db.commit()
+    except Exception:
+        db.rollback()
+        logger.exception("Failed to record ProcessRun for run_id=%s", run_id)
 
 
 def _airflow_service() -> AirflowService:
@@ -654,8 +697,7 @@ async def trigger_generate_run(
             raise HTTPException(
                 status_code=400,
                 detail=(
-                    f"Comparison dataset with ID {body.comparison_dataset_id} "
-                    "does not exist"
+                    f"Comparison dataset with ID {body.comparison_dataset_id} " "does not exist"
                 ),
             )
         comparison_dataset_path = dataset.s3_key
@@ -796,6 +838,18 @@ async def trigger_modeling_run(
         raise HTTPException(status_code=exc.http_status, detail=exc.message) from exc
 
     effective_run_id = action.run_id or run_id
+
+    if process_type == "preprocessing_feature_engineering":
+        _record_process_run(
+            service._db,
+            run_id=effective_run_id,
+            dag_id=dag_id,
+            process_type=process_type,
+            user_uuid=user.get_uuid(),
+            input_dataset_id=dataset.id,
+            output_s3_key=str(conf["dag_args"]["output_path_prefix"]),
+            output_name=f"{dataset.file_name} (preprocessed {effective_run_id})",
+        )
 
     return ModelingRunCreated(
         process_type=process_type,
