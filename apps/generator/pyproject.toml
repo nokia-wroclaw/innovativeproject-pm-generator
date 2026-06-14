@@ -22,6 +22,7 @@ dependencies = [
     "dotenv>=0.9.9",
     "ruptures>=1.1.10",
     "boto3>=1.35.0",
+    "astropy>=7.2.0",
 ]
 
 [build-system]
