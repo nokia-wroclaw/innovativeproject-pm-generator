@@ -57,11 +57,58 @@ def save_training_artifacts(
     arch_params = arch_params or {}
     if "arch_version" not in arch_params and data.get("arch_version"):
         arch_params["arch_version"] = data["arch_version"]
+    # Persist the input dimensions so generation can rebuild the model without
+    # hardcoding them (they must match the checkpoint).
+    arch_params.setdefault("seq_len", data["seq_len"])
+    arch_params.setdefault("feat_dim", data["feat_dim"])
     if arch_params:
         (out_dir / "arch_params.json").write_text(json.dumps(arch_params, indent=2))
         logger.info(f"Saved arch_params.json — {arch_params}")
 
     logger.info(f"All artifacts saved to {out_dir}")
+
+
+def _resolve_input_dims(
+    run_id_path: Path,
+    seq_len: int | None,
+    feat_dim: int | None,
+) -> tuple[int, int]:
+    """Resolve (seq_len, feat_dim) from saved artifacts, honoring explicit overrides.
+
+    seq_len comes from arch_params.json; feat_dim from the saved kpi_columns.npy
+    (cross-checked against arch_params.json when present).
+    """
+    arch_params = {}
+    arch_path = run_id_path / "arch_params.json"
+    if arch_path.exists():
+        arch_params = json.loads(arch_path.read_text())
+
+    if seq_len is None:
+        seq_len = arch_params.get("seq_len")
+        if seq_len is None:
+            raise ValueError(
+                f"seq_len not provided and not found in {arch_path}; pass it explicitly."
+            )
+
+    if feat_dim is None:
+        kpi_path = run_id_path / "kpi_columns.npy"
+        if kpi_path.exists():
+            feat_dim = int(len(np.load(kpi_path, allow_pickle=True)))
+            saved = arch_params.get("feat_dim")
+            if saved is not None and saved != feat_dim:
+                logger.warning(
+                    f"feat_dim mismatch: arch_params={saved} but kpi_columns.npy={feat_dim}; "
+                    f"using kpi_columns.npy"
+                )
+        else:
+            feat_dim = arch_params.get("feat_dim")
+        if feat_dim is None:
+            raise ValueError(
+                f"feat_dim not provided and not derivable from artifacts in {run_id_path}; "
+                f"pass it explicitly."
+            )
+
+    return int(seq_len), int(feat_dim)
 
 
 def load_trained_model(
@@ -77,10 +124,13 @@ def load_trained_model(
     free_bits_global: float = HP_V5["free_bits_global"],
     free_bits_local: float = HP_V5["free_bits_local"],
     output_activation: str = HP_V5["output_activation"],
-    seq_len: int = 168,
-    feat_dim: int = 235,
+    seq_len: int | None = None,
+    feat_dim: int | None = None,
 ) -> tuple[object, object, dict]:
     """Reload saved artifacts and restore the trained model with weights.
+
+    seq_len/feat_dim default to the values saved at training time (arch_params.json /
+    kpi_columns.npy) so they always match the checkpoint; pass them only to override.
 
     Returns (model, config_encoder, cell_config_map) where cell_config_map maps each
     training distname to its config values (used to build the conditioning vector).
@@ -89,9 +139,15 @@ def load_trained_model(
     logger.info(f"Loading config_encoder from {run_id_path}")
     config_encoder = joblib.load(run_id_path / "config_encoder.pkl")
     cell_config_map = joblib.load(run_id_path / "cell_config_map.pkl")
+
+    seq_len, feat_dim = _resolve_input_dims(run_id_path, seq_len, feat_dim)
+
     # y_dim is the one-hot config width + holiday + seasonal context.
     y_dim = sum(len(c) for c in config_encoder.categories_) + CONTEXT_DIM
-    logger.info(f"Config encoder loaded — y_dim={y_dim}, {len(cell_config_map['map'])} cells")
+    logger.info(
+        f"Config encoder loaded — y_dim={y_dim}, seq_len={seq_len}, feat_dim={feat_dim}, "
+        f"{len(cell_config_map['map'])} cells"
+    )
 
     _, model = build_cvae_lstm(
         seq_len=seq_len,

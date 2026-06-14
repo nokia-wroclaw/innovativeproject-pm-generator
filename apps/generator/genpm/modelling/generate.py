@@ -2,7 +2,7 @@ from pathlib import Path
 
 from genpm.modelling.configs import GenerateConfig
 from genpm.modelling.core.artifacts import load_trained_model
-from genpm.modelling.core.generation import generate_windows
+from genpm.modelling.core.generation import _config_label, generate_windows
 from genpm.utils.logger import get_logger
 
 logger = get_logger()
@@ -25,7 +25,8 @@ def run_generation(cfg: GenerateConfig) -> None:
         seq_len=cfg.seq_len,
         feat_dim=cfg.n_dim,
     )
-    logger.info(f"Generating {cfg.n_weeks} week(s) for cell '{cfg.cell_id}' from {cfg.anchor_date}")
+    target = cfg.cell_id if cfg.cell_id is not None else _config_label(cfg.cell_configs)
+    logger.info(f"Generating {cfg.n_weeks} week(s) for '{target}' from {cfg.anchor_date}")
     windows = generate_windows(
         model=model,
         config_encoder=config_encoder,
@@ -34,8 +35,6 @@ def run_generation(cfg: GenerateConfig) -> None:
         anchor_date=cfg.anchor_date,
         n_weeks=cfg.n_weeks,
         holiday=cfg.holiday,
-        seq_len=cfg.seq_len,
-        n_dim=cfg.n_dim,
         batch_size=cfg.batch_size,
         seed=cfg.seed,
         kpi_list=cfg.kpi_list,
@@ -44,6 +43,6 @@ def run_generation(cfg: GenerateConfig) -> None:
 
     output_path = Path(cfg.output_path)
     output_path.mkdir(parents=True, exist_ok=True)
-    out_file = output_path / f"{cfg.cell_id.replace('/', '_')}_{cfg.anchor_date}.parquet"
+    out_file = output_path / f"{target.replace('/', '_')}_{cfg.anchor_date}.parquet"
     windows.to_parquet(out_file, index=False)
     logger.info(f"Saved {len(windows)} rows to {out_file}")

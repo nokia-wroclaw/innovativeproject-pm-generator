@@ -327,35 +327,50 @@ def _run_batched_generation(model, y_windows: np.ndarray, batch_size: int) -> np
     return np.concatenate(decoded)
 
 
+def _config_label(cell_configs: list) -> str:
+    """A filesystem-friendly output label derived from explicit config values."""
+    return "config_" + "_".join(str(c) for c in cell_configs)
+
+
 def generate_windows(
     model,
     config_encoder,
     cell_config_map: dict,
-    cell_id: str,
+    cell_id: str | None,
     anchor_date: str,
     n_weeks: int,
     holiday: int,
-    seq_len: int,
-    n_dim: int,
     batch_size: int,
     seed: int,
     kpi_list: list,
     cell_configs: list | None = None,
 ) -> pd.DataFrame:
-    """Generate synthetic windows for a cell, conditioning on its config values.
+    """Generate synthetic windows conditioned on cell config values.
 
     Configs come from `cell_configs` if given, else are looked up from
-    `cell_config_map` by `cell_id`. cell_id remains the output / inverse-scaling key.
+    `cell_config_map` by `cell_id`. The output is keyed by a `cell_id` column when a
+    cell_id is provided, otherwise by a `config_id` column holding the joined config
+    values. seq_len and n_dim are taken from the generated array (which matches the
+    trained checkpoint).
     """
     from genpm.modelling.core.data import encode_seasonal_features
 
     if cell_configs is None:
+        if cell_id is None:
+            raise ValueError("Provide either cell_id or cell_configs.")
         configs_map = cell_config_map["map"]
         if str(cell_id) not in configs_map:
             raise ValueError(
                 f"cell_id='{cell_id}' not found in cell_config_map; pass cell_configs explicitly."
             )
         cell_configs = configs_map[str(cell_id)]
+
+    # cell_id mode keys output by "cell_id"; config-first mode keys by "config_id"
+    # (the joined config values) so the column name reflects its actual contents.
+    if cell_id is not None:
+        id_col, id_val = "cell_id", cell_id
+    else:
+        id_col, id_val = "config_id", "|".join(str(c) for c in cell_configs)
 
     config_onehot = config_encoder.transform([cell_configs])[0].astype(np.float32)
 
@@ -371,6 +386,7 @@ def generate_windows(
     anchors_arr = np.array(anchors)
 
     kpi_array = _run_batched_generation(model, y_windows, batch_size=batch_size)
+    _, seq_len, n_dim = kpi_array.shape
     kpi_flat = kpi_array.reshape(n_weeks * seq_len, n_dim)
 
     df = pd.DataFrame(kpi_flat, columns=kpi_list)
@@ -382,6 +398,6 @@ def generate_windows(
         + pd.to_timedelta(np.tile(np.arange(seq_len), n_weeks), unit="h"),
     )
     df.insert(0, "window_anchor", np.repeat(anchors_arr, seq_len))
-    df.insert(0, "cell_id", cell_id)
+    df.insert(0, id_col, id_val)
 
     return df
