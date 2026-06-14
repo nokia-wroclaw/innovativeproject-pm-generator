@@ -11,6 +11,7 @@ const ONE_HOUR = 60 * 60 * 1000;
 export const modelingQueryKeys = {
   datasets: () => ['modeling', 'datasets'],
   models: () => ['modeling', 'models'],
+  kpis: (modelId) => ['modeling', 'models', unref(modelId), 'kpis'],
   formSchema: (processType) => ['modeling', 'form-schema', unref(processType)],
   runStatus: (processType, runId) => [
     'modeling',
@@ -96,5 +97,14 @@ export function useModelingRunStatus(processTypeRef, runIdRef) {
     retry: 0,
     refetchInterval: THREE_SECONDS,
     refetchIntervalInBackground: false,
+  });
+}
+
+export function useModelKpis(modelIdRef) {
+  return useQuery({
+    queryKey: computed(() => modelingQueryKeys.kpis(modelIdRef)),
+    queryFn: () => Api.fetchModelKpis(unref(modelIdRef)),
+    enabled: computed(() => Boolean(unref(modelIdRef))),
+    staleTime: ONE_HOUR,
   });
 }
