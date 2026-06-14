@@ -79,6 +79,15 @@ def spark_submit_conf(preset: str = DEFAULT_SPARK_PRESET) -> dict[str, str]:
         "spark.driver.bindAddress": "0.0.0.0",
         "spark.pyspark.driver.python": spark_driver_python(),
         "spark.pyspark.python": spark_executor_python(),
+        # MinIO rejects PUT of 0-byte objects (IncompleteBody). Disabling fake
+        # directory markers in S3A avoids createEmptyObject calls during task commit.
+        "spark.hadoop.fs.s3a.create.performance": "true",
+        # Use the S3A committer to avoid rename-based commit (incompatible with MinIO).
+        "spark.hadoop.mapreduce.outputcommitter.factory.scheme.s3a": (
+            "org.apache.hadoop.fs.s3a.commit.S3ACommitterFactory"
+        ),
+        "spark.hadoop.fs.s3a.committer.name": "magic",
+        "spark.hadoop.fs.s3a.committer.magic.enabled": "true",
     }
 
 
