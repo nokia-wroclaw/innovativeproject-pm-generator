@@ -11,35 +11,26 @@ from tsgm.backend import get_backend
 
 class CellConditioning(keras.layers.Layer):
     """
-    Turns compact Y (B, 6) into a per-timestep conditioning tensor (B, T, E+5).
-    Input y_compact columns:
-        0: cell_idx (integer, stored as float)
-        1: holiday
-        2-5: seasonal features
+    Broadcasts the conditioning vector Y (B, y_dim) to every timestep (B, T, y_dim).
+
+    Y is the full conditioning vector — one-hot **cell configs** + holiday + seasonal.
+    There is no learned cell embedding and the cell identity (distname) is never an
+    input; the layer just repeats the config-based conditioning across the sequence.
     """
 
-    def __init__(self, n_cells: int, embed_dim: int = 32, seq_len: int = 168, **kwargs):
+    def __init__(self, y_dim: int, seq_len: int = 168, **kwargs):
         super().__init__(**kwargs)
-        self.n_cells = n_cells
-        self.embed_dim = embed_dim
+        self.y_dim = y_dim
         self.seq_len = seq_len
-        self.cell_embedding = layers.Embedding(n_cells, embed_dim)
 
     def call(self, y_compact):
-        # y_compact: (B, 6)
-        cell_idx = ops.cast(y_compact[:, 0], "int32")  # (B,)
-        ctx = y_compact[:, 1:]  # (B, 5) holiday + seasonal
-        cell_emb = self.cell_embedding(cell_idx)  # (B, E)
-        cond = ops.concatenate([cell_emb, ctx], axis=-1)  # (B, E+5) = (B, 37)
-        # Broadcast to every hour
-        cond_rep = ops.repeat(cond[:, None, :], [self.seq_len], axis=1)  # (B, T, 37)
-        return cond_rep
+        # y_compact: (B, y_dim) → broadcast to every hour
+        return ops.repeat(y_compact[:, None, :], [self.seq_len], axis=1)  # (B, T, y_dim)
 
     def get_config(self):
         return {
             **super().get_config(),
-            "n_cells": self.n_cells,
-            "embed_dim": self.embed_dim,
+            "y_dim": self.y_dim,
             "seq_len": self.seq_len,
         }
 
@@ -441,7 +432,6 @@ class cBetaVAE(keras.Model):
             return self.train_step_jax(backend, data)
 
 
-# ── model_utils.py (new model class) ─────────────────────────────────────────
 class cBetaVAE_Hierarchical(keras.Model):
     """
     Conditional Beta-VAE with hierarchical latent codes.
@@ -449,7 +439,8 @@ class cBetaVAE_Hierarchical(keras.Model):
     z_g : (batch, global_latent_dim) week-level summary
     z_l : (batch, seq_len, local_latent_dim) hour-level residuals
 
-    Training data: (X, y_compact) where y_compact is (batch, 6).
+    Training data: (X, y_compact) where y_compact is (batch, y_dim) — the config
+    one-hot + holiday + seasonal conditioning vector.
     """
 
     def __init__(
@@ -521,7 +512,7 @@ class cBetaVAE_Hierarchical(keras.Model):
         z_l: tsgm.types.Tensor | None,
         y_compact: tsgm.types.Tensor,
     ) -> list[tsgm.types.Tensor]:
-        """z_g seeds the LSTM; per-step cond carries cell embed + calendar context."""
+        """z_g seeds the LSTM; per-step cond carries the config one-hot + calendar context."""
         cond_rep = self.cond_layer(y_compact)
         if self.local_latent_dim > 0 and z_l is not None:
             cond_rep = ops.concatenate([cond_rep, z_l], axis=-1)
@@ -1175,25 +1166,26 @@ class cVAE_LSTMv4Architecture(BaseVAEArchitecture):
 
 class cVAE_LSTMv5Architecture(BaseVAEArchitecture):
     """
-    v5: cell embedding + global latent (optional per-hour local latent).
+    v5: config-conditioned global latent (optional per-hour local latent).
 
-    Decoder uses z_g as LSTM initial state (not tiled).  Per-step decoder input
+    Conditioning is the config one-hot + calendar context vector (y), broadcast per
+    timestep — there is no learned cell embedding and the cell identity is never an
+    input. Decoder uses z_g as LSTM initial state (not tiled).  Per-step decoder input
     is conditioning only (+ optional z_l), so the LSTM can unroll temporally.
 
     Recommended start: local_latent_dim=0, global_latent_dim=64,
     free_bits_global=0.002, target_beta=2e-4, cyclical KL annealing.
     """
 
-    arch_type = "vae:conditional_v5"
+    arch_type = "vae:conditional_v6"
 
     def __init__(
         self,
         seq_len: int,
         feat_dim: int,
-        n_cells: int,
+        y_dim: int,
         global_latent_dim: int = 64,
         local_latent_dim: int = 0,
-        cell_embed_dim: int = 32,
         hidden_dim: int = 256,
         n_layers: int = 2,
         use_attention: bool = True,
@@ -1204,10 +1196,9 @@ class cVAE_LSTMv5Architecture(BaseVAEArchitecture):
     ):
         self._seq_len = seq_len
         self._feat_dim = feat_dim
-        self._n_cells = n_cells
+        self._y_dim = y_dim
         self._global_latent_dim = global_latent_dim
         self._local_latent_dim = local_latent_dim
-        self._cell_embed_dim = cell_embed_dim
         self._hidden_dim = hidden_dim
         self._n_layers = n_layers
         self._use_attention = use_attention
@@ -1217,7 +1208,7 @@ class cVAE_LSTMv5Architecture(BaseVAEArchitecture):
             hidden_dim, n_layers, min_units, max_dropout
         )
         self._attn_key_dim = max((2 * self._layer_units[-1]) // n_heads, 1)
-        self._cond_layer = CellConditioning(n_cells, cell_embed_dim, seq_len)
+        self._cond_layer = CellConditioning(y_dim, seq_len)
         self._encoder = self._build_encoder()
         self._decoder = self._build_decoder()
 
@@ -1228,9 +1219,9 @@ class cVAE_LSTMv5Architecture(BaseVAEArchitecture):
     def _build_encoder(self) -> keras.Model:
         # Inputs
         x_in = keras.Input(shape=(self._seq_len, self._feat_dim), name="x")  # (B,T,F)
-        y_in = keras.Input(shape=(6,), name="y_compact")  # (B,6)
-        # Conditioning → (B, T, E+5)
-        cond_rep = self._cond_layer(y_in)  # (B,T,37)
+        y_in = keras.Input(shape=(self._y_dim,), name="y_compact")  # (B, y_dim)
+        # Conditioning → (B, T, y_dim)
+        cond_rep = self._cond_layer(y_in)  # (B, T, y_dim)
         # Concat KPIs + conditioning, add positional encoding
         enc_in = ops.concatenate([x_in, cond_rep], axis=-1)  # (B,T,276)
         x = HourlyPositionalEncoding(self._seq_len)(enc_in)  # (B,T,280)
@@ -1275,7 +1266,7 @@ class cVAE_LSTMv5Architecture(BaseVAEArchitecture):
 
     def _build_decoder(self) -> keras.Model:
         z_in = keras.Input(shape=(self._global_latent_dim,), name="z_g")
-        cond_dim = self._cell_embed_dim + 5 + self._local_latent_dim
+        cond_dim = self._y_dim + self._local_latent_dim
         cond_in = keras.Input(shape=(self._seq_len, cond_dim), name="cond_seq")
 
         init_units = self._layer_units[0]
