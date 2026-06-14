@@ -13,8 +13,9 @@ class CellConditioning(keras.layers.Layer):
     """
     Broadcasts the conditioning vector Y (B, y_dim) to every timestep (B, T, y_dim).
 
-    Y is the full conditioning vector — one-hot configs + holiday + seasonal — so no
-    embedding is needed; the layer just repeats it across the sequence.
+    Y is the full conditioning vector — one-hot **cell configs** + holiday + seasonal.
+    There is no learned cell embedding and the cell identity (distname) is never an
+    input; the layer just repeats the config-based conditioning across the sequence.
     """
 
     def __init__(self, y_dim: int, seq_len: int = 168, **kwargs):
@@ -438,7 +439,8 @@ class cBetaVAE_Hierarchical(keras.Model):
     z_g : (batch, global_latent_dim) week-level summary
     z_l : (batch, seq_len, local_latent_dim) hour-level residuals
 
-    Training data: (X, y_compact) where y_compact is (batch, 6).
+    Training data: (X, y_compact) where y_compact is (batch, y_dim) — the config
+    one-hot + holiday + seasonal conditioning vector.
     """
 
     def __init__(
@@ -510,7 +512,7 @@ class cBetaVAE_Hierarchical(keras.Model):
         z_l: tsgm.types.Tensor | None,
         y_compact: tsgm.types.Tensor,
     ) -> list[tsgm.types.Tensor]:
-        """z_g seeds the LSTM; per-step cond carries cell embed + calendar context."""
+        """z_g seeds the LSTM; per-step cond carries the config one-hot + calendar context."""
         cond_rep = self.cond_layer(y_compact)
         if self.local_latent_dim > 0 and z_l is not None:
             cond_rep = ops.concatenate([cond_rep, z_l], axis=-1)
@@ -1164,9 +1166,11 @@ class cVAE_LSTMv4Architecture(BaseVAEArchitecture):
 
 class cVAE_LSTMv5Architecture(BaseVAEArchitecture):
     """
-    v5: cell embedding + global latent (optional per-hour local latent).
+    v5: config-conditioned global latent (optional per-hour local latent).
 
-    Decoder uses z_g as LSTM initial state (not tiled).  Per-step decoder input
+    Conditioning is the config one-hot + calendar context vector (y), broadcast per
+    timestep — there is no learned cell embedding and the cell identity is never an
+    input. Decoder uses z_g as LSTM initial state (not tiled).  Per-step decoder input
     is conditioning only (+ optional z_l), so the LSTM can unroll temporally.
 
     Recommended start: local_latent_dim=0, global_latent_dim=64,

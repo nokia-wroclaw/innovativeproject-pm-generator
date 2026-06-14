@@ -17,7 +17,7 @@ from genpm.utils.consts import SHARED_DIR_PATH
 
 # New runs go under model_runs/ — the shared artifacts/ dir is not user-writable.
 TRAINING_DATA_PATH = SHARED_DIR_PATH / "preprocessed_dataset" / "final_pmcm"
-RUN_DIR = SHARED_DIR_PATH / "model_runs" / "run_5"
+RUN_DIR = SHARED_DIR_PATH / "model_runs" / "run_6_dummy"
 WEIGHTS_PATH = RUN_DIR / "models_weights_debug" / "cvae_lstm_v6_0.weights.h5"
 
 # ── Config ────────────────────────────────────────────────────────────────────

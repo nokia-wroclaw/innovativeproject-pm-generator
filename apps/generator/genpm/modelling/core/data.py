@@ -114,6 +114,13 @@ def _stack_hourly_parquet_to_windows(
     constant per cell, so they're collapsed with .first() like the holiday flag.
     Windows with wrong row count or any NaN are skipped.
 
+    Note on conditioning: grouping is by (cell_id, anchor) — not by config — because a
+    window is ONE physical cell's seq_len-hour sequence; grouping by config would merge
+    rows from different cells into a single nonsensical window. Conditioning on config is
+    done entirely via the y vector (build_conditioning_vector), where many cell-windows
+    that share a config carry the same one-hot, so the model learns P(X | config). The
+    cell identity (distname) is never fed to the model; it is only a grouping/output key.
+
     Returns (X, cell_ids, window_anchors, holiday_flags, configs) where configs has
     shape (N, len(config_cols)).
     """

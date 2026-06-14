@@ -7,20 +7,21 @@ class GenerateConfig:
     run_dir_path: str
     weights_path: str
     output_path: str
-    # Generation parameters
-    cell_id: str
     anchor_date: str
     n_weeks: int
     kpi_list: list
+    # Conditioning identity. Provide either cell_id (config looked up from the training
+    # cell_config_map) or cell_configs (explicit config values). cell_id also labels the
+    # output; when omitted, a label is derived from the config values.
+    cell_id: str | None = None
+    cell_configs: list | None = None
     holiday: int = 0
     batch_size: int = 64
     seed: int = 42
-    # Conditioning: explicit config values; if None, looked up by cell_id from the
-    # training cell_config_map.
-    cell_configs: list | None = None
-    # Model architecture (must match the trained checkpoint)
-    seq_len: int = 168
-    n_dim: int = 235
+    # Model architecture. seq_len/n_dim default to the values saved at training time
+    # (arch_params.json / kpi_columns.npy); set them only to override.
+    seq_len: int | None = None
+    n_dim: int | None = None
     global_latent_dim: int = 64
     local_latent_dim: int = 0
     hidden_dim: int = 256
@@ -51,7 +52,7 @@ class TrainConfig:
     free_bits_local: float = 0.0
     output_activation: str = "sigmoid"
     # Training schedule
-    epochs: int = 300
+    epochs: int = 3
     batch_size: int = 64
     target_beta: float = 2e-4
     use_cyclical_kl: bool = True
