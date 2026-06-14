@@ -70,7 +70,12 @@ class S3Service(BaseService[Dataset, DatasetCreate, DatasetStatusUpdate]):
         self.s3_client_external = get_s3_client_external()
 
     def create_dataset(
-        self, user_uuid: uuid.UUID, file_name: str, s3_key: str, type: DatasetType = DatasetType.RAW
+        self,
+        user_uuid: uuid.UUID,
+        file_name: str,
+        s3_key: str,
+        type: DatasetType = DatasetType.RAW,
+        pm_metadata_s3_key: str | None = None,
     ) -> Dataset:
         unique_id = str(uuid.uuid4())
 
@@ -85,6 +90,7 @@ class S3Service(BaseService[Dataset, DatasetCreate, DatasetStatusUpdate]):
             file_name=name,
             s3_key=final_s3_key,
             type=type,
+            pm_metadata_s3_key=pm_metadata_s3_key,
         )
         self._db.add(dataset)
         self._db.commit()
@@ -97,6 +103,7 @@ class S3Service(BaseService[Dataset, DatasetCreate, DatasetStatusUpdate]):
         s3_key: str,
         file_name: str | None = None,
         type: DatasetType = DatasetType.RAW,
+        pm_metadata_s3_key: str | None = None,
     ) -> Dataset:
         try:
             self.s3_client_internal.head_object(Bucket=get_settings().s3_bucket, Key=s3_key)
@@ -115,6 +122,26 @@ class S3Service(BaseService[Dataset, DatasetCreate, DatasetStatusUpdate]):
                     detail=f"[S3] Dataset not found on S3 or access denied: {str(e)}",
                 ) from e
 
+        if pm_metadata_s3_key:
+            try:
+                self.s3_client_internal.head_object(
+                    Bucket=get_settings().s3_bucket, Key=pm_metadata_s3_key
+                )
+            except Exception as e:
+                # pm_metadata_s3_key may be a folder prefix — check if any objects exist under it
+                prefix = pm_metadata_s3_key.rstrip("/") + "/"
+                try:
+                    response = self.s3_client_internal.list_objects_v2(
+                        Bucket=get_settings().s3_bucket, Prefix=prefix, MaxKeys=1
+                    )
+                except Exception:
+                    response = {}
+                if not response.get("Contents"):
+                    raise HTTPException(
+                        status_code=404,
+                        detail=f"[S3] pm_metadata not found on S3 or access denied: {str(e)}",
+                    ) from e
+
         if not file_name:
             file_name = Path(s3_key).name
 
@@ -127,6 +154,7 @@ class S3Service(BaseService[Dataset, DatasetCreate, DatasetStatusUpdate]):
             s3_key=s3_key,
             status=DatasetStatus.COMPLETED,
             type=type,
+            pm_metadata_s3_key=pm_metadata_s3_key,
         )
         self._db.add(dataset)
         self._db.commit()

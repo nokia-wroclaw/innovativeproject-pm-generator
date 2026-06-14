@@ -88,6 +88,7 @@ class GenerateRunRequest(BaseModel):
     prompt: str = ""
     comparison_dataset_id: int | None = Field(default=None, gt=0)
     dag_args: dict[str, Any] = Field(default_factory=dict)
+    kpis: list[str] = Field(default_factory=list)
 
 
 class ModelingRunCreated(BaseModel):

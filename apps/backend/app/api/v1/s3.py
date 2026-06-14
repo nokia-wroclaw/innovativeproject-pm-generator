@@ -66,6 +66,7 @@ async def create_s3_dataset(
         file_name=dataset.file_name,
         s3_key=dataset.s3_key,
         type=dataset.type,
+        pm_metadata_s3_key=dataset.pm_metadata_s3_key,
     )
 
     return DatasetRead.model_validate(s3_dataset)
@@ -138,6 +139,7 @@ async def register_s3_dataset(
         s3_key=request.s3_key,
         file_name=request.file_name,
         type=request.type,
+        pm_metadata_s3_key=request.pm_metadata_s3_key,
     )
 
     await trigger_dataset_visualization_on_raw_completed(

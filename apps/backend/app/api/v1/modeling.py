@@ -1,3 +1,4 @@
+import json
 import re
 import unicodedata
 import uuid
@@ -255,6 +256,60 @@ def list_trained_models(
         )
         for db_m in db_models
     ]
+
+
+@router.get("/models/{model_id}/kpis", response_model=list[str])
+def get_model_kpis(
+    model_id: int,
+    db: Session = Depends(db_manager.get_db),
+    _user: TokenPayload = Depends(require_auth),
+) -> list[str]:
+    db_model = db.query(TrainedModel).filter(TrainedModel.id == model_id).first()
+    if not db_model:
+        raise HTTPException(status_code=404, detail="Model not found")
+
+    if not db_model.dataset_id:
+        raise HTTPException(status_code=400, detail="Model has no dataset associated")
+
+    dataset = db.query(Dataset).filter(Dataset.id == db_model.dataset_id).first()
+    if not dataset:
+        raise HTTPException(status_code=404, detail="Associated dataset not found")
+
+    if not dataset.pm_metadata_s3_key:
+        raise HTTPException(status_code=400, detail="Dataset has no pm_metadata S3 key")
+
+    s3_client = get_s3_client_internal()
+    try:
+        response = s3_client.get_object(
+            Bucket=get_settings().s3_bucket,
+            Key=dataset.pm_metadata_s3_key
+        )
+        content = response["Body"].read().decode("utf-8").strip()
+        if not content:
+            return []
+        config_data = json.loads(content)
+        spatial = config_data.get("spatial", {})
+        kpis = []
+        if isinstance(spatial, dict):
+            kpis_dict = spatial.get("kpis", {})
+            if isinstance(kpis_dict, dict):
+                kpis = kpis_dict.get("names", [])
+            elif isinstance(kpis_dict, list):
+                kpis = kpis_dict
+        if not kpis and "kpis" in config_data:
+            kpis_data = config_data.get("kpis", {})
+            if isinstance(kpis_data, dict):
+                kpis = kpis_data.get("names", [])
+            elif isinstance(kpis_data, list):
+                kpis = kpis_data
+        if not isinstance(kpis, list):
+            kpis = []
+        return kpis
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to read dataset pm_metadata from S3: {str(e)}",
+        ) from e
 
 
 @router.post("/models", response_model=ModelingTrainedModelOption)
@@ -548,7 +603,10 @@ def _validate_s3_key(key: str) -> None:
     if key.startswith("s3://"):
         raise HTTPException(
             status_code=400,
-            detail=f"Invalid S3 key format: '{key}'. Should be a key relative to the bucket, not a full s3:// URL.",
+            detail=(
+                f"Invalid S3 key format: '{key}'. "
+                "Should be a key relative to the bucket, not a full s3:// URL."
+            ),
         )
     s3_client = get_s3_client_internal()
     try:
@@ -608,6 +666,10 @@ async def trigger_generate_run(
     config_s3_key = body.config_s3_key.strip()
     _validate_s3_key(config_s3_key)
 
+    resolved_dag_args = {**body.dag_args}
+    if body.kpis:
+        resolved_dag_args["kpi_list"] = body.kpis
+
     dag_id = DAG_ID_MAP[process_type]
     run_id = f"genpm_{_RUN_ID_PREFIX[process_type]}_{uuid.uuid4().hex[:12]}"
     conf = {
@@ -620,8 +682,10 @@ async def trigger_generate_run(
         "prompt": body.prompt,
         "comparison_dataset_path": comparison_dataset_path,
         "process_type": process_type,
-        "dag_args": body.dag_args,
+        "dag_args": resolved_dag_args,
     }
+    if body.kpis:
+        conf["kpis"] = body.kpis
 
     try:
         action = await airflow.trigger_dag(
