@@ -303,7 +303,12 @@ def run_preprocessing(sdm: SparkDataManager, preprocessing_cfg: PreprocessingCon
 
     logger.info("Stage: fitting and applying MinMax scaler")
     scaler = scaling.SimpleMinMaxScaler(
-        value_col="kpi_value", group_cols=["kpi_id", *_GROUPING_COLS]
+        value_col="kpi_value",
+        group_cols=[
+            "kpi_id",
+            #    NOTE: Scaling should be on kpi-cell_configs aggr level (NOT DISTNAME)
+            *[x for x in _GROUPING_COLS if x != "distname"],
+        ],
     )
     params_df = scaler.fit(pm_df_long_imputed)
     pm_df_long_scaled = scaler.transform(pm_df_long_imputed)

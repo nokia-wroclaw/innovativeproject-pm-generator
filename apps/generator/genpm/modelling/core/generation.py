@@ -390,7 +390,7 @@ def generate_windows(
     kpi_flat = kpi_array.reshape(n_weeks * seq_len, n_dim)
 
     df = pd.DataFrame(kpi_flat, columns=kpi_list)
-    df.insert(0, "seed", seed)
+    # df.insert(0, "seed", seed)
     df.insert(
         0,
         "timestamp",

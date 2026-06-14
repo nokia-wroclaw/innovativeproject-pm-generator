@@ -33,13 +33,17 @@ cfg = GenerateConfig(
     # Generate by CONFIG (not cell_id): leave cell_id unset and pass values in the
     # same order as config_cols printed above, e.g. ["A", "X"]. Output is labeled
     # "config_<values>" instead of a cell_id.
-    # correct order:
-    # 1) "[CELL] 5gCellDeploymentTypeSaNsa" e {"NR2500(B41)_100MHz", "NR1900(B25)_20MHz", "NR600(B71)_20MHz"}
-    # 2) "[CELL] CellDuplexMode" e {"2500(B41)", "1900(B25)", "600(B71)"}
-    # 3) "[CELL] ChannelBandwidth" e {"100", "20"}
-    # 4) "[CELL] FrequencyBand" e {"TDD", "FDD"}
-    # 5) "[CELL] FrequencyBandAndBandwidth" e {"both", "SA"}
-    cell_configs=["NR2500(B41)_100MHz", "1900(B25)", "100", "TDD", "both"],
+    # Values keyed by column name — order is enforced by config_cols from the artifact.
+    cell_configs=[
+        {
+            "[CELL] 5gCellDeploymentTypeSaNsa": "NR2500(B41)_100MHz",
+            "[CELL] CellDuplexMode": "1900(B25)",
+            "[CELL] ChannelBandwidth": "100",
+            "[CELL] FrequencyBand": "TDD",
+            "[CELL] FrequencyBandAndBandwidth": "both",
+        }[col]
+        for col in _cmap["config_cols"]
+    ],
     anchor_date="2024-01-15",
     n_weeks=3,
     kpi_list=KPI_COLS,
