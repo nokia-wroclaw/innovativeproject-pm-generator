@@ -27,12 +27,21 @@ from app.services.airflow.mapper import (
 logger = logging.getLogger(__name__)
 
 
+_ACTIVE_RUN_TTL = 5.0
+_TERMINAL_RUN_TTL = 3600.0
+_TERMINAL_RUN_STATES = frozenset({"success", "failed"})
+_TERMINAL_TASK_STATES = frozenset({"success", "failed", "skipped", "upstream_failed"})
+
+
 class AirflowService:
     def __init__(self, *, client: AirflowClient, settings: AirflowSettings) -> None:
         self._client = client
         self._settings = settings
         self._dag_list_cache: tuple[float, list[DagSummary]] | None = None
         self._dag_list_lock = asyncio.Lock()
+        self._run_cache: dict[tuple[str, str], tuple[float, dict[str, Any]]] = {}
+        self._task_list_cache: dict[tuple[str, str], tuple[float, list[TaskInstance]]] = {}
+        self._task_cache: dict[tuple[str, str, str], tuple[float, TaskInstance]] = {}
 
     async def list_dags(self) -> list[DagSummary]:
         now = time.monotonic()
@@ -70,32 +79,71 @@ class AirflowService:
     async def list_dag_runs(
         self, dag_id: str, limit: int = 50, offset: int = 0, order_by: str = "-start_date"
     ) -> list[DagRunSummary]:
-        raw = await self._client.list_dag_runs(dag_id, limit=limit, offset=offset, order_by=order_by)
+        raw = await self._client.list_dag_runs(
+            dag_id, limit=limit, offset=offset, order_by=order_by
+        )
         return [DagRunSummary.model_validate(r) for r in raw.get("dag_runs", []) or []]
 
     async def get_dag_run(self, dag_id: str, run_id: str) -> DagRunSummary:
+        key = (dag_id, run_id)
+        now = time.monotonic()
+        cached = self._run_cache.get(key)
+        if cached:
+            ts, raw = cached
+            state = str(raw.get("state") or "")
+            ttl = _TERMINAL_RUN_TTL if state in _TERMINAL_RUN_STATES else _ACTIVE_RUN_TTL
+            if now - ts < ttl:
+                return DagRunSummary.model_validate(raw)
+
         raw = await self._fetch_dag_run_raw(
             dag_id,
             run_id,
             genpm_run_id=run_id if run_id.startswith("genpm_") else None,
         )
+        self._run_cache[key] = (time.monotonic(), raw)
         return DagRunSummary.model_validate(raw)
 
     async def list_task_instances(self, dag_id: str, run_id: str) -> list[TaskInstance]:
+        key = (dag_id, run_id)
+        now = time.monotonic()
+        cached = self._task_list_cache.get(key)
+        if cached:
+            ts, items = cached
+            all_terminal = all(
+                str(getattr(ti, "status", "") or "") in _TERMINAL_TASK_STATES for ti in items
+            )
+            ttl = _TERMINAL_RUN_TTL if (items and all_terminal) else _ACTIVE_RUN_TTL
+            if now - ts < ttl:
+                return items
+
         raw = await self._client.list_task_instances(dag_id, run_id)
-        items = raw.get("task_instances", []) or []
+        raw_items = raw.get("task_instances", []) or []
         logger.info(
             "list_task_instances dag=%s run=%s -> %d items (keys=%s)",
             dag_id,
             run_id,
-            len(items),
+            len(raw_items),
             list(raw.keys()),
         )
-        return [TaskInstance.model_validate(ti) for ti in items]
+        items = [TaskInstance.model_validate(ti) for ti in raw_items]
+        self._task_list_cache[key] = (time.monotonic(), items)
+        return items
 
     async def get_task_instance(self, dag_id: str, run_id: str, task_id: str) -> TaskInstance:
+        key = (dag_id, run_id, task_id)
+        now = time.monotonic()
+        cached = self._task_cache.get(key)
+        if cached:
+            ts, ti = cached
+            state = str(getattr(ti, "status", "") or "")
+            ttl = _TERMINAL_RUN_TTL if state in _TERMINAL_TASK_STATES else _ACTIVE_RUN_TTL
+            if now - ts < ttl:
+                return ti
+
         raw = await self._client.get_task_instance(dag_id, run_id, task_id)
-        return TaskInstance.model_validate(raw)
+        ti = TaskInstance.model_validate(raw)
+        self._task_cache[key] = (time.monotonic(), ti)
+        return ti
 
     async def list_task_tries(self, dag_id: str, run_id: str, task_id: str) -> list[TaskTry]:
         raw = await self._client.list_task_tries(dag_id, run_id, task_id)
@@ -209,6 +257,7 @@ class AirflowService:
         note = _compose_note("Stopped via GenPM", triggered_by)
         await self._client.patch_dag_run_state(dag_id, run_id, state="failed", note=note)
         self._invalidate_dag_list_cache()
+        self._invalidate_run_caches(dag_id, run_id)
         return ActionResponse(
             run_id=run_id,
             message=f"Stopped DAG run '{run_id}'",
@@ -220,6 +269,7 @@ class AirflowService:
     ) -> ActionResponse:
         await self._client.clear_task_instances(dag_id, run_id, task_ids=None, reset_dag_runs=True)
         self._invalidate_dag_list_cache()
+        self._invalidate_run_caches(dag_id, run_id)
         _ = triggered_by
         return ActionResponse(
             run_id=run_id,
@@ -244,6 +294,7 @@ class AirflowService:
             reset_dag_runs=True,
         )
         self._invalidate_dag_list_cache()
+        self._invalidate_run_caches(dag_id, run_id)
         _ = triggered_by
         return ActionResponse(
             run_id=run_id,
@@ -253,6 +304,13 @@ class AirflowService:
 
     def _invalidate_dag_list_cache(self) -> None:
         self._dag_list_cache = None
+
+    def _invalidate_run_caches(self, dag_id: str, run_id: str) -> None:
+        self._run_cache.pop((dag_id, run_id), None)
+        self._task_list_cache.pop((dag_id, run_id), None)
+        keys_to_drop = [k for k in self._task_cache if k[0] == dag_id and k[1] == run_id]
+        for k in keys_to_drop:
+            self._task_cache.pop(k, None)
 
     async def _fetch_dag_list_uncached(self) -> list[DagSummary]:
         dags_raw = await self._client.list_dags()

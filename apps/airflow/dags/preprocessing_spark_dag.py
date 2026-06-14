@@ -30,7 +30,7 @@ dag = build_spark_job_dag(
     application=PREPROCESSING_APPLICATION,
     app_name="PreprocessingSparkApp",
     conf_finalizer=_finalize,
-    spark_preset="FULL_RESOURCES",
+    spark_preset="HALF_SAFE",
     execution_timeout=timedelta(hours=3),
     tags=["spark", "preprocessing"],
 )

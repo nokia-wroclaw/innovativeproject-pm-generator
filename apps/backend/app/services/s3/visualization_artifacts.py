@@ -84,12 +84,10 @@ def load_visualization_artifact(dataset_s3_key: str) -> dict[str, Any] | None:
 
 def delete_visualization_error_artifact(dataset_s3_key: str) -> None:
     """Remove a stale summary_error.json written by an older schema check or Spark run."""
-    from app.services.s3.service import s3_client_internal
-
     bucket = _require_s3_bucket()
     _, error_key = visualization_artifact_keys(dataset_s3_key)
     try:
-        s3_client_internal.delete_object(Bucket=bucket, Key=error_key)
+        get_s3_client_internal().delete_object(Bucket=bucket, Key=error_key)
     except ClientError as exc:
         logger.warning(
             "Failed to delete visualization error artifact for s3_key=%s: %s",

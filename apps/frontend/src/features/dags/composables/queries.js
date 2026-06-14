@@ -15,10 +15,9 @@ import {
 
 import * as Api from '../services/dagsApi.js';
 
-const FIVE_SECONDS = 5_000;
-const TWO_SECONDS = 2_000;
-const THREE_SECONDS = 3_000;
+const TEN_SECONDS = 10_000;
 const FIFTEEN_SECONDS = 15_000;
+const FIVE_SECONDS = 5_000;
 
 // ─── Query keys ─────────────────────────────────────────────────────────────
 export const queryKeys = {
@@ -73,7 +72,7 @@ export function useTaskInstances(dagIdRef, runIdRef, isRunningRef) {
     queryFn: () => Api.listTaskInstances(unref(dagIdRef), unref(runIdRef)),
     enabled: computed(() => Boolean(unref(dagIdRef) && unref(runIdRef))),
     refetchInterval: computed(() =>
-      unref(isRunningRef) ? THREE_SECONDS : FIFTEEN_SECONDS,
+      unref(isRunningRef) ? TEN_SECONDS : FIFTEEN_SECONDS,
     ),
   });
 }
@@ -91,7 +90,7 @@ export function useTaskInstance(dagIdRef, runIdRef, taskIdRef) {
     enabled: computed(() =>
       Boolean(unref(dagIdRef) && unref(runIdRef) && unref(taskIdRef)),
     ),
-    refetchInterval: TWO_SECONDS,
+    refetchInterval: TEN_SECONDS,
   });
 }
 

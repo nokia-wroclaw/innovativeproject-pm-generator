@@ -15,8 +15,8 @@ from genpm.raw_vis.data_vis_utils import (
     schema,
 )
 from genpm.raw_vis.pm_schema import (
-    PM_REQUIRED_COLUMNS,
     normalize_pm_dataframe,
+    required_columns,
     unsupported_schema_payload,
     validate_pm_schema,
 )
@@ -60,7 +60,7 @@ def make_summary(raw_df: DataFrame, *, spark_version: str | None = None) -> dict
             "bts_count": coverage_result.get("bts_count"),
             "kpi_count": coverage_result.get("kpi_count"),
         },
-        "required_columns": list(PM_REQUIRED_COLUMNS),
+        "required_columns": list(required_columns()),
     }
     if spark_version:
         summary["spark_version"] = spark_version

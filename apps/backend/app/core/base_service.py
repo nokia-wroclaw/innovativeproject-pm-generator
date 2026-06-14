@@ -1,6 +1,5 @@
 from typing import Any, Generic, TypeVar
 
-
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
@@ -10,8 +9,10 @@ ModelType = TypeVar("ModelType", bound=Base)
 CreateSchemaType = TypeVar("CreateSchemaType", bound=BaseModel)
 UpdateSchemaType = TypeVar("UpdateSchemaType", bound=BaseModel)
 
+
 class ItemNotFoundError(Exception):
     pass
+
 
 class BaseService(Generic[ModelType, CreateSchemaType, UpdateSchemaType]):
     def __init__(self, model: type[ModelType], db: Session):
@@ -37,7 +38,7 @@ class BaseService(Generic[ModelType, CreateSchemaType, UpdateSchemaType]):
             update_data = obj_in
         else:
             update_data = obj_in.model_dump(exclude_unset=True)
-        
+
         for field, value in update_data.items():
             if hasattr(db_obj, field):
                 setattr(db_obj, field, value)
@@ -50,7 +51,7 @@ class BaseService(Generic[ModelType, CreateSchemaType, UpdateSchemaType]):
     def delete(self, id: int) -> ModelType:
         obj = self._db.query(self.model).filter(self.model.id == id).first()
         if not obj:
-             raise ItemNotFoundError(f"Object with id {id} not found")
+            raise ItemNotFoundError(f"Object with id {id} not found")
         self._db.delete(obj)
         self._db.commit()
         return obj

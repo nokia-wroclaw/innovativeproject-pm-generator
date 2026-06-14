@@ -1,4 +1,5 @@
 import uuid
+
 from pydantic import BaseModel, ConfigDict
 
 
@@ -13,5 +14,3 @@ class TokenPayload(BaseModel):
 
     def get_uuid(self) -> uuid.UUID:
         return uuid.UUID(self.user_id)
-
-
