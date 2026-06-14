@@ -369,3 +369,4 @@ windows = main(
     n_weeks=N_WEEKS,
     model_config=HP_V5,
 )
+print(windows)

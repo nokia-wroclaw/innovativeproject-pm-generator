@@ -20,8 +20,7 @@ dependencies = [
     "tsgm[torch]==0.1.0",
     "optuna==4.9.0",
     "dotenv>=0.9.9",
-    "ruptures>=1.1.10"
-
+    "ruptures>=1.1.10",
 ]
 
 [build-system]
