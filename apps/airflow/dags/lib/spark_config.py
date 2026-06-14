@@ -11,6 +11,7 @@ to a misleading hardcoded path, so a misconfigured (e.g. wrong-user) stack surfa
 from __future__ import annotations
 
 import os
+import re
 
 from genpm.utils.consts import SPARK_CONFIGS
 from genpm.utils.spark_bootstrap import spark_pythonpath
@@ -64,17 +65,53 @@ def schema_path() -> str:
     )
 
 
+# Keys we must not forward to spark-submit:
+#  - spark.master: supplied by the Airflow Spark connection (conn_id), not the preset.
+#  - spark.jars.packages: some presets carry a RAPIDS coordinate (com.nvidia:rapids-spark_2.12),
+#    invalid/unresolvable and pointless here — RAPIDS is disabled for these CPU jobs and the Spark
+#    image already bundles the jar; leaving it makes spark-submit abort at Ivy resolution.
+#  - spark.driver.memory: the preset encodes the whole budget here for LOCAL mode (driver == worker).
+#    In cluster mode that budget belongs on the EXECUTOR (see below); the driver stays modest.
+_DROP_KEYS = {"spark.master", "spark.jars.packages", "spark.driver.memory"}
+
+# Default driver heap in cluster mode — the driver only coordinates + does small collects; the heavy
+# work runs on the executor. Overridable via SPARK_DRIVER_MEMORY.
+_CLUSTER_DRIVER_MEMORY = os.environ.get("SPARK_DRIVER_MEMORY", "8g")
+
+
+def _preset_executor_cores(raw: dict[str, str]) -> str:
+    """Cores per executor, taken from the preset's local[N] master (cluster: one executor, N cores)."""
+    match = re.search(r"local\[(\d+)\]", raw.get("spark.master", ""))
+    if match:
+        return match.group(1)
+    return os.environ.get("SPARK_CORE_NUMBER", "8")
+
+
 def spark_submit_conf(preset: str = DEFAULT_SPARK_PRESET) -> dict[str, str]:
-    """Resource + driver/executor config for ``SparkSubmitOperator(conf=...)``."""
+    """Resource + driver/executor config for ``SparkSubmitOperator(conf=...)``.
+
+    The genpm presets in ``SPARK_CONFIGS`` are written for LOCAL mode, where ``spark.driver.memory``
+    and ``local[N]`` describe the *whole* budget. Under Airflow we submit to the standalone cluster
+    (client mode), so the heavy work runs on executors — we map the preset budget onto
+    ``spark.executor.memory`` / ``spark.executor.cores`` (one executor, N cores) and keep the driver
+    small. So HALF_SAFE → a ~55g / 16-core executor; FULL_RESOURCES → ~86g / 30 cores.
+    """
     if preset not in SPARK_CONFIGS:
         raise KeyError(
             f"Unknown Spark preset {preset!r}; known: {sorted(SPARK_CONFIGS)}"
         )
-    preset_conf = {
-        k: v for k, v in SPARK_CONFIGS[preset].items() if k != "spark.master"
-    }
+    raw = SPARK_CONFIGS[preset]
+    budget_memory = raw.get("spark.driver.memory", "8g")
+    executor_cores = _preset_executor_cores(raw)
+    preset_conf = {k: v for k, v in raw.items() if k not in _DROP_KEYS}
     return {
         **preset_conf,
+        # Cluster executor gets the preset's resource budget (this is where the heavy work runs).
+        "spark.executor.memory": budget_memory,
+        "spark.executor.cores": executor_cores,
+        "spark.cores.max": executor_cores,
+        # Driver (client mode, on the Airflow worker) stays modest.
+        "spark.driver.memory": _CLUSTER_DRIVER_MEMORY,
         "spark.driver.host": os.environ.get("SPARK_DRIVER_HOST", "airflow-worker"),
         "spark.driver.bindAddress": "0.0.0.0",
         "spark.pyspark.driver.python": spark_driver_python(),

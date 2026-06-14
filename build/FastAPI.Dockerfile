@@ -1,4 +1,4 @@
-FROM python:3.13-alpine AS builder
+FROM python:3.12-alpine AS builder
 
 WORKDIR /app
 
@@ -9,7 +9,7 @@ COPY --from=ghcr.io/astral-sh/uv:0.8.13 /uv /uvx /bin/
 COPY apps/backend/pyproject.toml apps/backend/uv.lock ./
 RUN uv sync --dev
 
-FROM python:3.13-alpine
+FROM python:3.12-alpine
 
 WORKDIR /app
 
