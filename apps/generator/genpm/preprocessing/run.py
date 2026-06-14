@@ -4,6 +4,7 @@ from pyspark.sql import functions as f
 from genpm.preprocessing.configs import PreprocessingConfig
 from genpm.preprocessing.logic import imputing, kpi_coverage, scaling, simple_logic
 from genpm.raw_vis.pm_schema import normalize_pm_dataframe
+from genpm.preprocessing.metadata import dump_metadata_json
 from genpm.utils.consts import MAX_IMPUTABLE_GAP, SHARED_DIR_PATH
 from genpm.utils.logger import get_logger
 from genpm.utils.spark_session import SparkDataManager
@@ -447,3 +448,11 @@ def run_preprocessing(sdm: SparkDataManager, preprocessing_cfg: PreprocessingCon
         )
 
     logger.info("Preprocessing pipeline complete")
+
+    metadata_json_path = "/".join([preprocessing_cfg.output_path_prefix, "pm_metadata.json"])
+    logger.info(f"Writing dataset metadata JSON to {metadata_json_path}")
+    dump_metadata_json(
+        pm_df_wide_materialized_windows,
+        output_path=metadata_json_path,
+        dataset_path="/".join([preprocessing_cfg.output_path_prefix, "pm_df_wide_indexed_winds"]),
+    )
