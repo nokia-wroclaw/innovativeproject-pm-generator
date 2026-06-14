@@ -18,11 +18,16 @@ def _add_generate_args(p: argparse.ArgumentParser) -> None:
     p.add_argument("--holiday", type=int, default=0)
     p.add_argument("--batch-size", type=int, default=64)
     p.add_argument("--seed", type=int, default=42)
+    p.add_argument(
+        "--cell-configs",
+        nargs="+",
+        default=None,
+        help="Explicit config values for conditioning. If omitted, looked up by --cell-id.",
+    )
     p.add_argument("--seq-len", type=int, default=168)
     p.add_argument("--n-dim", type=int, default=235)
     p.add_argument("--global-latent-dim", type=int, default=64)
     p.add_argument("--local-latent-dim", type=int, default=0)
-    p.add_argument("--cell-embed-dim", type=int, default=32)
     p.add_argument("--hidden-dim", type=int, default=256)
     p.add_argument("--n-layers", type=int, default=2)
     p.add_argument("--use-attention", action="store_true", default=True)
@@ -45,7 +50,6 @@ def _add_train_args(p: argparse.ArgumentParser) -> None:
     p.add_argument("--weights-path", required=True)
     p.add_argument("--global-latent-dim", type=int, default=64)
     p.add_argument("--local-latent-dim", type=int, default=0)
-    p.add_argument("--cell-embed-dim", type=int, default=32)
     p.add_argument("--hidden-dim", type=int, default=256)
     p.add_argument("--n-layers", type=int, default=2)
     p.add_argument("--use-attention", action="store_true", default=True)
@@ -94,11 +98,11 @@ def main(argv=None):
             holiday=args.holiday,
             batch_size=args.batch_size,
             seed=args.seed,
+            cell_configs=args.cell_configs,
             seq_len=args.seq_len,
             n_dim=args.n_dim,
             global_latent_dim=args.global_latent_dim,
             local_latent_dim=args.local_latent_dim,
-            cell_embed_dim=args.cell_embed_dim,
             hidden_dim=args.hidden_dim,
             n_layers=args.n_layers,
             use_attention=args.use_attention,
@@ -116,7 +120,6 @@ def main(argv=None):
             weights_path=args.weights_path,
             global_latent_dim=args.global_latent_dim,
             local_latent_dim=args.local_latent_dim,
-            cell_embed_dim=args.cell_embed_dim,
             hidden_dim=args.hidden_dim,
             n_layers=args.n_layers,
             use_attention=args.use_attention,

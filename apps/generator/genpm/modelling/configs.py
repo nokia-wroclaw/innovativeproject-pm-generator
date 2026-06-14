@@ -15,12 +15,14 @@ class GenerateConfig:
     holiday: int = 0
     batch_size: int = 64
     seed: int = 42
+    # Conditioning: explicit config values; if None, looked up by cell_id from the
+    # training cell_config_map.
+    cell_configs: list | None = None
     # Model architecture (must match the trained checkpoint)
     seq_len: int = 168
     n_dim: int = 235
     global_latent_dim: int = 64
     local_latent_dim: int = 0
-    cell_embed_dim: int = 32
     hidden_dim: int = 256
     n_layers: int = 2
     use_attention: bool = True
@@ -36,10 +38,9 @@ class TrainConfig:
     training_data_path: str
     run_dir_path: str
     weights_path: str
-    # Model architecture (v5)
+    # Model architecture (v6)
     global_latent_dim: int = 64
     local_latent_dim: int = 0
-    cell_embed_dim: int = 32
     hidden_dim: int = 256
     n_layers: int = 2
     use_attention: bool = True
@@ -81,7 +82,6 @@ class ValidateConfig:
     n_dim: int = 235
     global_latent_dim: int = 64
     local_latent_dim: int = 0
-    cell_embed_dim: int = 32
     hidden_dim: int = 256
     n_layers: int = 2
     use_attention: bool = True

@@ -3,7 +3,7 @@
 import numpy as np
 import pandas as pd
 
-from genpm.modelling.core.data import SEQ_LEN, SYNTHETIC_ORIGIN, Y_DIM
+from genpm.modelling.core.data import CONTEXT_DIM, SEQ_LEN, SYNTHETIC_ORIGIN
 from genpm.utils.logger import get_logger
 
 logger = get_logger()
@@ -163,8 +163,8 @@ def _inverse_transform_3d(
 
 
 def _holiday_col_index(y_labels: np.ndarray) -> int:
-    """Holiday column index: 1 for compact y (dim=6), last-5 for legacy one-hot Y."""
-    return 1 if y_labels.shape[1] == Y_DIM else y_labels.shape[1] - 5
+    """Holiday column index — first of the trailing context block [holiday | seasonal(4)]."""
+    return y_labels.shape[1] - CONTEXT_DIM
 
 
 def _select_cell_windows(
@@ -329,7 +329,8 @@ def _run_batched_generation(model, y_windows: np.ndarray, batch_size: int) -> np
 
 def generate_windows(
     model,
-    cell_encoder,
+    config_encoder,
+    cell_config_map: dict,
     cell_id: str,
     anchor_date: str,
     n_weeks: int,
@@ -339,17 +340,31 @@ def generate_windows(
     batch_size: int,
     seed: int,
     kpi_list: list,
+    cell_configs: list | None = None,
 ) -> pd.DataFrame:
+    """Generate synthetic windows for a cell, conditioning on its config values.
+
+    Configs come from `cell_configs` if given, else are looked up from
+    `cell_config_map` by `cell_id`. cell_id remains the output / inverse-scaling key.
+    """
     from genpm.modelling.core.data import encode_seasonal_features
 
-    cell_idx = cell_encoder.transform([cell_id])[0]
+    if cell_configs is None:
+        configs_map = cell_config_map["map"]
+        if str(cell_id) not in configs_map:
+            raise ValueError(
+                f"cell_id='{cell_id}' not found in cell_config_map; pass cell_configs explicitly."
+            )
+        cell_configs = configs_map[str(cell_id)]
+
+    config_onehot = config_encoder.transform([cell_configs])[0].astype(np.float32)
 
     anchors = []
     y_windows = []
     for week in range(n_weeks):
         anchor = pd.Timestamp(anchor_date) + pd.Timedelta(weeks=week)
         seasonal = encode_seasonal_features(anchor)
-        y_windows.append([cell_idx, holiday, *seasonal])
+        y_windows.append([*config_onehot, holiday, *seasonal])
         anchors.append(anchor)
 
     y_windows = np.array(y_windows, dtype=np.float32)

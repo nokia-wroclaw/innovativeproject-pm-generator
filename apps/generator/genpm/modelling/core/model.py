@@ -17,7 +17,6 @@ HP_V5 = dict(
     batch_size=64,
     global_latent_dim=64,
     local_latent_dim=0,
-    cell_embed_dim=32,
     hidden_dim=256,
     n_layers=2,
     use_attention=True,
@@ -38,10 +37,9 @@ HP_V5 = dict(
 def build_cvae_lstm(
     seq_len: int,
     feat_dim: int,
-    n_cells: int,
+    y_dim: int,
     global_latent_dim: int = 64,
     local_latent_dim: int = 0,
-    cell_embed_dim: int = 32,
     hidden_dim: int = 256,
     n_layers: int = 2,
     use_attention: bool = True,
@@ -52,19 +50,18 @@ def build_cvae_lstm(
     free_bits_local: float = 0.0,
     output_activation: str = "sigmoid",
 ):
-    """Instantiate and compile the cVAE-LSTM v5 architecture."""
+    """Instantiate and compile the cVAE-LSTM v6 architecture."""
     logger.info(
-        f"Building model | seq_len={seq_len} feat_dim={feat_dim} n_cells={n_cells} "
+        f"Building model | seq_len={seq_len} feat_dim={feat_dim} y_dim={y_dim} "
         f"global_latent_dim={global_latent_dim} hidden_dim={hidden_dim} "
         f"n_layers={n_layers} use_attention={use_attention}"
     )
     arch = cVAE_LSTMv5Architecture(
         seq_len=seq_len,
         feat_dim=feat_dim,
-        n_cells=n_cells,
+        y_dim=y_dim,
         global_latent_dim=global_latent_dim,
         local_latent_dim=local_latent_dim,
-        cell_embed_dim=cell_embed_dim,
         hidden_dim=hidden_dim,
         n_layers=n_layers,
         use_attention=use_attention,

@@ -10,12 +10,11 @@ logger = get_logger()
 
 def run_generation(cfg: GenerateConfig) -> None:
     logger.info(f"Loading artifacts from {cfg.run_dir_path}")
-    model, cell_encoder = load_trained_model(
+    model, config_encoder, cell_config_map = load_trained_model(
         run_id_path=Path(cfg.run_dir_path),
         weights_path=Path(cfg.weights_path),
         global_latent_dim=cfg.global_latent_dim,
         local_latent_dim=cfg.local_latent_dim,
-        cell_embed_dim=cfg.cell_embed_dim,
         hidden_dim=cfg.hidden_dim,
         n_layers=cfg.n_layers,
         use_attention=cfg.use_attention,
@@ -29,7 +28,8 @@ def run_generation(cfg: GenerateConfig) -> None:
     logger.info(f"Generating {cfg.n_weeks} week(s) for cell '{cfg.cell_id}' from {cfg.anchor_date}")
     windows = generate_windows(
         model=model,
-        cell_encoder=cell_encoder,
+        config_encoder=config_encoder,
+        cell_config_map=cell_config_map,
         cell_id=cfg.cell_id,
         anchor_date=cfg.anchor_date,
         n_weeks=cfg.n_weeks,
@@ -39,6 +39,7 @@ def run_generation(cfg: GenerateConfig) -> None:
         batch_size=cfg.batch_size,
         seed=cfg.seed,
         kpi_list=cfg.kpi_list,
+        cell_configs=cfg.cell_configs,
     )
 
     output_path = Path(cfg.output_path)
