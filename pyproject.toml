@@ -3,7 +3,7 @@ name = "genpm"
 version = "0.0.1"
 description = "GenPM monorepo workspace"
 readme = "README.md"
-requires-python = ">=3.11"
+requires-python = ">=3.12,<3.13"
 dependencies = []
 
 [tool.uv]
