@@ -362,7 +362,7 @@ def run_preprocessing(sdm: SparkDataManager, preprocessing_cfg: PreprocessingCon
     # )
 
     # This list, has to be created here, as it is brought from filtered
-    selected_kpis = [r["kpi_id"] for r in pm_df_long_scaled.select("kpi_id").distinct().collect()]
+    # selected_kpis = [r["kpi_id"] for r in pm_df_long_scaled.select("kpi_id").distinct().collect()]
     # INTERMIEDIATE END
 
     good_windows_selected = kpi_coverage.filter_joint_complete_windows(
