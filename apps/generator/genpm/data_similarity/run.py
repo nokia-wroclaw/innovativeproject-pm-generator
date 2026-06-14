@@ -7,6 +7,7 @@ from urllib.parse import urlparse
 
 import plotly.graph_objects as go
 from pyspark.sql import DataFrame
+from pyspark.sql.functions import col, concat_ws, lit
 
 from genpm.data_similarity.configs import DataSimilarityConfig
 from genpm.data_similarity.data_similarity_utils import (
@@ -22,6 +23,20 @@ from genpm.utils.spark_session import SparkDataManager
 logger = get_logger()
 
 
+def _add_config_id_and_filter(
+    real_sdf: DataFrame,
+    cell_config_cols: list[str],
+    cell_configs: list[str],
+) -> DataFrame:
+    """Combine [CELL] columns into config_id, drop originals, filter to target config."""
+    target = "|".join(str(c) for c in cell_configs)
+    real_sdf = real_sdf.withColumn("config_id", concat_ws("|", *[col(c) for c in cell_config_cols]))
+    real_sdf = real_sdf.filter(col("config_id") == lit(target))
+    real_sdf = real_sdf.drop(*cell_config_cols)
+    logger.info(f"Real data filtered to config_id='{target}'")
+    return real_sdf
+
+
 def _load_data(
     sdm: SparkDataManager,
     cfg: DataSimilarityConfig,
@@ -31,11 +46,18 @@ def _load_data(
 
     If real_ts_col / synth_ts_col differ from ts_col they are renamed so that
     both DataFrames share the same ts column name before metric computation.
+
+    If cell_config_cols and cell_configs are set, combines the [CELL] columns
+    in the real data into a config_id column (matching the generated data format)
+    and filters to only rows for the target config.
     """
     logger.info(f"Real: reading parquet from {cfg.real_data_path}")
     real_sdf = sdm.read_parquet(cfg.real_data_path)
     if cfg.real_ts_col is not None and cfg.real_ts_col != cfg.ts_col:
         real_sdf = real_sdf.withColumnRenamed(cfg.real_ts_col, cfg.ts_col)
+
+    if cfg.cell_config_cols is not None and cfg.cell_configs is not None:
+        real_sdf = _add_config_id_and_filter(real_sdf, cfg.cell_config_cols, cfg.cell_configs)
 
     logger.info(f"Synth: reading parquet from {cfg.synth_data_path}")
     synth_sdf = sdm.read_parquet(cfg.synth_data_path)

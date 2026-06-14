@@ -21,6 +21,12 @@ class DataSimilarityConfig:
     real_ts_col: str | None = None
     synth_ts_col: str | None = None
 
+    # Cell config filtering: combine these columns (in order) from the real data into
+    # config_id and keep only rows whose config_id matches "|".join(cell_configs).
+    # Both must be set together or both left as None.
+    cell_config_cols: list[str] | None = None  # ordered [CELL] column names in real data
+    cell_configs: list[str] | None = None  # target config values in the same column order
+
     # Single-KPI metric parameters
     acf_max_lag: int = 24 * 8
     ls_min_period_h: float = 2.0

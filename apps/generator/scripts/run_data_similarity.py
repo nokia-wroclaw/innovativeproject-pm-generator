@@ -12,10 +12,15 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+import joblib  # noqa: E402
+
 from genpm.data_similarity.configs import DataSimilarityConfig  # noqa: E402
 from genpm.data_similarity.run import run_data_similarity  # noqa: E402
 from genpm.utils.consts import SHARED_DIR_PATH  # noqa: E402
 from genpm.utils.spark_session import SparkDataManager  # noqa: E402
+
+RUN_DIR = SHARED_DIR_PATH / "model_runs" / "run_6_dummy"
+_cmap = joblib.load(RUN_DIR / "cell_config_map.pkl")
 
 REAL_DATA_PATH = str(
     SHARED_DIR_PATH / "preprocessed_dataset" / "final_pmcm" / "pm_df_wide_indexed_winds"
@@ -27,6 +32,16 @@ SYNTH_DATA_PATH = str(
 )
 OUTPUT_PATH = str(SHARED_DIR_PATH / "data_similarity_output")
 
+# Config values in the same order as config_cols from the artifact (must match generation).
+_CONFIG_VALUES = {
+    "[CELL] 5gCellDeploymentTypeSaNsa": "NR2500(B41)_100MHz",
+    "[CELL] CellDuplexMode": "1900(B25)",
+    "[CELL] ChannelBandwidth": "100",
+    "[CELL] FrequencyBand": "TDD",
+    "[CELL] FrequencyBandAndBandwidth": "both",
+}
+CELL_CONFIG_COLS = _cmap["config_cols"]
+CELL_CONFIGS = [_CONFIG_VALUES[col] for col in CELL_CONFIG_COLS]
 
 # This should be given by front
 KPI_COLS = [
@@ -46,6 +61,8 @@ cfg = DataSimilarityConfig(
     ts_col="ts",
     single_kpi_cols=KPI_COLS,
     multi_kpi_cols=KPI_COLS,
+    cell_config_cols=CELL_CONFIG_COLS,
+    cell_configs=CELL_CONFIGS,
     save_summary_json=True,
 )
 

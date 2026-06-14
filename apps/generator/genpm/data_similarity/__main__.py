@@ -5,7 +5,7 @@ import argparse
 from genpm.data_similarity.configs import DataSimilarityConfig
 from genpm.data_similarity.run import run_data_similarity
 from genpm.utils.consts import SPARK_CONFIGS
-from genpm.utils.utils import SparkDataManager
+from genpm.utils.spark_session import SparkDataManager
 
 
 def main(argv=None):
@@ -49,6 +49,26 @@ def main(argv=None):
     # Time column
     parser.add_argument("--ts-col", default="ts")
 
+    # Cell config filtering for real data
+    parser.add_argument(
+        "--cell-config-cols",
+        nargs="+",
+        default=None,
+        help=(
+            "Ordered [CELL] column names in the real data to combine into config_id "
+            "(must match the order used during training, e.g. from cell_config_map['config_cols'])."
+        ),
+    )
+    parser.add_argument(
+        "--cell-configs",
+        nargs="+",
+        default=None,
+        help=(
+            "Target config values in the same order as --cell-config-cols. "
+            "Real data is filtered to rows whose joined config_id matches these values."
+        ),
+    )
+
     # Single-KPI metric parameters
     parser.add_argument("--acf-max-lag", type=int, default=24 * 8)
     parser.add_argument("--ls-min-period-h", type=float, default=2.0)
@@ -79,9 +99,11 @@ def main(argv=None):
         ls_n_freq=args.ls_n_freq,
         kde_n_grid=args.kde_n_grid,
         n_projections=args.n_projections,
+        cell_config_cols=args.cell_config_cols,
+        cell_configs=args.cell_configs,
     )
 
-    sdm = SparkDataManager(SPARK_CONFIGS["HALF_SAFE"])
+    sdm = SparkDataManager(additional_conf=SPARK_CONFIGS["HALF_SAFE"])
 
     run_data_similarity(sdm, cfg)
 
