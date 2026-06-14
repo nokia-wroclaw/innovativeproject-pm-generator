@@ -86,7 +86,7 @@ const artifactLabels = {
   preprocessed_dataset: 'Preprocessed dataset',
   featured_dataset: 'Featured dataset',
   training_dataset: 'Training dataset',
-  model_pickle: 'Model pickle',
+  model_pickle: 'Model',
 };
 
 const processDefinitions = {

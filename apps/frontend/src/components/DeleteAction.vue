@@ -60,7 +60,7 @@ const handleConfirm = async () => {
     @close="handleClose"
   >
     <p class="delete-warning">
-      Are you sure you want to delete <strong>{{ item.file_name }}</strong>?
+      Are you sure you want to delete <strong>{{ item.file_name || item.name }}</strong>?
       This action cannot be undone.
     </p>
 

@@ -1,15 +1,5 @@
 <template>
   <div class="space-y-6">
-    <section class="rounded-xl border border-border-default bg-surface p-5 shadow-sm">
-      <div>
-        <h2 class="text-lg font-semibold text-fg">Synthetic data generation</h2>
-        <p class="mt-1 text-sm text-fg-muted">
-          Select a trained model and provide a prompt to generate synthetic data.
-          Run status remains available when you navigate to other sections.
-        </p>
-      </div>
-    </section>
-
     <section class="grid gap-6">
       <ModelingProcessCard
         :process="generateProcessCard"

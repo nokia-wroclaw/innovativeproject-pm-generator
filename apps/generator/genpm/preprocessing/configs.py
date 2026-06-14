@@ -19,8 +19,6 @@ class PreprocessingConfig:
     simple_reports_raw_path: str
     # Intermediate for saving
     intermediate_path: str
-    # Path prefix - output paths
-    output_path_prefix: str
     # KPI coverage - filter thresholds
     # Minimum non-null fraction over a series' own active range (Stage 0 density check)
     kpi_min_global_density: float

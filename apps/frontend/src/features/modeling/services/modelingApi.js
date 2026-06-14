@@ -10,6 +10,12 @@ export const listModelingDatasets = () =>
 export const listModelingModels = () =>
   authorizedRequest(`${BASE}/models`);
 
+export const createTrainedModel = (body) =>
+  authorizedRequest(`${BASE}/models`, {
+    method: 'POST',
+    body: JSON.stringify(body),
+  });
+
 export const getModelingFormSchema = (processType, options = {}) =>
   authorizedRequest(`${BASE}/processes/${enc(processType)}/form-schema`, {
     timeoutMs: FORM_SCHEMA_TIMEOUT_MS,
@@ -24,3 +30,15 @@ export const triggerModelingRun = (processType, body) =>
 
 export const getModelingRunStatus = (processType, runId) =>
   authorizedRequest(`${BASE}/processes/${enc(processType)}/runs/${enc(runId)}`);
+
+export const updateTrainedModel = (modelId, body) =>
+  authorizedRequest(`${BASE}/models/${enc(modelId)}`, {
+    method: 'PATCH',
+    body: JSON.stringify(body),
+  });
+
+export const deleteTrainedModel = (modelId, deleteFromS3 = false) =>
+  authorizedRequest(`${BASE}/models/${enc(modelId)}?delete_from_s3=${Boolean(deleteFromS3)}`, {
+    method: 'DELETE',
+  });
+

@@ -40,12 +40,30 @@
           :options="modelOptions"
         />
 
-        <ModelingFormTextarea
-          v-model="form.prompt"
-          label="Generation prompt"
-          placeholder="Describe the synthetic event log to generate…"
-          hint="Instructions passed to the generation DAG."
-          :rows="5"
+        <ModelingFormSelect
+          v-if="isAdmin && form.model_id"
+          v-model="form.comparison_dataset_id"
+          label="Comparison dataset"
+          hint="Dataset used to compare generated results."
+          placeholder="Select dataset"
+          :options="datasetOptions"
+          value-type="number"
+        />
+
+        <ModelingFormInput
+          v-if="isAdmin && form.model_id"
+          v-model="form.encoder_s3_key"
+          label="Encoder S3 Key"
+          placeholder="e.g. models/my_encoder.pkl"
+          required
+        />
+
+        <ModelingFormInput
+          v-if="isAdmin && form.model_id"
+          v-model="form.config_s3_key"
+          label="Config S3 Key"
+          placeholder="e.g. models/my_config.json"
+          required
         />
 
         <div
@@ -79,11 +97,12 @@ import { Loader2 } from 'lucide-vue-next';
 
 import BaseModal from '@/components/BaseModal.vue';
 import { Button } from '@/components/ui';
-import { useModelingModels } from '../composables/queries.js';
+import { useModelingModels, useModelingDatasets } from '../composables/queries.js';
 import { useModelingProcessRun } from '../composables/useModelingProcessRun.js';
+import ModelingFormInput from './form-fields/ModelingFormInput.vue';
 import ModelingFormSelect from './form-fields/ModelingFormSelect.vue';
-import ModelingFormTextarea from './form-fields/ModelingFormTextarea.vue';
 import ModelingRunStatusPanel from './ModelingRunStatusPanel.vue';
+import { isAdmin } from '@/auth/keycloak';
 
 const props = defineProps({
   show: { type: Boolean, required: true },
@@ -96,6 +115,18 @@ const modelsQuery = useModelingModels();
 const models = computed(() => modelsQuery.data.value ?? []);
 const modelsError = computed(() => modelsQuery.error.value);
 const isModelsLoading = computed(() => modelsQuery.isLoading.value);
+
+const datasetsQuery = useModelingDatasets({
+  enabled: computed(() => isAdmin.value),
+});
+const datasets = computed(() => datasetsQuery.data.value ?? []);
+const datasetOptions = computed(() => {
+  if (!isAdmin.value) return [];
+  return datasets.value.map((dataset) => ({
+    value: dataset.id,
+    label: `#${dataset.id} · ${dataset.file_name} (${dataset.type})`,
+  }));
+});
 
 const {
   phase,
@@ -111,7 +142,9 @@ const {
 
 const form = reactive({
   model_id: '',
-  prompt: '',
+  comparison_dataset_id: '',
+  encoder_s3_key: '',
+  config_s3_key: '',
 });
 
 const modelOptions = computed(() =>
@@ -122,8 +155,27 @@ const modelOptions = computed(() =>
 );
 
 const isSubmitDisabled = computed(
-  () => !form.model_id || !form.prompt.trim() || isModelsLoading.value,
+  () =>
+    !form.model_id ||
+    !form.encoder_s3_key.trim() ||
+    !form.config_s3_key.trim() ||
+    isModelsLoading.value,
 );
+
+function updateFormFromModel(modelId, list) {
+  if (modelId && list && list.length) {
+    const selectedModel = list.find((m) => String(m.id) === String(modelId));
+    if (selectedModel) {
+      form.comparison_dataset_id = selectedModel.dataset_id || '';
+      form.encoder_s3_key = selectedModel.encoder_s3_key || '';
+      form.config_s3_key = selectedModel.config_s3_key || '';
+      return;
+    }
+  }
+  form.comparison_dataset_id = '';
+  form.encoder_s3_key = '';
+  form.config_s3_key = '';
+}
 
 watch(
   () => props.show,
@@ -134,34 +186,54 @@ watch(
     }
     formError.value = '';
     form.model_id = models.value[0]?.id ?? '';
-    form.prompt = '';
+    updateFormFromModel(form.model_id, models.value);
   },
   { immediate: true },
 );
 
-watch(models, (list) => {
-  if (props.show && !form.model_id && list.length) {
-    form.model_id = list[0].id;
+watch(
+  () => models.value,
+  (list) => {
+    if (props.show && !form.model_id && list.length) {
+      form.model_id = list[0].id;
+    }
   }
-});
+);
+
+watch(
+  [() => form.model_id, () => models.value],
+  ([nextModelId, list]) => {
+    updateFormFromModel(nextModelId, list);
+  },
+  { immediate: true },
+);
 
 async function submit() {
-  const prompt = form.prompt.trim();
   if (!form.model_id) {
     formError.value = 'Select a trained model.';
     phase.value = 'error';
     return;
   }
-  if (!prompt) {
-    formError.value = 'The generation prompt is required.';
+  const encoderKey = form.encoder_s3_key.trim();
+  const configKey = form.config_s3_key.trim();
+  if (!encoderKey) {
+    formError.value = 'The Encoder S3 Key is required.';
+    phase.value = 'error';
+    return;
+  }
+  if (!configKey) {
+    formError.value = 'The Config S3 Key is required.';
     phase.value = 'error';
     return;
   }
 
   await triggerRun(
     {
-      model_id: form.model_id,
-      prompt,
+      model_id: String(form.model_id),
+      prompt: '',
+      comparison_dataset_id: form.comparison_dataset_id ? Number(form.comparison_dataset_id) : null,
+      encoder_s3_key: encoderKey,
+      config_s3_key: configKey,
       dag_args: {},
     },
     emit,
@@ -172,3 +244,4 @@ function onClose() {
   emit('close');
 }
 </script>
+

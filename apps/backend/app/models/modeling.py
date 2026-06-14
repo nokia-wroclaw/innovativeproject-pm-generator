@@ -1,6 +1,7 @@
+from datetime import datetime
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from app.db.schemas import DagRunStatus, DatasetStatus, DatasetType
 
@@ -52,13 +53,22 @@ class ModelingFormSchema(BaseModel):
 
 
 class ModelingTrainedModelOption(BaseModel):
-    model_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(extra="forbid", from_attributes=True)
 
     id: str
     name: str
-    source_run_id: str | None = None
     path: str
+    encoder_s3_key: str | None = None
+    config_s3_key: str | None = None
+    dataset_id: int | None = None
     created_at: str | None = None
+
+    @field_validator("created_at", mode="before")
+    @classmethod
+    def serialize_created_at(cls, v: Any) -> Any:
+        if isinstance(v, datetime):
+            return v.isoformat() + "Z"
+        return v
 
 
 class ModelingRunRequest(BaseModel):
@@ -73,7 +83,10 @@ class GenerateRunRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     model_id: str = Field(min_length=1)
-    prompt: str = Field(min_length=1)
+    encoder_s3_key: str = Field(min_length=1)
+    config_s3_key: str = Field(min_length=1)
+    prompt: str = ""
+    comparison_dataset_id: int | None = Field(default=None, gt=0)
     dag_args: dict[str, Any] = Field(default_factory=dict)
 
 
@@ -117,3 +130,48 @@ class ModelingRunStatus(BaseModel):
     logs: list[str] = Field(default_factory=list)
     metrics: dict[str, float] | None = None
     artifacts: list[ModelingArtifact] = Field(default_factory=list)
+
+
+class TrainedModelCreate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    name: str = Field(min_length=1)
+    s3_key: str = Field(min_length=1)
+    encoder_s3_key: str = Field(min_length=1)
+    config_s3_key: str = Field(min_length=1)
+    dataset_id: int
+
+
+class ModelUploadInitiateRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    name: str
+    file_name: str
+    dataset_id: int
+
+
+class ModelUploadInitiateResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    model_id: int
+    s3_key: str
+    upload_url: str
+
+
+class TrainedModelUpdate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    name: str | None = Field(default=None, min_length=1)
+    s3_key: str | None = Field(default=None, min_length=1)
+    encoder_s3_key: str | None = Field(default=None, min_length=1)
+    config_s3_key: str | None = Field(default=None, min_length=1)
+    dataset_id: int | None = Field(default=None, gt=0)
+
+
+class DeleteModelResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    message: str
+    model_id: int
+    deleted_from_s3: bool
+

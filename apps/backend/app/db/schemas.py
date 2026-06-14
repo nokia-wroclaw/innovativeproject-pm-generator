@@ -7,6 +7,7 @@ from sqlalchemy import DateTime, ForeignKey, Integer, String, UniqueConstraint, 
 from sqlalchemy import Enum as SQLEnum
 from sqlalchemy.orm import Mapped, mapped_column
 
+from app.core.config import get_settings
 from app.db.database import Base
 
 RunType = Literal["manual", "scheduled", "backfill", "asset_triggered"]
@@ -100,3 +101,26 @@ class PipelineRun(Base):
     created_at: Mapped[datetime.datetime] = mapped_column(
         DateTime, default=datetime.datetime.utcnow
     )
+
+
+
+class TrainedModel(Base):
+    __tablename__ = "trained_models"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, unique=True, autoincrement=True)
+    user_uuid: Mapped[uuid.UUID] = mapped_column(Uuid, index=True)
+    name: Mapped[str] = mapped_column(String, nullable=False)
+    s3_key: Mapped[str] = mapped_column(String, nullable=False, unique=True)
+    encoder_s3_key: Mapped[str] = mapped_column(String, nullable=False)
+    config_s3_key: Mapped[str] = mapped_column(String, nullable=False)
+    dataset_id: Mapped[int | None] = mapped_column(
+        Integer, ForeignKey("datasets.id", ondelete="SET NULL"), nullable=True
+    )
+    created_at: Mapped[datetime.datetime] = mapped_column(
+        DateTime, default=datetime.datetime.utcnow
+    )
+
+    @property
+    def path(self) -> str:
+        return f"s3://{get_settings().s3_bucket}/{self.s3_key}"
+
