@@ -6,16 +6,20 @@ class DataSimilarityConfig:
     # Path prefix - output (required)
     output_path_prefix: str
 
-    # RAW paths - input (optional if fake flags are set)
-    real_data_path: str | None = None
-    synth_data_path: str | None = None
+    # RAW paths - input (required)
+    real_data_path: str
+    synth_data_path: str
 
     # KPI columns to validate
     single_kpi_cols: list[str] = field(default_factory=list)
     multi_kpi_cols: list[str] = field(default_factory=list)
 
-    # Time column name
+    # Time column name used internally by metric functions
     ts_col: str = "ts"
+
+    # Raw ts column names in the source parquets (if different from ts_col, renamed on load)
+    real_ts_col: str | None = None
+    synth_ts_col: str | None = None
 
     # Single-KPI metric parameters
     acf_max_lag: int = 24 * 8
@@ -27,14 +31,5 @@ class DataSimilarityConfig:
     # Multi-KPI metric parameters
     n_projections: int = 200
 
-    # Fake real series params
-    fake_real_start_date: str = "2025-01-01"
-    fake_real_n_days: int = 90
-    fake_real_noise_std: float = 0.3
-    fake_real_seed: int = 10
-
-    # Fake synth series params
-    fake_synth_start_date: str = "2025-04-01"
-    fake_synth_n_days: int = 14
-    fake_synth_noise_std: float = 1.0
-    fake_synth_seed: int = 20
+    # Output
+    save_summary_json: bool = True

@@ -5,7 +5,7 @@ import pandas as pd
 from pyspark.sql import DataFrame
 from pyspark.sql import types as T
 
-from genpm.utils.utils import SparkDataManager
+from genpm.utils.spark_session import SparkDataManager
 
 sdm = SparkDataManager()
 spark = sdm.spark

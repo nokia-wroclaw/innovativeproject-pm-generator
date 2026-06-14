@@ -3,6 +3,7 @@
 import json
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlparse
 
 import plotly.graph_objects as go
 from pyspark.sql import DataFrame
@@ -15,45 +16,10 @@ from genpm.data_similarity.data_similarity_utils import (
     create_single_kpi_figure,
 )
 from genpm.utils.logger import get_logger
-from genpm.utils.utils import SparkDataManager
-from scripts.fake_timeseries import (
-    make_multi,
-    multi_schema,
-    pdf_to_spark_with_schema,
-)
+from genpm.utils.s3_io import write_json_to_s3
+from genpm.utils.spark_session import SparkDataManager
 
 logger = get_logger()
-
-
-def _generate_fake_real(cfg: DataSimilarityConfig) -> DataFrame:
-    """
-    Generates fake 'real' data via make_multi.
-
-    Uses the fixed multi-KPI schema (ts, kpi_a, kpi_b, kpi_c). Single-KPI
-    validation works on each of these columns individually.
-    """
-    pdf = make_multi(
-        start_date=cfg.fake_real_start_date,
-        n_days=cfg.fake_real_n_days,
-        noise_std=cfg.fake_real_noise_std,
-        seed=cfg.fake_real_seed,
-    )
-
-    return pdf_to_spark_with_schema(pdf, multi_schema)
-
-
-def _generate_fake_synth(cfg: DataSimilarityConfig) -> DataFrame:
-    """
-    Generates fake 'synth' data via make_multi with different noise / seed.
-    """
-    pdf = make_multi(
-        start_date=cfg.fake_synth_start_date,
-        n_days=cfg.fake_synth_n_days,
-        noise_std=cfg.fake_synth_noise_std,
-        seed=cfg.fake_synth_seed,
-    )
-
-    return pdf_to_spark_with_schema(pdf, multi_schema)
 
 
 def _load_data(
@@ -63,26 +29,18 @@ def _load_data(
     """
     Loads real and synthetic data as Spark DataFrames.
 
-    Each source independently:
-    - cfg.real_data_path / cfg.synth_data_path = None -> generate fake via make_multi
-    - otherwise -> read parquet from cfg.real_data_path / cfg.synth_data_path
-
-    Path validation (path present when fake flag not set) is done in __main__.py
-    before construction of cfg.
+    If real_ts_col / synth_ts_col differ from ts_col they are renamed so that
+    both DataFrames share the same ts column name before metric computation.
     """
-    if cfg.real_data_path is None:
-        logger.info("Real: generating fake series via make_multi")
-        real_sdf = _generate_fake_real(cfg)
-    else:
-        logger.info(f"Real: reading parquet from {cfg.real_data_path}")
-        real_sdf = sdm.read_parquet(cfg.real_data_path)
+    logger.info(f"Real: reading parquet from {cfg.real_data_path}")
+    real_sdf = sdm.read_parquet(cfg.real_data_path)
+    if cfg.real_ts_col is not None and cfg.real_ts_col != cfg.ts_col:
+        real_sdf = real_sdf.withColumnRenamed(cfg.real_ts_col, cfg.ts_col)
 
-    if cfg.synth_data_path is None:
-        logger.info("Synth: generating fake series via make_multi")
-        synth_sdf = _generate_fake_synth(cfg)
-    else:
-        logger.info(f"Synth: reading parquet from {cfg.synth_data_path}")
-        synth_sdf = sdm.read_parquet(cfg.synth_data_path)
+    logger.info(f"Synth: reading parquet from {cfg.synth_data_path}")
+    synth_sdf = sdm.read_parquet(cfg.synth_data_path)
+    if cfg.synth_ts_col is not None and cfg.synth_ts_col != cfg.ts_col:
+        synth_sdf = synth_sdf.withColumnRenamed(cfg.synth_ts_col, cfg.ts_col)
 
     return real_sdf, synth_sdf
 
@@ -203,14 +161,32 @@ def _validate_multi_kpi(
     return _summary_from_multi_metrics(metrics, fig)
 
 
+def _is_s3_path(path: str) -> bool:
+    return path.startswith("s3://") or path.startswith("s3a://")
+
+
+def _write_summary_json(summary: dict[str, Any], output_path_prefix: str) -> None:
+    if _is_s3_path(output_path_prefix):
+        parsed = urlparse(output_path_prefix)
+        bucket = parsed.netloc
+        key = parsed.path.lstrip("/") + "/summary.json"
+        write_json_to_s3(summary, bucket=bucket, key=key)
+        logger.info(f"Wrote summary to s3://{bucket}/{key}")
+    else:
+        summary_path = Path(output_path_prefix) / "summary.json"
+        with summary_path.open("w") as fh:
+            json.dump(summary, fh, indent=2, default=str)
+        logger.info(f"Wrote summary to {summary_path}")
+
+
 def run_data_similarity(sdm: SparkDataManager, cfg: DataSimilarityConfig) -> dict[str, Any]:
     """
     Main entry point for the data similarity pipeline.
 
     Returns the full summary dict (also written to summary.json if configured).
     """
-    output_root = Path(cfg.output_path_prefix)
-    output_root.mkdir(parents=True, exist_ok=True)
+    if not _is_s3_path(cfg.output_path_prefix):
+        Path(cfg.output_path_prefix).mkdir(parents=True, exist_ok=True)
 
     real_sdf, synth_sdf = _load_data(sdm, cfg)
     real_sdf.cache()
@@ -248,10 +224,7 @@ def run_data_similarity(sdm: SparkDataManager, cfg: DataSimilarityConfig) -> dic
     synth_sdf.unpersist()
 
     if cfg.save_summary_json:
-        summary_path = output_root / "summary.json"
-        with summary_path.open("w") as fh:
-            json.dump(summary, fh, indent=2, default=str)
-        logger.info(f"Wrote summary to {summary_path}")
+        _write_summary_json(summary, cfg.output_path_prefix)
 
     logger.info("Data similarity pipeline finished.")
     return summary

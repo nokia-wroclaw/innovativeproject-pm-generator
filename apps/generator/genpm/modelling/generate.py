@@ -1,5 +1,7 @@
 from pathlib import Path
 
+import polars as pl
+
 from genpm.modelling.configs import GenerateConfig
 from genpm.modelling.core.artifacts import load_trained_model
 from genpm.modelling.core.generation import _config_label, generate_windows
@@ -44,5 +46,5 @@ def run_generation(cfg: GenerateConfig) -> None:
     output_path = Path(cfg.output_path)
     output_path.mkdir(parents=True, exist_ok=True)
     out_file = output_path / f"{target.replace('/', '_')}_{cfg.anchor_date}.parquet"
-    windows.to_parquet(out_file, index=False)
+    pl.from_pandas(windows).write_parquet(out_file)
     logger.info(f"Saved {len(windows)} rows to {out_file}")
