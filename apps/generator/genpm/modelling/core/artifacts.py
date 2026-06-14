@@ -7,8 +7,8 @@ import joblib
 import numpy as np
 import pandas as pd
 
-from genpm.modelling.model_utils.data import Y_DIM
-from genpm.modelling.model_utils.model import HP_V5, build_cvae_lstm
+from genpm.modelling.core.data import Y_DIM
+from genpm.modelling.core.model import HP_V5, build_cvae_lstm
 from genpm.utils.logger import get_logger
 
 logger = get_logger()

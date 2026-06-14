@@ -12,7 +12,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 import numpy as np  # noqa: E402
 
 from genpm.modelling.configs import GenerateConfig
-from genpm.modelling.run import run_generation
+from genpm.modelling.generate import run_generation
 from genpm.utils.consts import SHARED_DIR_PATH
 
 RUN_DIR = SHARED_DIR_PATH / "artifacts" / "run_4"

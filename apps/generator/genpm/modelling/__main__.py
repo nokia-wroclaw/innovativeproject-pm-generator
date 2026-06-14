@@ -4,7 +4,7 @@ import argparse
 from pathlib import Path
 
 from genpm.modelling.configs import GenerateConfig, TrainConfig
-from genpm.modelling.run import run_generation
+from genpm.modelling.generate import run_generation
 from genpm.modelling.train import run_training
 
 

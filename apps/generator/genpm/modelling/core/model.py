@@ -4,7 +4,7 @@
 import tsgm  # noqa: E402, F401, isort:skip
 import keras
 
-from genpm.modelling.model_utils.model_utils import (
+from genpm.modelling.core.architectures import (
     cBetaVAE_Hierarchical,
     cVAE_LSTMv5Architecture,
 )

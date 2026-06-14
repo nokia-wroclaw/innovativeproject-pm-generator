@@ -9,7 +9,7 @@ import numpy as np
 import pandas as pd
 from scipy.stats import gaussian_kde
 
-from genpm.modelling.model_utils.data import SEQ_LEN
+from genpm.modelling.core.data import SEQ_LEN
 
 # =============================================================================
 # Data format helpers

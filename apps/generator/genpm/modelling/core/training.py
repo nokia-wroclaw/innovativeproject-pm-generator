@@ -7,8 +7,8 @@ import tsgm  # noqa: E402, F401, isort:skip
 import keras
 import numpy as np
 
-from genpm.modelling.model_utils.model import HP_V5
-from genpm.modelling.model_utils.model_utils import cBetaVAE_Hierarchical
+from genpm.modelling.core.architectures import cBetaVAE_Hierarchical
+from genpm.modelling.core.model import HP_V5
 from genpm.utils.logger import get_logger
 
 logger = get_logger()
