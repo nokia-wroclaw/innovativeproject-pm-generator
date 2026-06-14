@@ -74,6 +74,7 @@ class Dataset(Base):
 
     s3_key: Mapped[str] = mapped_column(String, nullable=False)
     file_name: Mapped[str] = mapped_column(String, nullable=False)
+    pm_metadata_s3_key: Mapped[str | None] = mapped_column(String, nullable=True)
 
     status: Mapped[DatasetStatus] = mapped_column(default=DatasetStatus.PENDING)
     type: Mapped[DatasetType] = mapped_column(

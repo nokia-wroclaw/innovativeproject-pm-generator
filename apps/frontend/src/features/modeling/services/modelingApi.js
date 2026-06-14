@@ -42,3 +42,6 @@ export const deleteTrainedModel = (modelId, deleteFromS3 = false) =>
     method: 'DELETE',
   });
 
+export const fetchModelKpis = (modelId) =>
+  authorizedRequest(`${BASE}/models/${enc(modelId)}/kpis`);
+

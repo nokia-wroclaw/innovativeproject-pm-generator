@@ -15,12 +15,14 @@ class DatasetRead(BaseModel):
     file_name: str
     status: DatasetStatus
     type: DatasetType
+    pm_metadata_s3_key: str | None = None
 
 
 class DatasetCreate(BaseModel):
     s3_key: str
     file_name: str
     type: DatasetType = DatasetType.RAW
+    pm_metadata_s3_key: str | None = None
 
 
 class DatasetStatusUpdate(BaseModel):
@@ -37,6 +39,7 @@ class DatasetRegisterRequest(BaseModel):
     s3_key: str
     file_name: str | None = None
     type: DatasetType = DatasetType.RAW
+    pm_metadata_s3_key: str | None = None
 
 
 class CompleteMultipartRequest(BaseModel):

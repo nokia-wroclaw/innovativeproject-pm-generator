@@ -40,6 +40,14 @@
           :options="modelOptions"
         />
 
+        <ModelingFormKpiSelector
+          v-if="form.model_id"
+          v-model="form.selected_kpis"
+          :kpis="kpis"
+          :is-loading="isKpisLoading"
+          :error="kpisError"
+        />
+
         <ModelingFormSelect
           v-if="isAdmin && form.model_id"
           v-model="form.comparison_dataset_id"
@@ -97,10 +105,11 @@ import { Loader2 } from 'lucide-vue-next';
 
 import BaseModal from '@/components/BaseModal.vue';
 import { Button } from '@/components/ui';
-import { useModelingModels, useModelingDatasets } from '../composables/queries.js';
+import { useModelingModels, useModelingDatasets, useModelKpis } from '../composables/queries.js';
 import { useModelingProcessRun } from '../composables/useModelingProcessRun.js';
 import ModelingFormInput from './form-fields/ModelingFormInput.vue';
 import ModelingFormSelect from './form-fields/ModelingFormSelect.vue';
+import ModelingFormKpiSelector from './form-fields/ModelingFormKpiSelector.vue';
 import ModelingRunStatusPanel from './ModelingRunStatusPanel.vue';
 import { isAdmin } from '@/auth/keycloak';
 
@@ -145,7 +154,14 @@ const form = reactive({
   comparison_dataset_id: '',
   encoder_s3_key: '',
   config_s3_key: '',
+  selected_kpis: [],
 });
+
+const modelIdRef = computed(() => form.model_id);
+const kpisQuery = useModelKpis(modelIdRef);
+const kpis = computed(() => kpisQuery.data.value ?? []);
+const isKpisLoading = computed(() => kpisQuery.isLoading.value);
+const kpisError = computed(() => kpisQuery.error.value);
 
 const modelOptions = computed(() =>
   models.value.map((model) => ({
@@ -159,7 +175,9 @@ const isSubmitDisabled = computed(
     !form.model_id ||
     !form.encoder_s3_key.trim() ||
     !form.config_s3_key.trim() ||
-    isModelsLoading.value,
+    isModelsLoading.value ||
+    isKpisLoading.value ||
+    form.selected_kpis.length === 0,
 );
 
 function updateFormFromModel(modelId, list) {
@@ -208,6 +226,18 @@ watch(
   { immediate: true },
 );
 
+watch(
+  () => kpis.value,
+  (newKpis) => {
+    if (newKpis && newKpis.length) {
+      form.selected_kpis = [...newKpis];
+    } else {
+      form.selected_kpis = [];
+    }
+  },
+  { immediate: true },
+);
+
 async function submit() {
   if (!form.model_id) {
     formError.value = 'Select a trained model.';
@@ -226,6 +256,11 @@ async function submit() {
     phase.value = 'error';
     return;
   }
+  if (form.selected_kpis.length === 0) {
+    formError.value = 'Select at least one KPI.';
+    phase.value = 'error';
+    return;
+  }
 
   await triggerRun(
     {
@@ -235,6 +270,7 @@ async function submit() {
       encoder_s3_key: encoderKey,
       config_s3_key: configKey,
       dag_args: {},
+      kpis: form.selected_kpis,
     },
     emit,
   );
