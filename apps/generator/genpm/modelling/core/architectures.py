@@ -441,7 +441,6 @@ class cBetaVAE(keras.Model):
             return self.train_step_jax(backend, data)
 
 
-# ── model_utils.py (new model class) ─────────────────────────────────────────
 class cBetaVAE_Hierarchical(keras.Model):
     """
     Conditional Beta-VAE with hierarchical latent codes.

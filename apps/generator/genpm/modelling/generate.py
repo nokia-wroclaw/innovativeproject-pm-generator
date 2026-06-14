@@ -1,59 +1,48 @@
-"""Pure generation logic — no I/O, no hardcoded paths."""
+from pathlib import Path
 
-import numpy as np
-import pandas as pd
+from genpm.modelling.configs import GenerateConfig
+from genpm.modelling.core.artifacts import load_trained_model
+from genpm.modelling.core.generation import generate_windows
+from genpm.utils.logger import get_logger
 
-from genpm.modelling.model_utils.data import encode_seasonal_features
-from genpm.modelling.model_utils.generation import _to_numpy
-
-
-def _run_batched_generation(model, y_windows: np.ndarray, batch_size: int) -> np.ndarray:
-    decoded = []
-    for start in range(0, len(y_windows), batch_size):
-        yb = y_windows[start : start + batch_size]
-        x_syn, _ = model.generate(yb)
-        decoded.append(_to_numpy(x_syn))
-    return np.concatenate(decoded)
+logger = get_logger()
 
 
-def generate_windows(
-    model,
-    cell_encoder,
-    cell_id: str,
-    anchor_date: str,
-    n_weeks: int,
-    holiday: int,
-    seq_len: int,
-    n_dim: int,
-    batch_size: int,
-    seed: int,
-    kpi_list: list,
-) -> pd.DataFrame:
-    cell_idx = cell_encoder.transform([cell_id])[0]
-
-    anchors = []
-    y_windows = []
-    for week in range(n_weeks):
-        anchor = pd.Timestamp(anchor_date) + pd.Timedelta(weeks=week)
-        seasonal = encode_seasonal_features(anchor)
-        y_windows.append([cell_idx, holiday, *seasonal])
-        anchors.append(anchor)
-
-    y_windows = np.array(y_windows, dtype=np.float32)
-    anchors_arr = np.array(anchors)
-
-    kpi_array = _run_batched_generation(model, y_windows, batch_size=batch_size)
-    kpi_flat = kpi_array.reshape(n_weeks * seq_len, n_dim)
-
-    df = pd.DataFrame(kpi_flat, columns=kpi_list)
-    df.insert(0, "seed", seed)
-    df.insert(
-        0,
-        "timestamp",
-        pd.to_datetime(np.repeat(anchors_arr, seq_len))
-        + pd.to_timedelta(np.tile(np.arange(seq_len), n_weeks), unit="h"),
+def run_generation(cfg: GenerateConfig) -> None:
+    logger.info(f"Loading artifacts from {cfg.run_dir_path}")
+    model, cell_encoder = load_trained_model(
+        run_id_path=Path(cfg.run_dir_path),
+        weights_path=Path(cfg.weights_path),
+        global_latent_dim=cfg.global_latent_dim,
+        local_latent_dim=cfg.local_latent_dim,
+        cell_embed_dim=cfg.cell_embed_dim,
+        hidden_dim=cfg.hidden_dim,
+        n_layers=cfg.n_layers,
+        use_attention=cfg.use_attention,
+        n_heads=cfg.n_heads,
+        free_bits_global=cfg.free_bits_global,
+        free_bits_local=cfg.free_bits_local,
+        output_activation=cfg.output_activation,
+        seq_len=cfg.seq_len,
+        feat_dim=cfg.n_dim,
     )
-    df.insert(0, "window_anchor", np.repeat(anchors_arr, seq_len))
-    df.insert(0, "cell_id", cell_id)
+    logger.info(f"Generating {cfg.n_weeks} week(s) for cell '{cfg.cell_id}' from {cfg.anchor_date}")
+    windows = generate_windows(
+        model=model,
+        cell_encoder=cell_encoder,
+        cell_id=cfg.cell_id,
+        anchor_date=cfg.anchor_date,
+        n_weeks=cfg.n_weeks,
+        holiday=cfg.holiday,
+        seq_len=cfg.seq_len,
+        n_dim=cfg.n_dim,
+        batch_size=cfg.batch_size,
+        seed=cfg.seed,
+        kpi_list=cfg.kpi_list,
+    )
 
-    return df
+    output_path = Path(cfg.output_path)
+    output_path.mkdir(parents=True, exist_ok=True)
+    out_file = output_path / f"{cfg.cell_id.replace('/', '_')}_{cfg.anchor_date}.parquet"
+    windows.to_parquet(out_file, index=False)
+    logger.info(f"Saved {len(windows)} rows to {out_file}")

@@ -3,10 +3,10 @@
 from pathlib import Path
 
 from genpm.modelling.configs import TrainConfig
-from genpm.modelling.model_utils.artifacts import save_training_artifacts
-from genpm.modelling.model_utils.data import load_training_windows
-from genpm.modelling.model_utils.model import build_cvae_lstm
-from genpm.modelling.model_utils.training import train_cvae
+from genpm.modelling.core.artifacts import save_training_artifacts
+from genpm.modelling.core.data import load_training_windows
+from genpm.modelling.core.model import build_cvae_lstm
+from genpm.modelling.core.training import train_cvae
 from genpm.utils.logger import get_logger
 
 logger = get_logger()
