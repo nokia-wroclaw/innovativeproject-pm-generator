@@ -80,10 +80,7 @@ class CollapseMonitor(keras.callbacks.Callback):
         mean_norm = float(keras.ops.mean(keras.ops.abs(z_mean)))
         mean_logvar = float(keras.ops.mean(z_log_var))
         beta = getattr(self.model, "beta", 0.0)
-        print(
-            f"  [collapse] |z_mean|={mean_norm:.4f}  "
-            f"z_logvar={mean_logvar:.4f}  beta={beta:.6f}"
-        )
+        print(f"  [collapse] |z_mean|={mean_norm:.4f}  z_logvar={mean_logvar:.4f}  beta={beta:.6f}")
 
 
 def train_cvae(

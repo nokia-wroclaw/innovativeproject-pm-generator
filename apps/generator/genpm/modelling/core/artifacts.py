@@ -7,7 +7,7 @@ import joblib
 import numpy as np
 import pandas as pd
 
-from genpm.modelling.core.data import Y_DIM
+from genpm.modelling.core.data import CONTEXT_DIM
 from genpm.modelling.core.model import HP_V5, build_cvae_lstm
 from genpm.utils.logger import get_logger
 
@@ -36,8 +36,19 @@ def save_training_artifacts(
     np.save(out_dir / "kpi_columns.npy", np.array(data["kpi_columns"]))
     logger.info(f"Saved window_anchors, cell_ids, kpi_columns ({len(data['kpi_columns'])} KPIs)")
 
-    joblib.dump(data["cell_encoder"], out_dir / "cell_encoder.pkl")
-    logger.info(f"Saved cell_encoder.pkl — {len(data['cell_encoder'].classes_)} cells")
+    joblib.dump(data["config_encoder"], out_dir / "config_encoder.pkl")
+    logger.info(f"Saved config_encoder.pkl — config_dims={data.get('config_dims')}")
+
+    # distname → its config values, so generation-by-cell_id can look up the configs.
+    config_cols = data["config_cols"]
+    cell_config_map = {
+        str(cid): list(cfg) for cid, cfg in zip(data["cell_ids"], data["configs"], strict=False)
+    }
+    joblib.dump(
+        {"config_cols": config_cols, "map": cell_config_map},
+        out_dir / "cell_config_map.pkl",
+    )
+    logger.info(f"Saved cell_config_map.pkl — {len(cell_config_map)} cells")
 
     if data.get("params_df") is not None:
         data["params_df"].to_parquet(out_dir / "params_df.parquet", index=False)
@@ -59,7 +70,6 @@ def load_trained_model(
     scaling_params_path: str | Path | None = None,
     global_latent_dim: int = HP_V5["global_latent_dim"],
     local_latent_dim: int = HP_V5["local_latent_dim"],
-    cell_embed_dim: int = HP_V5["cell_embed_dim"],
     hidden_dim: int = 256,
     n_layers: int = 2,
     use_attention: bool = True,
@@ -69,22 +79,26 @@ def load_trained_model(
     output_activation: str = HP_V5["output_activation"],
     seq_len: int = 168,
     feat_dim: int = 235,
-    y_dim: int = Y_DIM,
-) -> tuple[object, object]:
-    """Reload saved artifacts and restore the trained model with weights."""
+) -> tuple[object, object, dict]:
+    """Reload saved artifacts and restore the trained model with weights.
+
+    Returns (model, config_encoder, cell_config_map) where cell_config_map maps each
+    training distname to its config values (used to build the conditioning vector).
+    """
     run_id_path = Path(run_id_path)
-    logger.info(f"Loading cell_encoder from {run_id_path}")
-    cell_encoder = joblib.load(run_id_path / "cell_encoder.pkl")
-    n_cells = len(cell_encoder.classes_)
-    logger.info(f"Cell encoder loaded — {n_cells} cells")
+    logger.info(f"Loading config_encoder from {run_id_path}")
+    config_encoder = joblib.load(run_id_path / "config_encoder.pkl")
+    cell_config_map = joblib.load(run_id_path / "cell_config_map.pkl")
+    # y_dim is the one-hot config width + holiday + seasonal context.
+    y_dim = sum(len(c) for c in config_encoder.categories_) + CONTEXT_DIM
+    logger.info(f"Config encoder loaded — y_dim={y_dim}, {len(cell_config_map['map'])} cells")
 
     _, model = build_cvae_lstm(
         seq_len=seq_len,
         feat_dim=feat_dim,
-        n_cells=n_cells,
+        y_dim=y_dim,
         global_latent_dim=global_latent_dim,
         local_latent_dim=local_latent_dim,
-        cell_embed_dim=cell_embed_dim,
         hidden_dim=hidden_dim,
         n_layers=n_layers,
         use_attention=use_attention,
@@ -102,7 +116,7 @@ def load_trained_model(
     model.load_weights(str(weights_path))
     logger.info("Weights loaded successfully")
 
-    return model, cell_encoder
+    return model, config_encoder, cell_config_map
 
 
 def load_saved_windows(out_dir: str | Path) -> dict:
