@@ -100,7 +100,7 @@ const processDefinitions = {
   [TRAINING_DATASET_PROCESS]: {
     processType: TRAINING_DATASET_PROCESS,
     title: 'Training dataset creation',
-    dagId: 'moj_pierwszy_dag',
+    dagId: 'training_pipeline',
     description: 'Builds the final training dataset from the DAG form inputs.',
     emptyText: 'This process saves training_dataset.parquet.',
   },

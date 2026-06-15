@@ -41,13 +41,69 @@
         />
 
         <ModelingFormKpiSelector
-          v-if="form.model_id"
+          v-if="false"
           v-model="form.selected_kpis"
           :kpis="kpis"
           :is-loading="isKpisLoading"
           :error="kpisError"
         />
 
+        <!-- Cell selection (appears after model is selected) -->
+        <div v-if="false" class="block space-y-2">
+          <label class="block space-y-2">
+            <span class="inline-flex items-center gap-1 text-sm font-medium text-fg">
+              Cell ID
+              <span class="text-xs text-fg-muted font-normal">(optional — leave blank to generate for all cells)</span>
+            </span>
+            <select
+              v-model="form.cell_id"
+              class="w-full rounded-md border border-border-default bg-surface px-3 py-2 text-sm text-fg"
+              :disabled="isCellsLoading"
+            >
+              <option value="">
+                {{ isCellsLoading ? 'Loading cells…' : 'All cells' }}
+              </option>
+              <option v-for="cid in cells" :key="cid" :value="cid">{{ cid }}</option>
+            </select>
+            <p v-if="cellsError" class="text-xs text-rose-600">
+              Failed to load cells: {{ cellsError.message }}
+            </p>
+          </label>
+        </div>
+
+        <!-- Generation parameters -->
+        <template v-if="form.model_id">
+          <ModelingFormInput
+            v-model="form.anchor_date"
+            label="Start date (anchor)"
+            type="date"
+            placeholder="YYYY-MM-DD"
+            required
+          />
+
+          <ModelingFormInput
+            v-model="form.n_weeks"
+            label="Number of weeks"
+            value-type="number"
+            :min="1"
+            :max="52"
+            placeholder="e.g. 4"
+            required
+          />
+
+          <label class="flex items-center gap-2 text-sm text-fg">
+            <input
+              v-model="form.holiday"
+              type="checkbox"
+              class="h-4 w-4 rounded border-border-default"
+              true-value="1"
+              false-value="0"
+            />
+            Holiday period
+          </label>
+        </template>
+
+        <!-- Admin-only fields -->
         <ModelingFormSelect
           v-if="isAdmin && form.model_id"
           v-model="form.comparison_dataset_id"
@@ -280,4 +336,3 @@ function onClose() {
   emit('close');
 }
 </script>
-
