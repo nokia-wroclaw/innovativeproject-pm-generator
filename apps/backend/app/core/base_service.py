@@ -1,20 +1,16 @@
-from typing import Any, Generic, TypeVar
+from typing import Any
 
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
 from app.db.database import Base
 
-ModelType = TypeVar("ModelType", bound=Base)
-CreateSchemaType = TypeVar("CreateSchemaType", bound=BaseModel)
-UpdateSchemaType = TypeVar("UpdateSchemaType", bound=BaseModel)
-
 
 class ItemNotFoundError(Exception):
     pass
 
 
-class BaseService(Generic[ModelType, CreateSchemaType, UpdateSchemaType]):
+class BaseService[ModelType: Base, CreateSchemaType: BaseModel, UpdateSchemaType: BaseModel]:
     def __init__(self, model: type[ModelType], db: Session):
         self.model = model
         self._db = db

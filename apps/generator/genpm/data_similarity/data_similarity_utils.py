@@ -138,7 +138,7 @@ def collect_full_pdf(
 
     Spark NULL values will usually appear as NaN in pandas numeric columns.
     """
-    return sdf.select(ts_col, value_col).orderBy(ts_col).toPandas()
+    return sdf.select(ts_col, value_col).toPandas().sort_values(ts_col)
 
 
 def collect_clean_multi(
@@ -414,8 +414,13 @@ def kde_curves(
 
     x_grid = np.linspace(lo - pad, hi + pad, n_grid)
 
-    density_real = gaussian_kde(real_values)(x_grid)
-    density_synth = gaussian_kde(synth_values)(x_grid)
+    def _sample_for_kde(arr: np.ndarray, max_n: int = 20000) -> np.ndarray:
+        if len(arr) > max_n:
+            return arr[rng.choice(len(arr), size=max_n, replace=False)]
+        return arr
+
+    density_real = gaussian_kde(_sample_for_kde(real_values))(x_grid)
+    density_synth = gaussian_kde(_sample_for_kde(synth_values))(x_grid)
 
     return x_grid, density_real, density_synth
 
@@ -740,8 +745,8 @@ def compute_multi_metrics(
     x_r = collect_clean_multi(real_sdf, value_cols=value_cols, ts_col=ts_col)
     x_s = collect_clean_multi(synth_sdf, value_cols=value_cols, ts_col=ts_col)
 
-    real_full_pdf = real_sdf.select(ts_col, *value_cols).orderBy(ts_col).toPandas()
-    synth_full_pdf = synth_sdf.select(ts_col, *value_cols).orderBy(ts_col).toPandas()
+    real_full_pdf = real_sdf.select(ts_col, *value_cols).toPandas().sort_values(ts_col)
+    synth_full_pdf = synth_sdf.select(ts_col, *value_cols).toPandas().sort_values(ts_col)
 
     sw = metric_sliced_wasserstein(
         x=x_r,

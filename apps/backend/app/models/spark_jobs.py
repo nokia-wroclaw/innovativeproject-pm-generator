@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 
 
 class PreprocessingConfigError(ValueError):
@@ -78,6 +78,35 @@ class PreprocessingDagConf(BaseModel):
 
     def to_airflow_conf(self) -> dict[str, Any]:
         return self.model_dump(mode="json")
+
+
+class GenerateDagArgs(BaseModel):
+    """dag_run.conf.dag_args for generate_pipeline.
+
+    Single source of truth on the backend side; kept in sync with
+    ``genpm.modelling.defaults.DEFAULT_GENERATE_DAG_ARGS`` by a contract test.
+    """
+
+    model_config = ConfigDict(extra="ignore")
+
+    cell_id: str = ""
+    anchor_date: str = ""
+    n_weeks: int = 4
+    holiday: int = 0
+    seed: int = 42
+    batch_size: int = 64
+    kpi_list: list[str] = Field(default_factory=list)
+    output_path_prefix: str = ""
+
+    @classmethod
+    def from_user(cls, user_args: dict[str, Any] | None) -> GenerateDagArgs:
+        return cls.model_validate(user_args or {})
+
+    def to_conf_dict(self) -> dict[str, Any]:
+        return self.model_dump()
+
+
+DEFAULT_GENERATE_DAG_ARGS: dict[str, Any] = GenerateDagArgs().model_dump()
 
 
 class VisualizationDagConf(BaseModel):

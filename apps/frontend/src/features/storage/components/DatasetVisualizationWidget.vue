@@ -10,6 +10,7 @@ import KpiCatalogTable from './KpiCatalogTable.vue';
 import SchemaTableWidget from './SchemaTableWidget.vue';
 import KpiTimelineWidget from './KpiTimelineWidget.vue';
 import VisualizationDagLink from './VisualizationDagLink.vue';
+import DataSimilarityWidget from './DataSimilarityWidget.vue';
 import { DATASET_VISUALIZATION_DAG_ID } from '../visualizationDag.js';
 
 const props = defineProps({
@@ -21,13 +22,19 @@ const props = defineProps({
     type: Array,
     default: () => [],
   },
+  datasetType: {
+    type: String,
+    default: '',
+  },
 });
 
 const datasetIdRef = computed(() => props.datasetId);
 
+const isGenerated = computed(() => props.datasetType?.toUpperCase() === 'GENERATED');
+
 const previewSchema = computed(() => validatePmColumns(props.previewColumns));
 
-const pollingEnabled = computed(() => previewSchema.value.ok);
+const pollingEnabled = computed(() => isGenerated.value || previewSchema.value.ok);
 
 const {
   status,
@@ -41,7 +48,7 @@ const {
 } = useDatasetVisualizationPoll(datasetIdRef, { enabled: pollingEnabled });
 
 const previewUnsupported = computed(
-  () => !previewSchema.value.ok && props.previewColumns.length > 0,
+  () => !isGenerated.value && !previewSchema.value.ok && props.previewColumns.length > 0,
 );
 
 const apiUnsupported = computed(
@@ -76,6 +83,8 @@ const summary = computed(() => status.value?.summary ?? null);
 const showResults = computed(
   () => status.value?.status === 'success' && summary.value,
 );
+
+const showDataSimilarity = computed(() => isGenerated.value && showResults.value);
 
 const coverageData = computed(
   () =>
@@ -279,6 +288,15 @@ const problemMessage = computed(() => {
         </button>
       </div>
     </div>
+
+    <template v-else-if="showDataSimilarity">
+      <VisualizationDagLink
+        :dag-id="visualizationDagId"
+        :run-id="visualizationRunId"
+        compact
+      />
+      <DataSimilarityWidget :summary="summary" />
+    </template>
 
     <template v-else-if="showResults">
       <VisualizationDagLink

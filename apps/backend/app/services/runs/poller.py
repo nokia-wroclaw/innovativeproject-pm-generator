@@ -94,19 +94,37 @@ class ProcessRunPoller:
             db.commit()
         # RUNNING / QUEUED → leave for a later tick.
 
+    _PROCESS_TYPE_TO_DATASET_TYPE: dict[str, DatasetType] = {
+        "preprocessing_feature_engineering": DatasetType.PREPROCESSED,
+        "generate": DatasetType.GENERATED,
+    }
+
+    def _resolve_dataset_type(self, run: ProcessRun) -> DatasetType:
+        return self._PROCESS_TYPE_TO_DATASET_TYPE.get(run.process_type, DatasetType.PREPROCESSED)
+
+    def _derive_pm_metadata_s3_key(self, run: ProcessRun) -> str | None:
+        """Return the expected pm_metadata.json S3 key for preprocessing runs, or None."""
+        if run.process_type != "preprocessing_feature_engineering":
+            return None
+        prefix = run.output_s3_key.rstrip("/")
+        return f"{prefix}/pm_metadata.json"
+
     def _register_output(self, db, run: ProcessRun) -> None:
         service = S3Service(db=db)
+        dataset_type = self._resolve_dataset_type(run)
+        pm_metadata_s3_key = self._derive_pm_metadata_s3_key(run)
         try:
             dataset = service.register_existing_dataset(
                 user_uuid=run.user_uuid,
                 s3_key=run.output_s3_key,
                 file_name=run.output_name,
-                type=DatasetType.PREPROCESSED,
+                type=dataset_type,
+                pm_metadata_s3_key=pm_metadata_s3_key,
             )
             run.registered_dataset_id = dataset.id
             run.status = PipelineRunStatus.COMPLETED
             db.commit()
-            logger.info("Registered PREPROCESSED dataset %s for run %s", dataset.id, run.run_id)
+            logger.info("Registered %s dataset %s for run %s", dataset_type, dataset.id, run.run_id)
         except IntegrityError:
             # Already registered (unique s3_key+type) — link the existing row and finish.
             db.rollback()
@@ -114,7 +132,7 @@ class ProcessRunPoller:
                 db.query(Dataset)
                 .filter(
                     Dataset.s3_key == run.output_s3_key,
-                    Dataset.type == DatasetType.PREPROCESSED,
+                    Dataset.type == dataset_type,
                 )
                 .first()
             )
@@ -122,7 +140,7 @@ class ProcessRunPoller:
             run.status = PipelineRunStatus.COMPLETED
             db.commit()
         except HTTPException as exc:
-            # Output prefix not visible
-            #  in S3 yet (eventual consistency) — keep RUNNING, retry later.
+            # Output prefix not visible in S3 yet (eventual consistency) —
+            # keep RUNNING, retry later.
             db.rollback()
             logger.warning("Output not registerable yet for run %s: %s", run.run_id, exc.detail)

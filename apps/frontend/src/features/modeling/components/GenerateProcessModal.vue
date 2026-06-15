@@ -32,6 +32,7 @@
         :class="phase !== 'form' && phase !== 'error' ? 'pointer-events-none opacity-60' : ''"
         @submit.prevent="submit"
       >
+        <!-- Model selection -->
         <ModelingFormSelect
           v-model="form.model_id"
           label="Trained model"
@@ -40,6 +41,7 @@
           :options="modelOptions"
         />
 
+        <!-- KPI selection (appears after model is selected) -->
         <ModelingFormKpiSelector
           v-if="form.model_id"
           v-model="form.selected_kpis"
@@ -48,6 +50,62 @@
           :error="kpisError"
         />
 
+        <!-- Cell selection (appears after model is selected) -->
+        <div v-if="form.model_id" class="block space-y-2">
+          <label class="block space-y-2">
+            <span class="inline-flex items-center gap-1 text-sm font-medium text-fg">
+              Cell ID
+              <span class="text-xs text-fg-muted font-normal">(optional — leave blank to generate for all cells)</span>
+            </span>
+            <select
+              v-model="form.cell_id"
+              class="w-full rounded-md border border-border-default bg-surface px-3 py-2 text-sm text-fg"
+              :disabled="isCellsLoading"
+            >
+              <option value="">
+                {{ isCellsLoading ? 'Loading cells…' : 'All cells' }}
+              </option>
+              <option v-for="cid in cells" :key="cid" :value="cid">{{ cid }}</option>
+            </select>
+            <p v-if="cellsError" class="text-xs text-rose-600">
+              Failed to load cells: {{ cellsError.message }}
+            </p>
+          </label>
+        </div>
+
+        <!-- Generation parameters -->
+        <template v-if="form.model_id">
+          <ModelingFormInput
+            v-model="form.anchor_date"
+            label="Start date (anchor)"
+            type="date"
+            placeholder="YYYY-MM-DD"
+            required
+          />
+
+          <ModelingFormInput
+            v-model="form.n_weeks"
+            label="Number of weeks"
+            value-type="number"
+            :min="1"
+            :max="52"
+            placeholder="e.g. 4"
+            required
+          />
+
+          <label class="flex items-center gap-2 text-sm text-fg">
+            <input
+              v-model="form.holiday"
+              type="checkbox"
+              class="h-4 w-4 rounded border-border-default"
+              true-value="1"
+              false-value="0"
+            />
+            Holiday period
+          </label>
+        </template>
+
+        <!-- Admin-only fields -->
         <ModelingFormSelect
           v-if="isAdmin && form.model_id"
           v-model="form.comparison_dataset_id"
@@ -105,7 +163,7 @@ import { Loader2 } from 'lucide-vue-next';
 
 import BaseModal from '@/components/BaseModal.vue';
 import { Button } from '@/components/ui';
-import { useModelingModels, useModelingDatasets, useModelKpis } from '../composables/queries.js';
+import { useModelingModels, useModelingDatasets, useModelKpis, useModelCells } from '../composables/queries.js';
 import { useModelingProcessRun } from '../composables/useModelingProcessRun.js';
 import ModelingFormInput from './form-fields/ModelingFormInput.vue';
 import ModelingFormSelect from './form-fields/ModelingFormSelect.vue';
@@ -155,13 +213,23 @@ const form = reactive({
   encoder_s3_key: '',
   config_s3_key: '',
   selected_kpis: [],
+  cell_id: '',
+  anchor_date: '',
+  n_weeks: 4,
+  holiday: '0',
 });
 
 const modelIdRef = computed(() => form.model_id);
+
 const kpisQuery = useModelKpis(modelIdRef);
 const kpis = computed(() => kpisQuery.data.value ?? []);
 const isKpisLoading = computed(() => kpisQuery.isLoading.value);
 const kpisError = computed(() => kpisQuery.error.value);
+
+const cellsQuery = useModelCells(modelIdRef);
+const cells = computed(() => cellsQuery.data.value ?? []);
+const isCellsLoading = computed(() => cellsQuery.isLoading.value);
+const cellsError = computed(() => cellsQuery.error.value);
 
 const modelOptions = computed(() =>
   models.value.map((model) => ({
@@ -175,8 +243,11 @@ const isSubmitDisabled = computed(
     !form.model_id ||
     !form.encoder_s3_key.trim() ||
     !form.config_s3_key.trim() ||
+    !form.anchor_date ||
+    !form.n_weeks ||
     isModelsLoading.value ||
     isKpisLoading.value ||
+    isCellsLoading.value ||
     form.selected_kpis.length === 0,
 );
 
@@ -215,13 +286,14 @@ watch(
     if (props.show && !form.model_id && list.length) {
       form.model_id = list[0].id;
     }
-  }
+  },
 );
 
 watch(
   [() => form.model_id, () => models.value],
   ([nextModelId, list]) => {
     updateFormFromModel(nextModelId, list);
+    form.cell_id = '';
   },
   { immediate: true },
 );
@@ -234,6 +306,15 @@ watch(
     } else {
       form.selected_kpis = [];
     }
+  },
+  { immediate: true },
+);
+
+
+watch(
+  () => cells.value,
+  () => {
+    // cell_id is optional — do not auto-select
   },
   { immediate: true },
 );
@@ -256,6 +337,16 @@ async function submit() {
     phase.value = 'error';
     return;
   }
+  if (!form.anchor_date) {
+    formError.value = 'Provide a start date.';
+    phase.value = 'error';
+    return;
+  }
+  if (!form.n_weeks || Number(form.n_weeks) < 1) {
+    formError.value = 'Number of weeks must be at least 1.';
+    phase.value = 'error';
+    return;
+  }
   if (form.selected_kpis.length === 0) {
     formError.value = 'Select at least one KPI.';
     phase.value = 'error';
@@ -269,6 +360,10 @@ async function submit() {
       comparison_dataset_id: form.comparison_dataset_id ? Number(form.comparison_dataset_id) : null,
       encoder_s3_key: encoderKey,
       config_s3_key: configKey,
+      cell_id: form.cell_id,
+      anchor_date: form.anchor_date,
+      n_weeks: Number(form.n_weeks),
+      holiday: Number(form.holiday),
       dag_args: {},
       kpis: form.selected_kpis,
     },
@@ -280,4 +375,3 @@ function onClose() {
   emit('close');
 }
 </script>
-

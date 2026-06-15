@@ -108,7 +108,8 @@ const canAddDataset = computed(
     isAdmin.value &&
     (activeTab.value === TAB_RAW ||
       activeTab.value === TAB_KPI_DEFINITIONS ||
-      activeTab.value === TAB_SIMPLE_REPORTS),
+      activeTab.value === TAB_SIMPLE_REPORTS ||
+      activeTab.value === TAB_PREPROCESSED),
 );
 
 const canAddModel = computed(() => isAdmin.value && activeTab.value === TAB_MODELS);
@@ -616,7 +617,7 @@ onBeforeUnmount(() => {
         <S3StorageTabBody
           ref="preprocessedTabBodyRef"
           :description="TAB_DESCRIPTIONS[TAB_PREPROCESSED]"
-          :show-add-button="false"
+          :show-add-button="canAddDataset"
           :columns="TABLE_COLUMNS"
           :provider="tableProviders[TAB_PREPROCESSED]"
           :row-actions="rowActions"
