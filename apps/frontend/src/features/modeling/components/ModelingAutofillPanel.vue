@@ -54,7 +54,7 @@ const PLACEHOLDERS = {
   training_dataset:
     'e.g. Dataset #2, weekends, target column "sales", 20% test split, shuffle on…',
   generate:
-    'e.g. Use model_001, generate a synthetic purchase-order event log with 500 cases…',
+    'e.g. Use model #2, set encoder to models/enc.pkl, config to models/cfg.json, compare with dataset #1, KPIs: kpi_a kpi_b…',
 };
 
 const props = defineProps({

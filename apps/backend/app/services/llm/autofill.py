@@ -53,6 +53,10 @@ _FIELD_SPECS: dict[ModelingProcessType, dict[str, str]] = {
     "generate": {
         "model_id": "string; must match one of the available trained model ids",
         "prompt": "string; detailed generation prompt for the synthetic event log DAG",
+        "encoder_s3_key": "string; S3 key (relative path, no s3:// prefix) for the encoder .pkl file, e.g. models/encoder.pkl",
+        "config_s3_key": "string; S3 key (relative path, no s3:// prefix) for the config .json file, e.g. models/config.json",
+        "comparison_dataset_id": "integer or null; id of the comparison dataset from the available datasets list, or null to skip comparison",
+        "selected_kpis": "list of strings; KPI names to use for generation — select from the available KPIs of the chosen model",
     },
 }
 
@@ -210,6 +214,25 @@ def _normalize(
             if not isinstance(prompt, str) or not prompt.strip():
                 raise LlmAutofillError("LLM did not return a valid generation prompt.", status_code=422)
             result["prompt"] = prompt.strip()
+        if "encoder_s3_key" in patch:
+            result["encoder_s3_key"] = _coerce_str(patch["encoder_s3_key"], _coerce_str(current.get("encoder_s3_key")))
+        if "config_s3_key" in patch:
+            result["config_s3_key"] = _coerce_str(patch["config_s3_key"], _coerce_str(current.get("config_s3_key")))
+        if "comparison_dataset_id" in patch:
+            dataset_ids = {d.id for d in datasets}
+            raw_cmp = patch["comparison_dataset_id"]
+            if raw_cmp in (None, "", "null"):
+                result["comparison_dataset_id"] = ""
+            else:
+                try:
+                    cmp_id = int(raw_cmp)
+                    result["comparison_dataset_id"] = cmp_id if cmp_id in dataset_ids else ""
+                except (TypeError, ValueError):
+                    result["comparison_dataset_id"] = ""
+        if "selected_kpis" in patch:
+            kpis = patch["selected_kpis"]
+            if isinstance(kpis, list):
+                result["selected_kpis"] = [str(k) for k in kpis if isinstance(k, str) and k.strip()]
         return result
 
     if "dataset_id" in patch:
@@ -315,7 +338,15 @@ def _build_context(
     if process_type == "generate":
         lines = ["Available trained models:"]
         for model in models:
-            lines.append(f"- id={model.id!r}, name={model.name!r}")
+            lines.append(
+                f"- id={model.id!r}, name={model.name!r}"
+                + (f", encoder_s3_key={model.encoder_s3_key!r}" if model.encoder_s3_key else "")
+                + (f", config_s3_key={model.config_s3_key!r}" if model.config_s3_key else "")
+            )
+        lines.append("")
+        lines.append("Available datasets (COMPLETED only, usable as comparison_dataset_id):")
+        for dataset in datasets:
+            lines.append(f"- id={dataset.id}, file_name={dataset.file_name!r}, type={dataset.type}")
         return "\n".join(lines)
 
     lines = ["Available datasets (COMPLETED only):"]
@@ -370,7 +401,12 @@ def _build_system_prompt(process_type: ModelingProcessType) -> str:
         "- 'random seed', 'seed' maps to 'random_seed'\n"
         "- 'split date', 'date for split' maps to 'split_date'\n"
         "- 'shuffle', 'shuffle rows' maps to 'shuffle'\n"
-        "- 'stratification', 'stratify' maps to 'stratify'\n\n"
+        "- 'stratification', 'stratify' maps to 'stratify'\n"
+        "- 'model', 'trained model', 'model id' maps to 'model_id' (generate)\n"
+        "- 'encoder', 'encoder key', 'encoder path', 'encoder s3' maps to 'encoder_s3_key' (generate)\n"
+        "- 'config', 'config key', 'config path', 'config s3', 'model config' maps to 'config_s3_key' (generate)\n"
+        "- 'comparison dataset', 'compare with', 'reference dataset' maps to 'comparison_dataset_id' (generate)\n"
+        "- 'kpis', 'kpi list', 'selected kpis', 'metrics to generate' maps to 'selected_kpis' (generate)\n\n"
         "Analyze the user's request carefully, interpret high-level abstractions, and use semantic matching to select the correct fields and assign reasonable values.\n\n"
         f"Available fields:\n{field_lines}"
     )
