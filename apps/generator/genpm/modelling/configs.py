@@ -39,7 +39,9 @@ class TrainConfig:
     training_data_path: str
     run_dir_path: str
     weights_path: str
-    # Model architecture (v6)
+    # Architecture version — "v7" (default) or "v6"
+    arch_version: str = "v7"
+    # Model architecture
     global_latent_dim: int = 64
     local_latent_dim: int = 0
     hidden_dim: int = 256
@@ -51,6 +53,9 @@ class TrainConfig:
     free_bits_global: float = 0.002
     free_bits_local: float = 0.0
     output_activation: str = "sigmoid"
+    # v7-specific: autocorrelation penalty (ignored when arch_version="v6")
+    ac_weight: float = 0.1
+    ac_max_lag: int = 24
     # Training schedule
     epochs: int = 200
     batch_size: int = 64

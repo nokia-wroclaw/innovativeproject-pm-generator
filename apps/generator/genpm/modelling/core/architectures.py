@@ -1433,3 +1433,312 @@ class cVAE_LSTMv6Architecture(BaseVAEArchitecture):
             layers.Dense(self._feat_dim, activation=self._output_activation)
         )(x)
         return keras.Model([z_in, cond_in], d_output, name="decoder_v6")
+
+
+# ---------------------------------------------------------------------------
+# v7 components
+# ---------------------------------------------------------------------------
+
+
+class CrossKPICorrelation(keras.layers.Layer):
+    """
+    Learned feature-mixing across KPI dimensions at each timestep.
+
+    Applies a shared F×F linear layer (no bias, zero-initialised) via
+    TimeDistributed.  Each output KPI is a weighted sum of all F intermediate
+    KPI features, giving the model an explicit learnable correlation matrix.
+    Weights are constant across timesteps — inter-KPI correlations are assumed
+    stationary.  Zero init means the layer starts as a pass-through; the
+    residual x_kpi + CrossKPICorrelation(x_kpi) converges to the identity at
+    init and learns correlations from gradients only.
+
+    Input / Output: (B, T, F)
+    """
+
+    def __init__(self, feat_dim: int, **kwargs):
+        super().__init__(**kwargs)
+        self.feat_dim = feat_dim
+        self._mix = layers.TimeDistributed(
+            layers.Dense(feat_dim, use_bias=False, kernel_initializer="zeros"),
+            name="kpi_mix",
+        )
+
+    def call(self, x: tsgm.types.Tensor) -> tsgm.types.Tensor:
+        return self._mix(x)
+
+    def get_config(self) -> dict:
+        return {**super().get_config(), "feat_dim": self.feat_dim}
+
+
+class cVAE_LSTMv7Architecture(BaseVAEArchitecture):
+    """
+    v7: three targeted fixes over v6.
+
+    Fix 1 — PE removed from decoder.
+        HourlyPositionalEncoding stays in the encoder so z encodes daily/weekly
+        position, but is removed from the decoder.  In v6 the decoder LSTM
+        learned outputs correlated with the sin/cos PE channels, creating a
+        spurious 24 h sinusoidal autocorrelation in every synthetic series.
+
+    Fix 2 — Cross-KPI correlation layer (CrossKPICorrelation).
+        After the LSTM decoder stack a TimeDistributed(Dense(F, no-bias,
+        zero-init)) layer applies a shared F×F linear mix at every timestep.
+        The residual (x_kpi + x_corr) then passes through the output
+        activation, giving the model an explicit stationary correlation matrix
+        so output KPIs are not produced independently.
+
+    Fix 3 — Autocorrelation penalty in loss.
+        Pair with cBetaVAE_Hierarchical_v7(ac_weight > 0) to add
+        (1/K) Σₖ E[‖r̂(k) − r(k)‖²] over lags 1..ac_max_lag to the ELBO.
+    """
+
+    arch_type = "vae:conditional_v7"
+
+    def __init__(
+        self,
+        seq_len: int,
+        feat_dim: int,
+        y_dim: int,
+        global_latent_dim: int = 64,
+        local_latent_dim: int = 0,
+        hidden_dim: int = 256,
+        n_layers: int = 2,
+        use_attention: bool = True,
+        n_heads: int = 4,
+        min_units: int = 32,
+        max_dropout: float = 0.3,
+        output_activation: str = "sigmoid",
+        tile_z: bool = True,
+    ):
+        self._seq_len = seq_len
+        self._feat_dim = feat_dim
+        self._y_dim = y_dim
+        self._global_latent_dim = global_latent_dim
+        self._local_latent_dim = local_latent_dim
+        self._hidden_dim = hidden_dim
+        self._n_layers = n_layers
+        self._use_attention = use_attention
+        self._n_heads = n_heads
+        self._output_activation = output_activation
+        self._tile_z = tile_z
+        self._layer_units, self._layer_dropouts = _funnel_schedule(
+            hidden_dim, n_layers, min_units, max_dropout
+        )
+        self._attn_key_dim = max((2 * self._layer_units[-1]) // n_heads, 1)
+        self._cond_layer = CellConditioning(y_dim, seq_len)
+        self._encoder = self._build_encoder()
+        self._decoder = self._build_decoder()
+
+    @property
+    def cond_layer(self) -> CellConditioning:
+        return self._cond_layer
+
+    def _build_encoder(self) -> keras.Model:
+        # Identical to v6: X-only input, PE kept so z encodes temporal position.
+        x_in = keras.Input(shape=(self._seq_len, self._feat_dim), name="x")
+        x = HourlyPositionalEncoding(self._seq_len)(x_in)
+        for units, drop in zip(self._layer_units, self._layer_dropouts, strict=False):
+            x = layers.Bidirectional(layers.LSTM(units, return_sequences=True))(x)
+            x = layers.LayerNormalization()(x)
+            x = layers.Dropout(rate=drop)(x)
+        h_seq = x
+        if self._use_attention:
+            attn_out = layers.MultiHeadAttention(
+                num_heads=self._n_heads,
+                key_dim=self._attn_key_dim,
+                dropout=0.1,
+            )(h_seq, h_seq)
+            h_seq = layers.LayerNormalization()(h_seq + attn_out)
+        h_global = layers.Lambda(lambda t: t[:, -1, :], name="last_timestep")(h_seq)
+        h_global = layers.Dense(self._global_latent_dim * 2, activation="relu")(h_global)
+        z_g_mean = layers.Dense(self._global_latent_dim, name="z_g_mean")(h_global)
+        z_g_log_var = layers.Dense(self._global_latent_dim, name="z_g_log_var")(h_global)
+
+        if self._local_latent_dim > 0:
+            z_l_mean = layers.TimeDistributed(
+                layers.Dense(self._local_latent_dim), name="z_l_mean"
+            )(h_seq)
+            z_l_log_var = layers.TimeDistributed(
+                layers.Dense(self._local_latent_dim), name="z_l_log_var"
+            )(h_seq)
+            z_g, z_l = DualSampling()([z_g_mean, z_g_log_var, z_l_mean, z_l_log_var])
+            return keras.Model(
+                inputs=x_in,
+                outputs=[z_g_mean, z_g_log_var, z_l_mean, z_l_log_var, z_g, z_l],
+                name="encoder_v7",
+            )
+
+        z_g = Sampling()([z_g_mean, z_g_log_var])
+        return keras.Model(
+            inputs=x_in,
+            outputs=[z_g_mean, z_g_log_var, z_g],
+            name="encoder_v7",
+        )
+
+    def _build_decoder(self) -> keras.Model:
+        z_in = keras.Input(shape=(self._global_latent_dim,), name="z_g")
+        cond_dim = self._y_dim + self._local_latent_dim
+        cond_in = keras.Input(shape=(self._seq_len, cond_dim), name="cond_seq")
+
+        init_units = self._layer_units[0]
+        h0 = layers.Dense(init_units, activation="tanh", name="dec_h0")(z_in)
+        c0 = layers.Dense(init_units, activation="tanh", name="dec_c0")(z_in)
+
+        # Fix 1: NO HourlyPositionalEncoding on the decoder input.
+        x = cond_in
+        if self._tile_z:
+            z_tiled = layers.RepeatVector(self._seq_len)(z_in)
+            x = ops.concatenate([x, z_tiled], axis=-1)
+
+        for i, (units, drop) in enumerate(
+            zip(self._layer_units, self._layer_dropouts, strict=False)
+        ):
+            if i == 0:
+                x = layers.LSTM(units, return_sequences=True, name="dec_lstm_0")(
+                    x, initial_state=[h0, c0]
+                )
+            else:
+                x = layers.LSTM(units, return_sequences=True, name=f"dec_lstm_{i}")(x)
+            x = layers.LayerNormalization()(x)
+            x = layers.Dropout(rate=drop)(x)
+
+        # Fix 2: intermediate KPI projection + cross-KPI correlation residual.
+        x_kpi = layers.TimeDistributed(
+            layers.Dense(self._feat_dim, activation="relu"), name="kpi_proj"
+        )(x)  # (B, T, F)
+        x_corr = CrossKPICorrelation(self._feat_dim)(x_kpi)  # (B, T, F) — learned F×F mix
+        d_output = layers.Activation(self._output_activation)(x_kpi + x_corr)
+
+        return keras.Model([z_in, cond_in], d_output, name="decoder_v7")
+
+
+class cBetaVAE_Hierarchical_v7(cBetaVAE_Hierarchical):
+    """
+    Hierarchical cBeta-VAE with autocorrelation penalty (Fix 3 for v7).
+
+    Adds the term:
+
+        ac_weight × (1/K) × Σₖ mean[ (r_x(k) − r̂(k))² ]
+
+    where r(k) = Cov(x_t, x_{t+k}) / Var(x_t) is the sample autocorrelation
+    at lag k, computed per-feature and averaged.  Scale-invariant because both
+    r_x and r̂ are normalised by their own variance.
+
+    Override _compute_losses to return 4 values; all three backend train_step
+    methods are overridden accordingly.
+    """
+
+    def __init__(
+        self,
+        *args,
+        ac_weight: float = 0.1,
+        ac_max_lag: int = 24,
+        **kwargs,
+    ):
+        super().__init__(*args, **kwargs)
+        self.ac_weight = ac_weight
+        self.ac_max_lag = ac_max_lag
+        self.ac_loss_tracker = keras.metrics.Mean(name="ac_loss")
+
+    @property
+    def metrics(self) -> list:
+        return super().metrics + [self.ac_loss_tracker]
+
+    def _ac_penalty(self, x: tsgm.types.Tensor, x_hat: tsgm.types.Tensor) -> float:
+        """
+        Mean squared AC difference at lags 1..ac_max_lag, averaged over all
+        features and batch.  Returns a scalar tensor.
+        """
+        x_c = x - ops.mean(x, axis=1, keepdims=True)  # (B, T, F)
+        xh_c = x_hat - ops.mean(x_hat, axis=1, keepdims=True)
+        var_x = ops.mean(ops.square(x_c), axis=1, keepdims=True) + 1e-8  # (B, 1, F)
+        var_xh = ops.mean(ops.square(xh_c), axis=1, keepdims=True) + 1e-8
+
+        lag_terms = [
+            ops.mean(
+                ops.square(
+                    ops.mean(x_c[:, k:, :] * x_c[:, :-k, :], axis=1, keepdims=True) / var_x
+                    - ops.mean(xh_c[:, k:, :] * xh_c[:, :-k, :], axis=1, keepdims=True) / var_xh
+                )
+            )
+            for k in range(1, self.ac_max_lag + 1)
+        ]
+        return sum(lag_terms) / self.ac_max_lag
+
+    def _compute_losses(
+        self,
+        x: tsgm.types.Tensor,
+        y: tsgm.types.Tensor,
+        z_g_mean: tsgm.types.Tensor,
+        z_g_log_var: tsgm.types.Tensor,
+        z_l_mean: tsgm.types.Tensor,
+        z_l_log_var: tsgm.types.Tensor,
+        z_g: tsgm.types.Tensor,
+        z_l: tsgm.types.Tensor,
+    ) -> tuple[float, float, float, float]:
+        dec_in = self._build_decoder_input(z_g, z_l, y)
+        x_hat = self.decoder(dec_in, training=True)
+        reconstruction_loss = self._get_reconstruction_loss(x, x_hat)
+        kl_g = self._kl_loss(z_g_mean, z_g_log_var, self.free_bits_global)
+        kl_l = 0.0
+        if self.local_latent_dim > 0 and z_l_mean is not None:
+            kl_l = self._kl_loss(z_l_mean, z_l_log_var, self.free_bits_local)
+        kl_loss = kl_g + kl_l
+        ac_loss = self._ac_penalty(x, x_hat)
+        total_loss = reconstruction_loss + self.beta * kl_loss + self.ac_weight * ac_loss
+        return total_loss, reconstruction_loss, kl_loss, ac_loss
+
+    def _update_trackers(
+        self,
+        total_loss: float,
+        reconstruction_loss: float,
+        kl_loss: float,
+        ac_loss: float,
+    ) -> dict[str, float]:
+        self.total_loss_tracker.update_state(total_loss)
+        self.reconstruction_loss_tracker.update_state(reconstruction_loss)
+        self.kl_loss_tracker.update_state(kl_loss)
+        self.ac_loss_tracker.update_state(ac_loss)
+        return {
+            "loss": self.total_loss_tracker.result(),
+            "reconstruction_loss": self.reconstruction_loss_tracker.result(),
+            "kl_loss": self.kl_loss_tracker.result(),
+            "ac_loss": self.ac_loss_tracker.result(),
+        }
+
+    def train_step_tf(self, tf, data: tsgm.types.Tensor) -> dict[str, float]:
+        x, y = data
+        with tf.GradientTape() as tape:
+            z_g_mean, z_g_log_var, z_l_mean, z_l_log_var, z_g, z_l = self._encode(
+                x, y, training=True
+            )
+            total_loss, reconstruction_loss, kl_loss, ac_loss = self._compute_losses(
+                x, y, z_g_mean, z_g_log_var, z_l_mean, z_l_log_var, z_g, z_l
+            )
+        grads = tape.gradient(total_loss, self.trainable_weights)
+        self.optimizer.apply_gradients(zip(grads, self.trainable_weights, strict=False))
+        return self._update_trackers(total_loss, reconstruction_loss, kl_loss, ac_loss)
+
+    def train_step_torch(self, torch, data: tsgm.types.Tensor) -> dict[str, float]:
+        x, y = data
+        z_g_mean, z_g_log_var, z_l_mean, z_l_log_var, z_g, z_l = self._encode(x, y, training=True)
+        total_loss, reconstruction_loss, kl_loss, ac_loss = self._compute_losses(
+            x, y, z_g_mean, z_g_log_var, z_l_mean, z_l_log_var, z_g, z_l
+        )
+        if hasattr(total_loss, "shape") and len(total_loss.shape) > 0:
+            total_loss = ops.mean(total_loss)
+        self.zero_grad()
+        total_loss.backward()
+        trainable_weights = [v for v in self.trainable_weights]
+        gradients = [v.value.grad for v in trainable_weights]
+        with torch.no_grad():
+            self.optimizer.apply_gradients(list(zip(gradients, trainable_weights, strict=False)))
+        return self._update_trackers(total_loss, reconstruction_loss, kl_loss, ac_loss)
+
+    def train_step_jax(self, jax, data: tsgm.types.Tensor) -> dict[str, float]:
+        x, y = data
+        z_g_mean, z_g_log_var, z_l_mean, z_l_log_var, z_g, z_l = self._encode(x, y, training=True)
+        total_loss, reconstruction_loss, kl_loss, ac_loss = self._compute_losses(
+            x, y, z_g_mean, z_g_log_var, z_l_mean, z_l_log_var, z_g, z_l
+        )
+        return self._update_trackers(total_loss, reconstruction_loss, kl_loss, ac_loss)
