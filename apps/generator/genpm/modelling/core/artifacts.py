@@ -7,7 +7,7 @@ import numpy as np
 import pandas as pd
 
 from genpm.modelling.core.data import CONTEXT_DIM
-from genpm.modelling.core.model import HP_V5, build_cvae_lstm
+from genpm.modelling.core.model import HP_V5, HP_V7, build_cvae_lstm, build_cvae_lstm_v7
 from genpm.utils.logger import get_logger
 
 logger = get_logger()
@@ -180,11 +180,10 @@ def load_trained_model(
 
     arch_params_path = run_id_path / "arch_params.json"
     arch_params = json.loads(arch_params_path.read_text()) if arch_params_path.exists() else {}
-    # v6 always tiles z into the decoder (build_cvae_lstm default tile_z=True), so a
-    # missing field means True — only an explicit False disables tiling.
     tile_z = bool(arch_params.get("tile_z_in_decoder", True))
+    arch_version = arch_params.get("arch_version", "v6")
 
-    _, model = build_cvae_lstm(
+    common_kwargs = dict(
         seq_len=seq_len,
         feat_dim=feat_dim,
         y_dim=y_dim,
@@ -199,6 +198,16 @@ def load_trained_model(
         output_activation=output_activation,
         tile_z=tile_z,
     )
+    if arch_version == "v7":
+        _, model = build_cvae_lstm_v7(
+            **common_kwargs,
+            ac_weight=arch_params.get("ac_weight", HP_V7["ac_weight"]),
+            ac_max_lag=arch_params.get("ac_max_lag", HP_V7["ac_max_lag"]),
+        )
+        logger.info(f"Loaded v7 model (ac_weight={arch_params.get('ac_weight')})")
+    else:
+        _, model = build_cvae_lstm(**common_kwargs)
+        logger.info(f"Loaded {arch_version} model")
 
     dummy_X = np.zeros((1, seq_len, feat_dim), dtype=np.float32)
     dummy_y = np.zeros((1, y_dim), dtype=np.float32)
