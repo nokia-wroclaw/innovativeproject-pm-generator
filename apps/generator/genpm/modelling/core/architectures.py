@@ -480,7 +480,9 @@ class cBetaVAE_Hierarchical(keras.Model):
         ]
 
     def _encode(self, x: tsgm.types.Tensor, y: tsgm.types.Tensor, training: bool) -> tuple:
-        out = self.encoder([x, y], training=training)
+        # v5 encoder takes [x, y]; v6 encoder takes x only — detect by input count
+        enc_input = [x, y] if len(self.encoder.inputs) == 2 else x
+        out = self.encoder(enc_input, training=training)
         if self.local_latent_dim == 0:
             z_g_mean, z_g_log_var, z_g = out
             return z_g_mean, z_g_log_var, None, None, z_g, None
@@ -1290,3 +1292,144 @@ class cVAE_LSTMv5Architecture(BaseVAEArchitecture):
             layers.Dense(self._feat_dim, activation=self._output_activation)
         )(x)
         return keras.Model([z_in, cond_in], d_output, name="decoder_v5")
+
+
+class cVAE_LSTMv6Architecture(BaseVAEArchitecture):
+    """
+    v6: X-only encoder + z tiled at every decoder step.
+
+    Two structural changes from v5 that together eliminate posterior collapse:
+
+    1. Encoder sees X only (not y).
+       q(z|X) instead of q(z|X,y).  With no y shortcut the encoder MUST encode the
+       temporal structure of X into z — collapse is structurally impossible.
+
+    2. z is tiled to every decoder timestep in addition to seeding (h0, c0).
+       v5 used z only as LSTM initial state, which the gates can forget within a few
+       steps.  v6 concatenates z_tiled (B,T,G) with the per-step conditioning input,
+       so the decoder cannot route around z regardless of what y provides.
+
+    Information flow at training:
+        Encoder:  X → BiLSTM → attention → z     ("what kind of week is this?")
+        Decoder:  [z_tiled ‖ y] → LSTM(init=z) → X_hat  (y shapes cell-specific output)
+
+    Information flow at generation:
+        z ~ N(0,1)       ← diverse week patterns
+        y = target config ← pin cell identity
+        → diverse, config-conditioned X
+    """
+
+    arch_type = "vae:conditional_v6"
+
+    def __init__(
+        self,
+        seq_len: int,
+        feat_dim: int,
+        y_dim: int,
+        global_latent_dim: int = 64,
+        local_latent_dim: int = 0,
+        hidden_dim: int = 256,
+        n_layers: int = 2,
+        use_attention: bool = True,
+        n_heads: int = 4,
+        min_units: int = 32,
+        max_dropout: float = 0.3,
+        output_activation: str = "sigmoid",
+        tile_z: bool = True,
+    ):
+        self._seq_len = seq_len
+        self._feat_dim = feat_dim
+        self._y_dim = y_dim
+        self._global_latent_dim = global_latent_dim
+        self._local_latent_dim = local_latent_dim
+        self._hidden_dim = hidden_dim
+        self._n_layers = n_layers
+        self._use_attention = use_attention
+        self._n_heads = n_heads
+        self._output_activation = output_activation
+        self._tile_z = tile_z
+        self._layer_units, self._layer_dropouts = _funnel_schedule(
+            hidden_dim, n_layers, min_units, max_dropout
+        )
+        self._attn_key_dim = max((2 * self._layer_units[-1]) // n_heads, 1)
+        self._cond_layer = CellConditioning(y_dim, seq_len)
+        self._encoder = self._build_encoder()
+        self._decoder = self._build_decoder()
+
+    @property
+    def cond_layer(self) -> CellConditioning:
+        return self._cond_layer
+
+    def _build_encoder(self) -> keras.Model:
+        # X only — no y input so z must encode temporal structure
+        x_in = keras.Input(shape=(self._seq_len, self._feat_dim), name="x")
+        x = HourlyPositionalEncoding(self._seq_len)(x_in)
+        for units, drop in zip(self._layer_units, self._layer_dropouts, strict=False):
+            x = layers.Bidirectional(layers.LSTM(units, return_sequences=True))(x)
+            x = layers.LayerNormalization()(x)
+            x = layers.Dropout(rate=drop)(x)
+        h_seq = x
+        if self._use_attention:
+            attn_out = layers.MultiHeadAttention(
+                num_heads=self._n_heads,
+                key_dim=self._attn_key_dim,
+                dropout=0.1,
+            )(h_seq, h_seq)
+            h_seq = layers.LayerNormalization()(h_seq + attn_out)
+        h_global = layers.Lambda(lambda t: t[:, -1, :], name="last_timestep")(h_seq)
+        h_global = layers.Dense(self._global_latent_dim * 2, activation="relu")(h_global)
+        z_g_mean = layers.Dense(self._global_latent_dim, name="z_g_mean")(h_global)
+        z_g_log_var = layers.Dense(self._global_latent_dim, name="z_g_log_var")(h_global)
+
+        if self._local_latent_dim > 0:
+            z_l_mean = layers.TimeDistributed(
+                layers.Dense(self._local_latent_dim), name="z_l_mean"
+            )(h_seq)
+            z_l_log_var = layers.TimeDistributed(
+                layers.Dense(self._local_latent_dim), name="z_l_log_var"
+            )(h_seq)
+            z_g, z_l = DualSampling()([z_g_mean, z_g_log_var, z_l_mean, z_l_log_var])
+            return keras.Model(
+                inputs=x_in,
+                outputs=[z_g_mean, z_g_log_var, z_l_mean, z_l_log_var, z_g, z_l],
+                name="encoder_v6",
+            )
+
+        z_g = Sampling()([z_g_mean, z_g_log_var])
+        return keras.Model(
+            inputs=x_in,
+            outputs=[z_g_mean, z_g_log_var, z_g],
+            name="encoder_v6",
+        )
+
+    def _build_decoder(self) -> keras.Model:
+        z_in = keras.Input(shape=(self._global_latent_dim,), name="z_g")
+        cond_dim = self._y_dim + self._local_latent_dim
+        cond_in = keras.Input(shape=(self._seq_len, cond_dim), name="cond_seq")
+
+        init_units = self._layer_units[0]
+        h0 = layers.Dense(init_units, activation="tanh", name="dec_h0")(z_in)
+        c0 = layers.Dense(init_units, activation="tanh", name="dec_c0")(z_in)
+
+        x = HourlyPositionalEncoding(self._seq_len)(cond_in)  # (B, T, cond_dim+4)
+        if self._tile_z:
+            # Tile z to every step so the LSTM cannot ignore it after the initial state
+            z_tiled = layers.RepeatVector(self._seq_len)(z_in)  # (B, T, G)
+            x = ops.concatenate([x, z_tiled], axis=-1)  # (B, T, cond_dim+4+G)
+
+        for i, (units, drop) in enumerate(
+            zip(self._layer_units, self._layer_dropouts, strict=False)
+        ):
+            if i == 0:
+                x = layers.LSTM(units, return_sequences=True, name="dec_lstm_0")(
+                    x, initial_state=[h0, c0]
+                )
+            else:
+                x = layers.LSTM(units, return_sequences=True, name=f"dec_lstm_{i}")(x)
+            x = layers.LayerNormalization()(x)
+            x = layers.Dropout(rate=drop)(x)
+
+        d_output = layers.TimeDistributed(
+            layers.Dense(self._feat_dim, activation=self._output_activation)
+        )(x)
+        return keras.Model([z_in, cond_in], d_output, name="decoder_v6")

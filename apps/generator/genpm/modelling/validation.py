@@ -17,9 +17,12 @@ from genpm.modelling.core.data import SEQ_LEN
 def wide_timespan_to_long(df: pd.DataFrame, *, keep_window_anchor: bool = True) -> pd.DataFrame:
     """Convert wide-format synthetic output (one row per hour, KPI columns) to long format."""
     out = df.copy()
-    if "distname" not in out.columns and "cell_id" in out.columns:
-        out["distname"] = out["cell_id"]
-    id_vars = ["distname", "timestamp"]
+    if "distname" not in out.columns:
+        if "cell_id" in out.columns:
+            out["distname"] = out["cell_id"]
+            id_vars = ["distname", "timestamp"]
+        elif "config_id" in out.columns:
+            id_vars = ["config_id", "timestamp"]
     if keep_window_anchor and "window_anchor" in out.columns:
         id_vars.append("window_anchor")
     drop_cols = [c for c in ("cell_id", "seed") if c in out.columns]

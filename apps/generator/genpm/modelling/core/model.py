@@ -4,7 +4,7 @@ import keras
 
 from genpm.modelling.core.architectures import (
     cBetaVAE_Hierarchical,
-    cVAE_LSTMv5Architecture,
+    cVAE_LSTMv6Architecture,
 )
 from genpm.utils.logger import get_logger
 
@@ -31,6 +31,28 @@ HP_V5 = dict(
     cycle_ratio=0.5,
 )
 
+# v6: X-only encoder + z tiled at every decoder step — eliminates posterior collapse
+HP_V6 = dict(
+    epochs=200,
+    batch_size=64,
+    global_latent_dim=64,
+    local_latent_dim=0,
+    hidden_dim=256,
+    n_layers=2,
+    use_attention=True,
+    n_heads=4,
+    beta=0.0,
+    learning_rate=3e-4,
+    free_bits_global=0.002,  # back to original — z will naturally exceed this floor
+    free_bits_local=0.0,
+    output_activation="sigmoid",
+    target_beta=1e-3,
+    anneal_epochs=150,
+    cycle_epochs=30,
+    n_cycles=6,
+    cycle_ratio=0.5,
+)
+
 
 def build_cvae_lstm(
     seq_len: int,
@@ -47,14 +69,15 @@ def build_cvae_lstm(
     free_bits_global: float = 0.002,
     free_bits_local: float = 0.0,
     output_activation: str = "sigmoid",
+    tile_z: bool = True,
 ):
     """Instantiate and compile the cVAE-LSTM v6 architecture."""
     logger.info(
         f"Building model | seq_len={seq_len} feat_dim={feat_dim} y_dim={y_dim} "
         f"global_latent_dim={global_latent_dim} hidden_dim={hidden_dim} "
-        f"n_layers={n_layers} use_attention={use_attention}"
+        f"n_layers={n_layers} use_attention={use_attention} tile_z={tile_z}"
     )
-    arch = cVAE_LSTMv5Architecture(
+    arch = cVAE_LSTMv6Architecture(
         seq_len=seq_len,
         feat_dim=feat_dim,
         y_dim=y_dim,
@@ -65,6 +88,7 @@ def build_cvae_lstm(
         use_attention=use_attention,
         n_heads=n_heads,
         output_activation=output_activation,
+        tile_z=tile_z,
     )
     model = cBetaVAE_Hierarchical(
         encoder=arch.encoder,

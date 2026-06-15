@@ -52,11 +52,11 @@ class TrainConfig:
     free_bits_local: float = 0.0
     output_activation: str = "sigmoid"
     # Training schedule
-    epochs: int = 3
+    epochs: int = 200
     batch_size: int = 64
-    target_beta: float = 2e-4
+    target_beta: float = 1e-3
     use_cyclical_kl: bool = True
-    cycle_epochs: int = 40
+    cycle_epochs: int = 30
     n_cycles: int = 6
     cycle_ratio: float = 0.5
     anneal_epochs: int = 150

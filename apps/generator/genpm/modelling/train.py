@@ -62,8 +62,10 @@ def run_training(cfg: TrainConfig):
     save_training_artifacts(
         Path(cfg.run_dir_path),
         data,
+        history=history,
         arch_params={
             "arch_version": "v6",
+            "tile_z_in_decoder": True,
             "y_dim": data["y_dim"],
             "global_latent_dim": cfg.global_latent_dim,
             "local_latent_dim": cfg.local_latent_dim,
