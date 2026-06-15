@@ -43,7 +43,7 @@
 
         <!-- KPI selection (appears after model is selected) -->
         <ModelingFormKpiSelector
-          v-if="form.model_id"
+          v-if="false"
           v-model="form.selected_kpis"
           :kpis="kpis"
           :is-loading="isKpisLoading"
@@ -51,7 +51,7 @@
         />
 
         <!-- Cell selection (appears after model is selected) -->
-        <div v-if="form.model_id" class="block space-y-2">
+        <div v-if="false" class="block space-y-2">
           <label class="block space-y-2">
             <span class="inline-flex items-center gap-1 text-sm font-medium text-fg">
               Cell ID

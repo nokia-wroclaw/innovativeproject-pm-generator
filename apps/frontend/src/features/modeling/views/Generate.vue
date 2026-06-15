@@ -41,7 +41,7 @@ const artifactLabels = {
 const processDefinition = {
   processType: GENERATE_PROCESS,
   title: 'Synthetic data generation',
-  dagId: 'moj_pierwszy_dag',
+  dagId: 'generate_pipeline',
   description: 'Generates synthetic data from a trained model and prompt.',
   emptyText: 'Generated event log will appear after a successful run.',
 };
