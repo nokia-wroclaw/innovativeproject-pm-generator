@@ -4,6 +4,7 @@ import json
 from pathlib import Path
 
 import joblib
+import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 
@@ -14,10 +15,37 @@ from genpm.utils.logger import get_logger
 logger = get_logger()
 
 
+def _save_history(out_dir: Path, history) -> None:
+    """Save Keras History: raw JSON + loss plot PNG."""
+    hist_dict = history.history
+    (out_dir / "training_history.json").write_text(json.dumps(hist_dict, indent=2))
+    logger.info(f"Saved training_history.json — {list(hist_dict.keys())}")
+
+    metrics = [k for k in hist_dict if not k.startswith("val_")]
+    n = len(metrics)
+    fig, axes = plt.subplots(n, 1, figsize=(10, 3 * n), sharex=True)
+    if n == 1:
+        axes = [axes]
+    for ax, metric in zip(axes, metrics, strict=True):
+        ax.plot(hist_dict[metric], label=metric)
+        if f"val_{metric}" in hist_dict:
+            ax.plot(hist_dict[f"val_{metric}"], label=f"val_{metric}", linestyle="--")
+        ax.set_ylabel(metric)
+        ax.legend(fontsize=8)
+        ax.grid(True, alpha=0.3)
+    axes[-1].set_xlabel("epoch")
+    fig.suptitle("Training losses", y=1.01)
+    fig.tight_layout()
+    fig.savefig(out_dir / "training_losses.png", dpi=120, bbox_inches="tight")
+    plt.close(fig)
+    logger.info("Saved training_losses.png")
+
+
 def save_training_artifacts(
     out_dir: str | Path,
     data: dict,
     arch_params: dict | None = None,
+    history=None,
 ) -> None:
     """Persist all training artifacts needed to reload the model and generate data."""
     out_dir = Path(out_dir)
@@ -64,6 +92,9 @@ def save_training_artifacts(
     if arch_params:
         (out_dir / "arch_params.json").write_text(json.dumps(arch_params, indent=2))
         logger.info(f"Saved arch_params.json — {arch_params}")
+
+    if history is not None:
+        _save_history(out_dir, history)
 
     logger.info(f"All artifacts saved to {out_dir}")
 
@@ -149,6 +180,12 @@ def load_trained_model(
         f"{len(cell_config_map['map'])} cells"
     )
 
+    arch_params_path = run_id_path / "arch_params.json"
+    arch_params = json.loads(arch_params_path.read_text()) if arch_params_path.exists() else {}
+    # v6 always tiles z into the decoder (build_cvae_lstm default tile_z=True), so a
+    # missing field means True — only an explicit False disables tiling.
+    tile_z = bool(arch_params.get("tile_z_in_decoder", True))
+
     _, model = build_cvae_lstm(
         seq_len=seq_len,
         feat_dim=feat_dim,
@@ -162,6 +199,7 @@ def load_trained_model(
         free_bits_global=free_bits_global,
         free_bits_local=free_bits_local,
         output_activation=output_activation,
+        tile_z=tile_z,
     )
 
     dummy_X = np.zeros((1, seq_len, feat_dim), dtype=np.float32)

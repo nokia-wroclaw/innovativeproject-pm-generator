@@ -74,7 +74,9 @@ class CollapseMonitor(keras.callbacks.Callback):
             return
         x = keras.ops.convert_to_tensor(self.X)
         y = keras.ops.convert_to_tensor(self.y)
-        enc_out = self.model.encoder([x, y], training=False)
+        # v5 encoder takes [x, y]; v6 encoder takes x only
+        enc_input = [x, y] if len(self.model.encoder.inputs) == 2 else x
+        enc_out = self.model.encoder(enc_input, training=False)
         z_mean = enc_out[0]
         z_log_var = enc_out[1]
         mean_norm = float(keras.ops.mean(keras.ops.abs(z_mean)))
@@ -152,6 +154,6 @@ def train_cvae(
         epochs=epochs,
         batch_size=batch_size,
         callbacks=callbacks,
-        verbose=1,
+        verbose=2,
         **kwargs,
     )
