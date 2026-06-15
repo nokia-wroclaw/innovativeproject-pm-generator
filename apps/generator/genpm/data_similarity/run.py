@@ -56,13 +56,46 @@ def _load_data(
     if cfg.real_ts_col is not None and cfg.real_ts_col != cfg.ts_col:
         real_sdf = real_sdf.withColumnRenamed(cfg.real_ts_col, cfg.ts_col)
 
+    # Select only required columns before deduplication to save memory/shuffle size
+    all_kpis = set(cfg.single_kpi_cols + cfg.multi_kpi_cols)
+    cols_to_keep = [cfg.ts_col] + list(all_kpis)
+    if cfg.cell_config_cols:
+        cols_to_keep.extend([c for c in cfg.cell_config_cols if c not in cols_to_keep])
+
+    # We might have columns missing from real_sdf if it's an older dataset, so filter safely
+    cols_to_keep = [c for c in cols_to_keep if c in real_sdf.columns]
+    real_sdf = real_sdf.select(*cols_to_keep)
+
     if cfg.cell_config_cols is not None and cfg.cell_configs is not None:
         real_sdf = _add_config_id_and_filter(real_sdf, cfg.cell_config_cols, cfg.cell_configs)
+        logger.info("Removing sliding window duplicates for filtered cell...")
+        real_sdf = real_sdf.dropDuplicates([cfg.ts_col])
+    else:
+        dedup_cols = [cfg.ts_col]
+        if cfg.cell_config_cols:
+            dedup_cols.extend([c for c in cfg.cell_config_cols if c in real_sdf.columns])
+        logger.info(f"Removing sliding window duplicates globally using {dedup_cols}...")
+        real_sdf = real_sdf.dropDuplicates(dedup_cols)
 
     logger.info(f"Synth: reading parquet from {cfg.synth_data_path}")
-    synth_sdf = sdm.read_parquet(cfg.synth_data_path)
+    # Use pathGlobFilter to skip non-parquet files (e.g. generation_metadata.json) that may
+    # reside in the same S3 prefix as the generated parquet output.
+    synth_sdf = sdm.spark.read.option("pathGlobFilter", "*.parquet").parquet(cfg.synth_data_path)
     if cfg.synth_ts_col is not None and cfg.synth_ts_col != cfg.ts_col:
         synth_sdf = synth_sdf.withColumnRenamed(cfg.synth_ts_col, cfg.ts_col)
+
+    # Safely filter KPI columns so we don't crash if the generator omitted some KPIs
+    valid_kpis = set(real_sdf.columns) & set(synth_sdf.columns)
+
+    missing_single = [k for k in cfg.single_kpi_cols if k not in valid_kpis]
+    if missing_single:
+        logger.warning(f"Dropping missing single_kpi_cols: {missing_single}")
+        cfg.single_kpi_cols = [k for k in cfg.single_kpi_cols if k in valid_kpis]
+
+    missing_multi = [k for k in cfg.multi_kpi_cols if k not in valid_kpis]
+    if missing_multi:
+        logger.warning(f"Dropping missing multi_kpi_cols: {missing_multi}")
+        cfg.multi_kpi_cols = [k for k in cfg.multi_kpi_cols if k in valid_kpis]
 
     return real_sdf, synth_sdf
 

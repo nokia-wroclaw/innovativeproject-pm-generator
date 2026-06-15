@@ -34,6 +34,8 @@ const previewColumns = computed(
   () => previewData.value?.tables?.[0]?.columns ?? [],
 );
 
+const datasetType = computed(() => previewData.value?.type ?? '');
+
 async function loadPreview() {
   if (!Number.isFinite(datasetId.value) || datasetId.value <= 0) {
     error.value = 'Invalid dataset id';
@@ -93,10 +95,11 @@ watch(datasetId, loadPreview, { immediate: true });
       />
     </section>
 
-    <section v-if="!isLoading && !error && previewData" class="s3-dataset-detail-panel">
+    <section v-if="!isLoading && !error && previewData && storageTab !== 'preprocessed'" class="s3-dataset-detail-panel">
       <DatasetVisualizationWidget
         :dataset-id="datasetId"
         :preview-columns="previewColumns"
+        :dataset-type="datasetType"
       />
     </section>
   </div>

@@ -38,6 +38,7 @@ def assert_raw_dataset(dataset: Dataset, *, context: Literal["upload", "status"]
         DatasetType.RAW,
         DatasetType.KPI_DEFINITIONS,
         DatasetType.SIMPLE_REPORTS,
+        DatasetType.PREPROCESSED,
     }:
         detail = _ERR_RAW_STATUS if context == "status" else _ERR_RAW_UPLOAD
         raise HTTPException(status_code=403, detail=detail)

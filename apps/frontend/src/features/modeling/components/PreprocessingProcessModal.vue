@@ -159,12 +159,6 @@ const sections = [
         default: 0.8,
         hint: 'Min. share of a KPI cells that must meet the density threshold.',
       }),
-      frac({
-        key: 'kpi_window_coverage_frac',
-        label: 'KPI window coverage frac',
-        default: 0.917,
-        hint: 'Min. ratio of good windows to theoretical max windows per KPI.',
-      }),
     ],
   },
   {
@@ -224,7 +218,7 @@ const sections = [
         label: 'Max gap (hours)',
         min: 1,
         step: 1,
-        default: 6,
+        default: 24,
         required: true,
         hint: 'Max consecutive null hours per window and safe imputation limit.',
       }),

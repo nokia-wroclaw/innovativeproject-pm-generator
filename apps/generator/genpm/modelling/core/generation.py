@@ -15,8 +15,8 @@ def _to_numpy(tensor) -> np.ndarray:
     """Convert any Keras/TF/PyTorch tensor to numpy, including CUDA tensors."""
     try:
         return np.asarray(tensor)
-    except TypeError:
-        # PyTorch CUDA tensor — must move to CPU before converting
+    except (TypeError, RuntimeError):
+        # PyTorch tensor with requires_grad=True or CUDA tensor — detach first
         return tensor.detach().cpu().numpy()
 
 

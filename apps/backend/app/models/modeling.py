@@ -85,6 +85,10 @@ class GenerateRunRequest(BaseModel):
     model_id: str = Field(min_length=1)
     encoder_s3_key: str = Field(min_length=1)
     config_s3_key: str = Field(min_length=1)
+    cell_id: str = ""  # Empty = generate for all cells
+    anchor_date: str = Field(min_length=1)
+    n_weeks: int = Field(ge=1)
+    holiday: int = Field(default=0, ge=0, le=1)
     prompt: str = ""
     comparison_dataset_id: int | None = Field(default=None, gt=0)
     dag_args: dict[str, Any] = Field(default_factory=dict)
@@ -175,4 +179,3 @@ class DeleteModelResponse(BaseModel):
     message: str
     model_id: int
     deleted_from_s3: bool
-

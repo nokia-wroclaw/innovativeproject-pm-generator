@@ -36,16 +36,19 @@ RUN chown -R airflow:root /opt/airflow/generator
 # Venv must be created as the airflow runtime user — root-owned uv Python is not executable
 # by AIRFLOW_UID (50000), which causes "Permission denied" in Spark PythonRunner.
 USER airflow
-# Build genpm as a pinned wheel and install it (--no-deps) into the Spark driver venv. This is the
-# reproducible distribution artifact; the matching wheel is installed in the Spark executor image.
+# Build genpm as a pinned wheel and install it WITH its dependencies into the Spark driver venv.
+# We install the wheel's full dependency graph (not a hand-curated list) so the version pins from
+# apps/generator/pyproject.toml apply — otherwise bare `pip install numpy pandas ...` pulls latest
+# (pandas 3.x / numpy 2.4) which breaks tsgm/statsmodels. pyspark is also pulled in but is shadowed
+# at runtime by SPARK_HOME on PYTHONPATH (see genpm.utils.spark_bootstrap). setuptools provides
+# distutils on Python 3.12.
 RUN uv venv /opt/airflow/genpm-venv --python 3.12 \
-    && uv pip install --python /opt/airflow/genpm-venv/bin/python --no-cache \
-        numpy pandas scipy plotly boto3 pyarrow python-dotenv setuptools \
     && uv build --wheel --out-dir /opt/airflow/artifacts /opt/airflow/generator \
-    && uv pip install --python /opt/airflow/genpm-venv/bin/python --no-cache --no-deps \
-        /opt/airflow/artifacts/genpm_generator-*.whl \
+    && uv pip install --python /opt/airflow/genpm-venv/bin/python --no-cache \
+        setuptools /opt/airflow/artifacts/genpm_generator-*.whl \
     && PYTHONPATH="/opt/spark/python:/opt/spark/python/lib/py4j-0.10.9.7-src.zip" \
-        /opt/airflow/genpm-venv/bin/python -c "import distutils; import genpm.utils.spark_session"
+        /opt/airflow/genpm-venv/bin/python -c "import distutils; import genpm.utils.spark_session" \
+    && /opt/airflow/genpm-venv/bin/python -c "import genpm.modelling.generate_s3"
 
 ENV GENPM_PYSPARK_PYTHON=/opt/airflow/genpm-venv/bin/python
 ENV GENPM_GENERATOR_ROOT=/opt/airflow/generator

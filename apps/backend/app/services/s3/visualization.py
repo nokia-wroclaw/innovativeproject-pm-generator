@@ -30,6 +30,7 @@ from app.services.spark_dag_conf import build_visualization_dag_conf
 
 DATASET_VISUALIZATION_DAG_ID = "dataset_visualization_spark"
 VISUALIZATION_SPARK_TASK_ID = "run_pm_visualization"
+GENERATE_PIPELINE_DAG_ID = "generate_pipeline"
 SPARK_VERSION_PATTERN = re.compile(r"Spark version:\s*(\S+)", re.IGNORECASE)
 
 logger = logging.getLogger(__name__)
@@ -91,12 +92,12 @@ async def trigger_dataset_visualization(
     s3_service: S3Service | None = None,
     triggered_by: str | None = None,
 ) -> DatasetVisualizationResponse:
-    if s3_service is not None:
+    if s3_service is not None and str(dataset.type) == DatasetType.RAW.value:
         schema_error = check_dataset_pm_schema(s3_service, dataset)
         if schema_error is not None:
-            persist_unsupported_schema_artifact(dataset.s3_key, schema_error)
+            persist_unsupported_schema_artifact(dataset.s3_key, schema_error, str(dataset.type))
             raise VisualizationSchemaError(schema_error)
-        delete_visualization_error_artifact(dataset.s3_key)
+        delete_visualization_error_artifact(dataset.s3_key, str(dataset.type))
 
     service = airflow or get_airflow_service()
     run_id = f"genpm_viz_{dataset.id}_{uuid.uuid4().hex[:8]}"
@@ -136,7 +137,7 @@ async def trigger_dataset_visualization_on_raw_completed(
         schema_error = check_dataset_pm_schema(s3_service, dataset)
         if schema_error is not None:
             try:
-                persist_unsupported_schema_artifact(dataset.s3_key, schema_error)
+                persist_unsupported_schema_artifact(dataset.s3_key, schema_error, str(dataset.type))
             except VisualizationStorageError as exc:
                 logger.warning(
                     "Skipped visualization for dataset_id=%s: %s",
@@ -363,6 +364,47 @@ async def _response_from_artifact(
     )
 
 
+async def _get_generated_dataset_visualization_status(
+    dataset_id: int,
+    dataset: Dataset,
+) -> DatasetVisualizationStatusResponse:
+    """Return data-similarity results for a GENERATED dataset.
+
+    The run_data_similarity Airflow task writes summary.json next to the generated
+    parquet files.  We read that artifact directly — no separate visualization DAG is
+    involved for generated datasets.
+    """
+    try:
+        artifact = load_visualization_artifact(dataset.s3_key, str(dataset.type))
+    except VisualizationStorageError as exc:
+        return DatasetVisualizationStatusResponse(
+            dataset_id=dataset_id,
+            dag_id=GENERATE_PIPELINE_DAG_ID,
+            status="unavailable",
+            message=str(exc),
+        )
+
+    if artifact is not None:
+        return DatasetVisualizationStatusResponse(
+            dataset_id=dataset_id,
+            dag_id=GENERATE_PIPELINE_DAG_ID,
+            status="success",
+            message="Data similarity analysis completed.",
+            summary=artifact,
+        )
+
+    return DatasetVisualizationStatusResponse(
+        dataset_id=dataset_id,
+        dag_id=GENERATE_PIPELINE_DAG_ID,
+        status="not_found",
+        message=(
+            "No data similarity results found yet. "
+            "The generation pipeline may still be running or the run_data_similarity "
+            "task did not produce a summary."
+        ),
+    )
+
+
 async def get_dataset_visualization_status(
     dataset_id: int,
     dataset: Dataset,
@@ -370,7 +412,10 @@ async def get_dataset_visualization_status(
     airflow: AirflowService | None = None,
     s3_service: S3Service | None = None,
 ) -> DatasetVisualizationStatusResponse:
-    if s3_service is not None:
+    if str(dataset.type) == DatasetType.GENERATED.value:
+        return await _get_generated_dataset_visualization_status(dataset_id, dataset)
+
+    if s3_service is not None and str(dataset.type) == DatasetType.RAW.value:
         schema_error = check_dataset_pm_schema(s3_service, dataset)
         if schema_error is not None:
             return _unsupported_status_response(
@@ -411,7 +456,7 @@ async def get_dataset_visualization_status(
     status = str(run.status)
 
     try:
-        artifact = load_visualization_artifact(dataset.s3_key)
+        artifact = load_visualization_artifact(dataset.s3_key, str(dataset.type))
     except VisualizationStorageError as exc:
         return DatasetVisualizationStatusResponse(
             dataset_id=dataset_id,
@@ -426,13 +471,13 @@ async def get_dataset_visualization_status(
             "(dataset columns match PM schema under current rules)",
             dataset_id,
         )
-        delete_visualization_error_artifact(dataset.s3_key)
+        delete_visualization_error_artifact(dataset.s3_key, str(dataset.type))
         artifact = None
 
     if artifact is not None:
         kpi_analysis = None
         if artifact.get("status") == "success":
-            kpi_analysis = load_kpi_analysis_artifact(dataset.s3_key)
+            kpi_analysis = load_kpi_analysis_artifact(dataset.s3_key, str(dataset.type))
         return await _response_from_artifact(
             dataset_id=dataset_id,
             run_id=run_id,

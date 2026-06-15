@@ -12,6 +12,7 @@ export const modelingQueryKeys = {
   datasets: () => ['modeling', 'datasets'],
   models: () => ['modeling', 'models'],
   kpis: (modelId) => ['modeling', 'models', unref(modelId), 'kpis'],
+  cells: (modelId) => ['modeling', 'models', unref(modelId), 'cells'],
   formSchema: (processType) => ['modeling', 'form-schema', unref(processType)],
   runStatus: (processType, runId) => [
     'modeling',
@@ -104,6 +105,15 @@ export function useModelKpis(modelIdRef) {
   return useQuery({
     queryKey: computed(() => modelingQueryKeys.kpis(modelIdRef)),
     queryFn: () => Api.fetchModelKpis(unref(modelIdRef)),
+    enabled: computed(() => Boolean(unref(modelIdRef))),
+    staleTime: ONE_HOUR,
+  });
+}
+
+export function useModelCells(modelIdRef) {
+  return useQuery({
+    queryKey: computed(() => modelingQueryKeys.cells(modelIdRef)),
+    queryFn: () => Api.fetchModelCells(unref(modelIdRef)),
     enabled: computed(() => Boolean(unref(modelIdRef))),
     staleTime: ONE_HOUR,
   });

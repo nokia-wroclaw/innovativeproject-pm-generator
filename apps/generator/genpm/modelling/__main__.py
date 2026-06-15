@@ -1,6 +1,8 @@
 """genpm.modelling — runnable as `python -m genpm.modelling <generate|train>`."""
 
 import argparse
+import json
+import os
 from pathlib import Path
 
 from genpm.modelling.configs import GenerateConfig, TrainConfig
@@ -9,12 +11,22 @@ from genpm.modelling.train import run_training
 
 
 def _add_generate_args(p: argparse.ArgumentParser) -> None:
-    p.add_argument("--run-dir-path", required=True)
-    p.add_argument("--weights-path", required=True)
-    p.add_argument("--output-path", required=True)
-    p.add_argument("--cell-id", required=True)
-    p.add_argument("--anchor-date", required=True)
-    p.add_argument("--n-weeks", type=int, required=True)
+    p.add_argument(
+        "--conf-json",
+        default=None,
+        help=(
+            "Finalized dag_run.conf as a JSON string. When set, downloads artifacts from S3 and "
+            "runs generation end-to-end; all other flags are ignored."
+        ),
+    )
+    p.add_argument("--run-dir-path", default=None)
+    p.add_argument("--weights-path", default=None)
+    p.add_argument("--output-path", default=None)
+    p.add_argument("--cell-id", default=None)
+    # Not required at parse time: in --conf-json mode these come from dag_args inside the JSON.
+    # Validated below for the manual (non-conf-json) CLI path.
+    p.add_argument("--anchor-date", default=None)
+    p.add_argument("--n-weeks", type=int, default=None)
     p.add_argument("--holiday", type=int, default=0)
     p.add_argument("--batch-size", type=int, default=64)
     p.add_argument("--seed", type=int, default=42)
@@ -82,36 +94,53 @@ def main(argv=None):
     args = parser.parse_args(argv)
 
     if args.command == "generate":
-        import numpy as np
+        if args.conf_json:
+            from genpm.modelling.generate_s3 import run_generation_from_conf
 
-        kpi_path = args.kpi_columns_path or str(Path(args.run_dir_path) / "kpi_columns.npy")
-        kpi_list = np.load(kpi_path, allow_pickle=True).tolist()
+            conf = json.loads(args.conf_json)
+            bucket = os.getenv("S3_BUCKET", "datasets")
+            run_generation_from_conf(conf, bucket=bucket)
+        else:
+            import numpy as np
 
-        cfg = GenerateConfig(
-            run_dir_path=args.run_dir_path,
-            weights_path=args.weights_path,
-            output_path=args.output_path,
-            cell_id=args.cell_id,
-            anchor_date=args.anchor_date,
-            n_weeks=args.n_weeks,
-            kpi_list=kpi_list,
-            holiday=args.holiday,
-            batch_size=args.batch_size,
-            seed=args.seed,
-            cell_configs=args.cell_configs,
-            seq_len=args.seq_len,
-            n_dim=args.n_dim,
-            global_latent_dim=args.global_latent_dim,
-            local_latent_dim=args.local_latent_dim,
-            hidden_dim=args.hidden_dim,
-            n_layers=args.n_layers,
-            use_attention=args.use_attention,
-            n_heads=args.n_heads,
-            free_bits_global=args.free_bits_global,
-            free_bits_local=args.free_bits_local,
-            output_activation=args.output_activation,
-        )
-        run_generation(cfg)
+            if not args.run_dir_path or not args.weights_path or not args.output_path:
+                raise SystemExit(
+                    "error: --run-dir-path, --weights-path, and --output-path are required "
+                    "when not using --conf-json"
+                )
+            if args.anchor_date is None or args.n_weeks is None:
+                raise SystemExit(
+                    "error: --anchor-date and --n-weeks are required when not using --conf-json"
+                )
+
+            kpi_path = args.kpi_columns_path or str(Path(args.run_dir_path) / "kpi_columns.npy")
+            kpi_list = np.load(kpi_path, allow_pickle=True).tolist()
+
+            cfg = GenerateConfig(
+                run_dir_path=args.run_dir_path,
+                weights_path=args.weights_path,
+                output_path=args.output_path,
+                cell_id=args.cell_id,
+                anchor_date=args.anchor_date,
+                n_weeks=args.n_weeks,
+                kpi_list=kpi_list,
+                holiday=args.holiday,
+                batch_size=args.batch_size,
+                seed=args.seed,
+                cell_configs=args.cell_configs,
+                seq_len=args.seq_len,
+                n_dim=args.n_dim,
+                global_latent_dim=args.global_latent_dim,
+                local_latent_dim=args.local_latent_dim,
+                hidden_dim=args.hidden_dim,
+                n_layers=args.n_layers,
+                use_attention=args.use_attention,
+                n_heads=args.n_heads,
+                free_bits_global=args.free_bits_global,
+                free_bits_local=args.free_bits_local,
+                output_activation=args.output_activation,
+            )
+            run_generation(cfg)
 
     elif args.command == "train":
         cfg = TrainConfig(

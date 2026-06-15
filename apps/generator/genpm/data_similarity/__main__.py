@@ -1,6 +1,14 @@
 """genpm.data_similarity — runnable as `python -m genpm.data_similarity`."""
 
 import argparse
+import json
+import os
+import tempfile
+from pathlib import Path
+
+import boto3
+import joblib
+from botocore.config import Config
 
 from genpm.data_similarity.configs import DataSimilarityConfig
 from genpm.data_similarity.run import run_data_similarity
@@ -11,6 +19,13 @@ from genpm.utils.spark_session import SparkDataManager
 def main(argv=None):
     parser = argparse.ArgumentParser(
         description="Data similarity validation: real vs synthetic time series.",
+    )
+
+    # Airflow run conf
+    parser.add_argument(
+        "--conf-json",
+        default=None,
+        help="Dag run conf JSON string. If provided, S3 paths and params are extracted automatically.",
     )
 
     # RAW paths - input
@@ -28,8 +43,8 @@ def main(argv=None):
     # Output
     parser.add_argument(
         "--output-path-prefix",
-        required=True,
-        help="Local directory for figures and summary JSON",
+        default=None,
+        help="Local directory or S3 prefix for figures and summary JSON",
     )
 
     # KPIs to validate
@@ -86,6 +101,46 @@ def main(argv=None):
 
     args = parser.parse_args(argv)
 
+    if args.conf_json:
+        conf = json.loads(args.conf_json)
+        bucket = os.getenv("S3_BUCKET", "datasets")
+
+        comp_path = conf.get("comparison_dataset_path")
+        if not comp_path:
+            raise ValueError("comparison_dataset_path is missing from conf, cannot run similarity.")
+
+        out_prefix = conf["dag_args"]["output_path_prefix"]
+
+        args.real_data_path = f"s3a://{bucket}/{comp_path}/pm_df_wide_indexed_winds"
+        args.synth_data_path = f"s3a://{bucket}/{out_prefix}/*.parquet"
+        args.output_path_prefix = f"s3a://{bucket}/{out_prefix}"
+        args.single_kpi_cols = conf["dag_args"]["kpi_list"]
+        args.multi_kpi_cols = conf["dag_args"]["kpi_list"]
+        args.real_ts_col = "start_time"
+        args.synth_ts_col = "timestamp"
+
+        cell_id = conf["dag_args"].get("cell_id")
+        if cell_id:
+            config_key = conf.get("config_path")
+            if config_key:
+                print(f"Loading cell configs for {cell_id} from s3://{bucket}/{config_key}")
+                s3 = boto3.client(
+                    "s3",
+                    endpoint_url=os.getenv("S3_URL", "http://minio:9000"),
+                    aws_access_key_id=os.getenv("AWS_ACCESS_KEY_ID"),
+                    aws_secret_access_key=os.getenv("AWS_SECRET_ACCESS_KEY"),
+                    config=Config(signature_version="s3v4", s3={"addressing_style": "path"}),
+                )
+                with tempfile.TemporaryDirectory() as tmpdir:
+                    tmp_path = Path(tmpdir) / "cell_config_map.pkl"
+                    s3.download_file(bucket, config_key, str(tmp_path))
+                    cmap = joblib.load(tmp_path)
+                    args.cell_config_cols = cmap["config_cols"]
+                    args.cell_configs = cmap["map"][cell_id]
+
+    if not args.output_path_prefix:
+        parser.error("--output-path-prefix is required when not using --conf-json")
+
     cfg = DataSimilarityConfig(
         real_data_path=args.real_data_path,
         synth_data_path=args.synth_data_path,
@@ -93,6 +148,8 @@ def main(argv=None):
         single_kpi_cols=args.single_kpi_cols,
         multi_kpi_cols=args.multi_kpi_cols,
         ts_col=args.ts_col,
+        real_ts_col=getattr(args, "real_ts_col", None),
+        synth_ts_col=getattr(args, "synth_ts_col", None),
         acf_max_lag=args.acf_max_lag,
         ls_min_period_h=args.ls_min_period_h,
         ls_max_period_h=args.ls_max_period_h,

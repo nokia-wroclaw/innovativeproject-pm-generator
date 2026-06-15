@@ -1,5 +1,5 @@
-import logging
 import json
+import logging
 import re
 import unicodedata
 import uuid
@@ -301,6 +301,38 @@ def list_trained_models(
     ]
 
 
+@router.get("/models/{model_id}/cells", response_model=list[str])
+def get_model_cells(
+    model_id: int,
+    db: Session = Depends(db_manager.get_db),
+    _user: TokenPayload = Depends(require_auth),
+) -> list[str]:
+    import io
+
+    import joblib
+
+    db_model = db.query(TrainedModel).filter(TrainedModel.id == model_id).first()
+    if not db_model:
+        raise HTTPException(status_code=404, detail="Model not found")
+    if not db_model.config_s3_key:
+        raise HTTPException(status_code=400, detail="Model has no cell config map S3 key")
+
+    s3_client = get_s3_client_internal()
+    try:
+        response = s3_client.get_object(
+            Bucket=get_settings().s3_bucket,
+            Key=db_model.config_s3_key,
+        )
+        data = joblib.load(io.BytesIO(response["Body"].read()))
+        cell_ids = sorted(data.get("map", {}).keys())
+        return cell_ids
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to read cell config map from S3: {str(e)}",
+        ) from e
+
+
 @router.get("/models/{model_id}/kpis", response_model=list[str])
 def get_model_kpis(
     model_id: int,
@@ -324,8 +356,7 @@ def get_model_kpis(
     s3_client = get_s3_client_internal()
     try:
         response = s3_client.get_object(
-            Bucket=get_settings().s3_bucket,
-            Key=dataset.pm_metadata_s3_key
+            Bucket=get_settings().s3_bucket, Key=dataset.pm_metadata_s3_key
         )
         content = response["Body"].read().decode("utf-8").strip()
         if not content:
@@ -708,12 +739,21 @@ async def trigger_generate_run(
     config_s3_key = body.config_s3_key.strip()
     _validate_s3_key(config_s3_key)
 
-    resolved_dag_args = {**body.dag_args}
+    dag_id = DAG_ID_MAP[process_type]
+    run_id = f"genpm_{_RUN_ID_PREFIX[process_type]}_{uuid.uuid4().hex[:12]}"
+    output_prefix = f"generated/{run_id}"
+
+    resolved_dag_args = {
+        **body.dag_args,
+        "cell_id": body.cell_id,
+        "anchor_date": body.anchor_date,
+        "n_weeks": body.n_weeks,
+        "holiday": body.holiday,
+        "output_path_prefix": output_prefix,
+    }
     if body.kpis:
         resolved_dag_args["kpi_list"] = body.kpis
 
-    dag_id = DAG_ID_MAP[process_type]
-    run_id = f"genpm_{_RUN_ID_PREFIX[process_type]}_{uuid.uuid4().hex[:12]}"
     conf = {
         "genpm_run_id": run_id,
         "model_id": body.model_id,
@@ -726,8 +766,6 @@ async def trigger_generate_run(
         "process_type": process_type,
         "dag_args": resolved_dag_args,
     }
-    if body.kpis:
-        conf["kpis"] = body.kpis
 
     try:
         action = await airflow.trigger_dag(
@@ -751,6 +789,17 @@ async def trigger_generate_run(
         raise HTTPException(status_code=exc.http_status, detail=exc.message) from exc
 
     effective_run_id = action.run_id or run_id
+
+    _record_process_run(
+        db,
+        run_id=effective_run_id,
+        dag_id=dag_id,
+        process_type=process_type,
+        user_uuid=user.get_uuid(),
+        input_dataset_id=body.comparison_dataset_id,
+        output_s3_key=output_prefix,
+        output_name=f"{model.name} generated {effective_run_id}",
+    )
 
     return ModelingRunCreated(
         process_type=process_type,
