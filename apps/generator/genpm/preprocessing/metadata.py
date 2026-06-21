@@ -1,5 +1,3 @@
-"""Dataset metadata extraction for the wide windowed PM parquet."""
-
 import datetime
 import json
 import os
@@ -20,10 +18,12 @@ _META_COLS = {"distname", "bts_id", "window_anchor", "hour_idx"}
 
 
 def get_kpi_list(df: DataFrame) -> list[str]:
+    """Return sorted list of KPI column names (non-metadata columns)."""
     return sorted(c for c in df.columns if c not in _META_COLS)
 
 
 def get_metadata(df: DataFrame) -> dict[str, Any]:
+    """Compute temporal, spatial, and KPI dimension stats over the wide materialized windows."""
     kpi_cols = get_kpi_list(df)
 
     agg_row = df.agg(
@@ -68,6 +68,7 @@ def get_metadata(df: DataFrame) -> dict[str, Any]:
 
 
 def get_summary_df(df: DataFrame) -> pd.DataFrame:
+    """Return per-KPI descriptive statistics (mean, std, min, median, max, null_count) as a pandas DataFrame."""
     kpi_cols = get_kpi_list(df)
 
     agg_exprs = []
@@ -100,6 +101,7 @@ def get_summary_df(df: DataFrame) -> pd.DataFrame:
 
 
 def build_metadata_json(df: DataFrame, dataset_path: str | None = None) -> dict[str, Any]:
+    """Assemble the full metadata JSON payload for a preprocessed dataset."""
     kpi_cols = get_kpi_list(df)
     metadata = get_metadata(df)
     n_rows = metadata.pop("n_rows")
@@ -136,6 +138,7 @@ def _parse_s3_path(path: str) -> tuple[str, str]:
 
 
 def _write_to_s3(payload: dict, bucket: str, key: str) -> None:
+    """Serialize payload as JSON and write to MinIO/S3."""
     client = boto3.client(
         "s3",
         endpoint_url=os.environ.get("S3_URL", "http://minio:9000"),
@@ -149,6 +152,7 @@ def _write_to_s3(payload: dict, bucket: str, key: str) -> None:
 
 
 def _write_to_local(payload: dict, path: str) -> None:
+    """Serialize payload as JSON and write to a local file."""
     local_path = Path(path)
     local_path.parent.mkdir(parents=True, exist_ok=True)
     with open(local_path, "w") as fh:
@@ -161,6 +165,7 @@ def dump_metadata_json(
     output_path: str | Path,
     dataset_path: str | None = None,
 ) -> None:
+    """Build and write dataset metadata JSON to either S3 or local filesystem."""
     output_path = str(output_path)
     payload = build_metadata_json(df, dataset_path=dataset_path)
 

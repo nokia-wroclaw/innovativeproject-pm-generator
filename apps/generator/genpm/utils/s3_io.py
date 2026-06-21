@@ -1,5 +1,3 @@
-"""S3 JSON artifact I/O (MinIO-compatible)."""
-
 from __future__ import annotations
 
 import json
@@ -11,6 +9,7 @@ from botocore.client import Config
 
 
 def write_json_to_s3(payload: dict[str, Any], *, bucket: str, key: str) -> None:
+    """Serialize payload as JSON and upload to MinIO/S3 at the given bucket/key."""
     endpoint = os.environ.get("S3_URL", "http://minio:9000")
     client = boto3.client(
         "s3",

@@ -1,5 +1,3 @@
-"""Build visualization summary payloads from PM Spark DataFrames."""
-
 from __future__ import annotations
 
 import json

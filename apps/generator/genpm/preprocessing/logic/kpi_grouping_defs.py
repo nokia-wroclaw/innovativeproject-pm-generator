@@ -7,6 +7,7 @@ from genpm.utils.utils import when_chained
 
 
 def make_pattern(words):
+    """Build a word-boundary regex that matches any word in the list, case-insensitive."""
     return r"(?i)(^|[^a-z0-9])(" + "|".join(re.escape(w) for w in words) + r")([^a-z0-9]|$)"
 
 
@@ -21,6 +22,7 @@ def classify_kpis(
     mean_like_units: list[str],
     volume_units: list[str],
 ) -> DataFrame:
+    """Classify each KPI's aggregation character (avg/sum/max/min) from name, unit, and value range."""
     ratio_pattern = make_pattern(ratio_keywords)
     mean_like_pattern = make_pattern(mean_like_keywords)
     volume_pattern = make_pattern(volume_keywords)

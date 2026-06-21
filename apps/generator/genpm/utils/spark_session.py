@@ -82,6 +82,7 @@ class SparkDataManager:
         signal.signal(signal.SIGINT, lambda *_: self.stop())
 
     def stop(self) -> None:
+        """Stop the SparkSession and clear the reference so stop() is idempotent."""
         if getattr(self, "spark", None) is not None:
             self.spark.stop()
             self.spark = None  # type: ignore[assignment]
@@ -100,14 +101,17 @@ class SparkDataManager:
         return minio_spark_conf()
 
     def read_parquet(self, path: Path | str, **options) -> DataFrame:
+        """Read a parquet file or directory and return a Spark DataFrame."""
         logger.info(f"Reading Dataframe from {str(path)} ...")
         return self.spark.read.parquet(str(path), **options)
 
     def write_parquet(self, df: DataFrame, path: Path | str, mode: str = "error", **kwargs):
+        """Write a DataFrame to parquet at the given path."""
         logger.info(f"Writing DataFrame to {str(path)} ...")
         df.write.parquet(path=str(path), mode=mode, **kwargs)
 
     def hard_checkpoint_to_parquet(self, df: DataFrame, path: Path | str) -> DataFrame:
+        """Write df to parquet then reload it — breaks query plan lineage for large pipelines."""
         self.write_parquet(df, path, mode="overwrite")
         return self.read_parquet(path)
 

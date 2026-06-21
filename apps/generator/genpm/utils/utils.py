@@ -12,6 +12,8 @@ logger = get_logger()
 
 
 def when_chained(conditions: list[tuple], otherwise=None) -> Column:
+    """Build a chained when().when()...otherwise() Column from a list of (condition, value) pairs."""
+
     def _reducer(acc, pair):
         cond, val = pair
         return acc.when(cond, val)

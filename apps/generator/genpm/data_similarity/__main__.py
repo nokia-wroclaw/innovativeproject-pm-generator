@@ -1,5 +1,3 @@
-"""genpm.data_similarity — runnable as `python -m genpm.data_similarity`."""
-
 import argparse
 import json
 import os
@@ -17,6 +15,7 @@ from genpm.utils.spark_session import SparkDataManager
 
 
 def main(argv=None):
+    """Parse CLI/conf-json args, build DataSimilarityConfig, and run the similarity pipeline."""
     parser = argparse.ArgumentParser(
         description="Data similarity validation: real vs synthetic time series.",
     )

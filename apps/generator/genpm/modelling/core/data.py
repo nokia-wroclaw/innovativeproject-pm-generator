@@ -1,5 +1,3 @@
-"""Data loading and conditioning vector construction for the cVAE-LSTM pipeline."""
-
 from pathlib import Path
 
 import numpy as np

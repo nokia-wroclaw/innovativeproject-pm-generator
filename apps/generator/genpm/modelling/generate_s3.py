@@ -1,9 +1,3 @@
-"""S3-aware generation runner.
-
-Downloads model artifacts from S3, runs the CVAE-LSTM inference, and uploads the generated parquet
-(plus a lightweight metadata JSON) back to S3. Entry-point when the DAG passes ``--conf-json``.
-"""
-
 from __future__ import annotations
 
 import io
@@ -25,6 +19,7 @@ logger = get_logger()
 
 
 def _s3_client():
+    """Build an S3/MinIO boto3 client from environment variables."""
     return boto3.client(
         "s3",
         endpoint_url=os.getenv("S3_URL", "http://minio:9000"),
@@ -35,6 +30,7 @@ def _s3_client():
 
 
 def _download(client, bucket: str, key: str, dest: Path) -> None:
+    """Download a single S3 object to a local path, creating parent directories as needed."""
     logger.info(f"Downloading s3://{bucket}/{key} → {dest}")
     dest.parent.mkdir(parents=True, exist_ok=True)
     client.download_file(bucket, key, str(dest))

@@ -1,5 +1,3 @@
-"""KPI statistics helpers used by timeline plots (extracted for Spark jobs)."""
-
 from __future__ import annotations
 
 import numpy as np
@@ -10,6 +8,7 @@ from pyspark.sql import functions as F
 
 
 def pull_kpi(df: DataFrame, kpi: str) -> pd.DataFrame:
+    """Aggregate mean/std/count for a single KPI across cells and return as a time-sorted pandas DataFrame."""
     return (
         df.filter(F.col("kpi_id") == kpi)
         .groupBy("start_time")
@@ -25,6 +24,7 @@ def pull_kpi(df: DataFrame, kpi: str) -> pd.DataFrame:
 
 
 def fit_distributions(values: np.ndarray) -> list[dict]:
+    """Fit candidate distributions to values and return them sorted by AIC."""
     candidates = {
         "norm": stats.norm,
         "lognorm": stats.lognorm,
@@ -49,6 +49,7 @@ def fit_distributions(values: np.ndarray) -> list[dict]:
 
 
 def pettitt_test(series: np.ndarray) -> tuple[int, float]:
+    """Non-parametric Pettitt test for a single changepoint; returns (index, p_value)."""
     n = len(series)
     u = np.zeros(n, dtype=float)
     for t in range(1, n):

@@ -1,5 +1,3 @@
-"""Airflow dataset visualization: read RAW parquet from S3, write summary JSON artifacts."""
-
 from __future__ import annotations
 
 import os
@@ -17,6 +15,7 @@ from genpm.utils.spark_session import SparkDataManager
 
 
 def run_dataset_visualization(*, dataset_id: str, s3_key: str, bucket: str | None = None) -> None:
+    """Read raw PM parquet from S3, build summary and KPI analysis, write JSON artifacts back to S3."""
     bucket = bucket or os.environ.get("S3_BUCKET", "datasets")
     print(f"Dataset visualization starting (dataset_id={dataset_id})")
 

@@ -12,6 +12,7 @@ logger = get_logger()
 def _prepare_simple_reports(
     simple_reports_pivoted: DataFrame, cell_config: tuple[str, ...]
 ) -> DataFrame:
+    """Deduplicate config change events per distname and compute config validity intervals."""
     w = Window.partitionBy("distname").orderBy("datetime")
 
     lag_cols = {f"_prev_{c}": f.lag(c).over(w) for c in cell_config}
@@ -40,6 +41,7 @@ def _prepare_simple_reports(
 def pm_and_reports_data_joined(
     pm_df_long: DataFrame, simple_reports_pivoted: DataFrame, cell_config: tuple[str, ...]
 ) -> DataFrame:
+    """Join PM data with cell config changes from simple reports using time-range matching."""
     starting_reports = _prepare_simple_reports(simple_reports_pivoted, cell_config)
 
     pm_cm_joined = (
@@ -83,6 +85,8 @@ def coalesce_kpi_version(
     overwrite_null_with_older_version_value=False,
     include_kpi_origin=False,
 ) -> tuple[DataFrame, DataFrame]:
+    """Merge versioned KPI IDs that share the same base KPI and unchanged definition into a single canonical ID."""
+
     def _kpi_definition_comparison(kpi_definitions: DataFrame) -> DataFrame:
         KPI_DEFINITION_VARIABLES = [
             col for col in kpi_definitions.columns if col not in ["kpi_id", "base_kpi"]
@@ -227,8 +231,8 @@ def coalesce_kpi_version(
     return df_result, kpi_definitions_final
 
 
-# pivot simple reports
 def simple_reports_pivot(simple_reports: DataFrame):
+    """Pivot simple reports from long to wide format, one column per report_name."""
     grouping_cols = ("datetime", "bts_id", "distname")
     simple_reports_pivot = (
         simple_reports.groupBy(*grouping_cols).pivot("report_name").agg(f.first("report_result"))
@@ -237,14 +241,15 @@ def simple_reports_pivot(simple_reports: DataFrame):
     return simple_reports_pivot
 
 
-# raw_pm preprocessing
 def raw_pm_preperation(pm_df_long: DataFrame) -> DataFrame:
+    """Drop duplicates and rows missing mandatory identifier columns from raw PM data."""
     pm_df_long = pm_df_long.dropDuplicates()
     pm_df_long = pm_df_long.dropna(subset=("start_time", "bts_id", "distname"))
     return pm_df_long
 
 
 def iqr_kpi_outlier_detection(pm_df_long: DataFrame, k: float = 1.5) -> DataFrame:
+    """Null out per-(distname, kpi_id) outliers beyond k × IQR from the interquartile range."""
     logger.info("IQR OUTLIERS CALCULATIONS")
 
     # ── 1. Compute IQR bounds per (distname, kpi_id) ──────────────────────────────
@@ -275,18 +280,7 @@ def iqr_kpi_outlier_detection(pm_df_long: DataFrame, k: float = 1.5) -> DataFram
 
 
 def pop_constant_kpis(pm_df_long: DataFrame) -> tuple[DataFrame, DataFrame]:
-    """function to not include constant kpis. A constant kpi, is a kpi, which value over its whole
-    timespan is constant
-       For generating purposes, a second Dataframe is returned with information about those kpis
-       If the user would like to generate one constant kpi aswell
-
-    Args:
-        pm_df_long (DataFrame): PM data Dataframe
-
-    Returns:
-        tuple[DataFrame, DataFrame]: PM data dataframe with const kpis removed, a dataframe
-        containing information about the constant kpi_id, its constant value
-    """
+    """Remove constant KPIs from pm_df_long; return (filtered_df, constant_kpi_df) for reference."""
     # Cheaper than count_distinct: no HyperLogLog, just two simple aggregations
     constant_kpis = (
         pm_df_long.groupBy("kpi_id")

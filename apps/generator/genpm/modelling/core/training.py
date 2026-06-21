@@ -1,5 +1,3 @@
-"""Training loop, KL annealing callbacks, and collapse monitoring."""
-
 from pathlib import Path
 
 # tsgm MUST be imported before keras — it patches keras internals on import.
@@ -15,6 +13,7 @@ logger = get_logger()
 
 
 def _is_hierarchical_model(model) -> bool:
+    """True when model is cBetaVAE_Hierarchical (used to gate collapse monitoring)."""
     return isinstance(model, cBetaVAE_Hierarchical)
 
 
@@ -27,6 +26,7 @@ class _LinearKLAnnealer(keras.callbacks.Callback):
         self.warmup_epochs = warmup_epochs
 
     def on_epoch_begin(self, epoch: int, logs=None) -> None:
+        """Update model.beta linearly from 0 to target_beta over warmup_epochs."""
         self.model.beta = self.target_beta * min(1.0, (epoch + 1) / self.warmup_epochs)
 
 
@@ -50,6 +50,7 @@ class CyclicalKLAnnealer(keras.callbacks.Callback):
         self.n_cycles = n_cycles
 
     def on_epoch_begin(self, epoch: int, logs=None) -> None:
+        """Update model.beta according to the cyclical schedule for this epoch."""
         total = self.cycle_epochs * self.n_cycles
         if epoch >= total:
             self.model.beta = self.target_beta
@@ -70,6 +71,7 @@ class CollapseMonitor(keras.callbacks.Callback):
         self.y = y_sample[:n].astype(np.float32)
 
     def on_epoch_end(self, epoch: int, logs=None) -> None:
+        """Print |z_mean| and mean z_log_var each epoch to diagnose posterior collapse."""
         if not hasattr(self.model, "encoder"):
             return
         x = keras.ops.convert_to_tensor(self.X)

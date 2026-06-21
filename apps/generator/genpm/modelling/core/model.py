@@ -1,5 +1,3 @@
-"""cVAE-LSTM model construction and default hyperparameters."""
-
 # tsgm MUST be imported before keras — it patches keras internals on import.
 import tsgm  # noqa: E402, F401, isort:skip
 import keras

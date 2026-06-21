@@ -1,9 +1,3 @@
-"""genpm.preprocessing — runnable as `python -m genpm.preprocessing` or a SparkSubmit target.
-
-Receives the finalized Airflow `dag_run.conf` as a single JSON argument (`--conf-json`) instead of
-~20 individual flags. The job owns its schema and defaults via `PreprocessingConfig.from_conf`.
-"""
-
 import argparse
 import json
 import os
@@ -18,6 +12,7 @@ from genpm.utils.spark_session import SparkDataManager  # noqa: E402
 
 
 def main(argv=None):
+    """Parse CLI args, build PreprocessingConfig from --conf-json, and run the pipeline."""
     parser = argparse.ArgumentParser(
         description="Preprocessing pipeline for PM synthetic data generation",
     )

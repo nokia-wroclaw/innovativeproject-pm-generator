@@ -15,6 +15,7 @@ VERBOSE_DIAGNOSTICS = False
 
 
 def _intermediate_path(output_path_prefix: str, artifact: str) -> str:
+    """Build path to an intermediate artifact sibling of the final output prefix."""
     prefix = output_path_prefix.rstrip("/")
     if prefix.endswith("/final"):
         base = prefix[: -len("/final")]
@@ -61,6 +62,7 @@ def _log_window_diag(label: str, df: DataFrame, group_cols: tuple[str, ...], ver
 def _load_data(
     sdm: SparkDataManager, preprocessing_cfg: PreprocessingConfig
 ) -> tuple[DataFrame, DataFrame, DataFrame]:
+    """Read raw PM, KPI definitions, and simple reports from configured S3 paths."""
     logger.info("Loading raw data: PM, KPI definitions, simple reports")
     pm_df_long = sdm.read_parquet(preprocessing_cfg.pm_data_raw_path)
     kpis_definitions_df = sdm.read_parquet(preprocessing_cfg.kpi_definitions_raw_path)
@@ -70,6 +72,7 @@ def _load_data(
 
 
 def run_preprocessing(sdm: SparkDataManager, preprocessing_cfg: PreprocessingConfig) -> None:
+    """Execute the full preprocessing pipeline: load → clean → impute → scale → select → save."""
     logger.info("Starting preprocessing pipeline")
     pm_df_long_raw, kpi_definitions_df_raw, simple_reports_df_raw = _load_data(
         sdm, preprocessing_cfg
@@ -301,17 +304,23 @@ def run_preprocessing(sdm: SparkDataManager, preprocessing_cfg: PreprocessingCon
     #     how="inner",
     # )
 
+    _scaling_group_cols = ["kpi_id", *[x for x in _GROUPING_COLS if x != "distname"]]
+
+    logger.info("Stage: fitting and applying Yeo-Johnson scaler")
+    yj_scaler = scaling.YeoJohnsonScaler(
+        value_col="kpi_value",
+        group_cols=_scaling_group_cols,
+    )
+    yj_params_df = yj_scaler.fit(pm_df_long_imputed)
+    pm_df_long_yj = yj_scaler.transform(pm_df_long_imputed)
+
     logger.info("Stage: fitting and applying MinMax scaler")
     scaler = scaling.SimpleMinMaxScaler(
         value_col="kpi_value",
-        group_cols=[
-            "kpi_id",
-            #    NOTE: Scaling should be on kpi-cell_configs aggr level (NOT DISTNAME)
-            *[x for x in _GROUPING_COLS if x != "distname"],
-        ],
+        group_cols=_scaling_group_cols,  # NOTE: Scaling on kpi-cell_configs level (NOT DISTNAME)
     )
-    params_df = scaler.fit(pm_df_long_imputed)
-    pm_df_long_scaled = scaler.transform(pm_df_long_imputed)
+    params_df = scaler.fit(pm_df_long_yj)
+    pm_df_long_scaled = scaler.transform(pm_df_long_yj)
 
     # Greedy joint KPI selection
     logger.info("Stage: greedy joint KPI selection")
@@ -424,6 +433,7 @@ def run_preprocessing(sdm: SparkDataManager, preprocessing_cfg: PreprocessingCon
         "pm_df_wide_materialized_windows": pm_df_wide_materialized_windows,
         "pm_df_long_indexed_winds": pm_df_long_indexed_winds,
         "pm_df_wide_indexed_winds": pm_df_wide_indexed_windows,
+        "yj_scaling_params_df": yj_params_df,
         "scaling_params_df": params_df,
         # Visual and forms HELPER dfs
         "HELPER_pm_data_const_kpi": pm_df_const_kpi,

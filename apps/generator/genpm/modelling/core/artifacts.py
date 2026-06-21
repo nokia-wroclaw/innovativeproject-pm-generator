@@ -1,5 +1,3 @@
-"""Saving and loading trained model artifacts."""
-
 import json
 from pathlib import Path
 

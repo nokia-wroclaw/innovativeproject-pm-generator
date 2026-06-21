@@ -1,5 +1,3 @@
-"""Data similarity pipeline: real vs synthetic time series validation."""
-
 import json
 from pathlib import Path
 from typing import Any
@@ -41,16 +39,7 @@ def _load_data(
     sdm: SparkDataManager,
     cfg: DataSimilarityConfig,
 ) -> tuple[DataFrame, DataFrame]:
-    """
-    Loads real and synthetic data as Spark DataFrames.
-
-    If real_ts_col / synth_ts_col differ from ts_col they are renamed so that
-    both DataFrames share the same ts column name before metric computation.
-
-    If cell_config_cols and cell_configs are set, combines the [CELL] columns
-    in the real data into a config_id column (matching the generated data format)
-    and filters to only rows for the target config.
-    """
+    """Load real and synthetic DataFrames, align timestamp column names, and apply cell-config filtering."""
     logger.info(f"Real: reading parquet from {cfg.real_data_path}")
     real_sdf = sdm.read_parquet(cfg.real_data_path)
     if cfg.real_ts_col is not None and cfg.real_ts_col != cfg.ts_col:
@@ -101,9 +90,7 @@ def _load_data(
 
 
 def _figure_to_dict(fig: go.Figure) -> dict[str, Any]:
-    """
-    Serializes a Plotly figure into a JSON-safe nested dict.
-    """
+    """Serialize a Plotly figure into a JSON-safe nested dict."""
     return json.loads(fig.to_json())
 
 
@@ -111,9 +98,7 @@ def _summary_from_single_metrics(
     metrics: dict[str, Any],
     fig: go.Figure,
 ) -> dict[str, Any]:
-    """
-    Extracts JSON-serializable summary from a full single-KPI metrics dict and the Plotly figure as a nested dict.
-    """
+    """Build a JSON-serializable summary dict from single-KPI metrics and the Plotly figure."""
     return {
         "n_real_rows": int(len(metrics["real_full_pdf"])),
         "n_synth_rows": int(len(metrics["synth_full_pdf"])),
@@ -135,9 +120,7 @@ def _summary_from_multi_metrics(
     metrics: dict[str, Any],
     fig: go.Figure,
 ) -> dict[str, Any]:
-    """
-    Extracts JSON-serializable summary from a full multi-KPI metrics dict and the Plotly figure.
-    """
+    """Build a JSON-serializable summary dict from multi-KPI metrics and the Plotly figure."""
     return {
         "value_cols": list(metrics["value_cols"]),
         "n_real_complete": int(metrics["real_complete_values"].shape[0]),
@@ -160,10 +143,8 @@ def _validate_single_kpi(
     kpi: str,
     cfg: DataSimilarityConfig,
 ) -> dict[str, Any] | None:
+    """Run the full single-KPI validation pipeline for one KPI column."""
     logger.info(f"Single-KPI validation: {kpi!r}")
-    """
-    Runs the full single-KPI validation pipeline for one KPI column.
-    """
     try:
         metrics = compute_single_metrics(
             real_sdf=real_sdf,
@@ -190,9 +171,7 @@ def _validate_multi_kpi(
     synth_sdf: DataFrame,
     cfg: DataSimilarityConfig,
 ) -> dict[str, Any] | None:
-    """
-    Runs the full multi-KPI validation pipeline for selected KPI columns (if less than 2 are selected then skipped).
-    """
+    """Run the multi-KPI validation pipeline; skipped if fewer than 2 KPI columns are configured."""
     if len(cfg.multi_kpi_cols) < 2:
         logger.info(f"Multi-KPI validation skipped: need >= 2 KPIs, got {len(cfg.multi_kpi_cols)}")
         return None
@@ -217,10 +196,12 @@ def _validate_multi_kpi(
 
 
 def _is_s3_path(path: str) -> bool:
+    """True if path starts with s3:// or s3a://."""
     return path.startswith("s3://") or path.startswith("s3a://")
 
 
 def _write_summary_json(summary: dict[str, Any], output_path_prefix: str) -> None:
+    """Write summary dict as summary.json to either S3 or a local directory."""
     if _is_s3_path(output_path_prefix):
         parsed = urlparse(output_path_prefix)
         bucket = parsed.netloc
@@ -235,11 +216,7 @@ def _write_summary_json(summary: dict[str, Any], output_path_prefix: str) -> Non
 
 
 def run_data_similarity(sdm: SparkDataManager, cfg: DataSimilarityConfig) -> dict[str, Any]:
-    """
-    Main entry point for the data similarity pipeline.
-
-    Returns the full summary dict (also written to summary.json if configured).
-    """
+    """Run single- and multi-KPI similarity metrics, write summary.json, and return the summary dict."""
     if not _is_s3_path(cfg.output_path_prefix):
         Path(cfg.output_path_prefix).mkdir(parents=True, exist_ok=True)
 

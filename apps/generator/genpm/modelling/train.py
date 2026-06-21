@@ -1,5 +1,3 @@
-"""Training pipeline orchestrator."""
-
 from pathlib import Path
 
 from genpm.modelling.configs import TrainConfig

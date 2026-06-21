@@ -1,5 +1,3 @@
-"""Synthetic KPI generation: prior sampling, inverse scaling, and output formatting."""
-
 import numpy as np
 import pandas as pd
 
@@ -21,6 +19,7 @@ def _to_numpy(tensor) -> np.ndarray:
 
 
 def _sample_z(z_mean, z_log_var, n_samples, rng):
+    """Reparameterized sample from q(z|x), clamping log-variance to match training clamp."""
     # Mirror the [-6, 2] clamp applied to z_log_var during training so that
     # generation uses the same effective variance range the decoder was trained on.
     z_log_var = np.clip(z_log_var, -6.0, 2.0)
@@ -30,6 +29,7 @@ def _sample_z(z_mean, z_log_var, n_samples, rng):
 
 
 def _encode_windows(model, X_windows, y_windows, batch_size=64):
+    """Batch-encode windows through the model encoder and return concatenated z_mean/z_log_var arrays."""
     z_means, z_log_vars = [], []
     for start in range(0, len(X_windows), batch_size):
         enc_in = model._get_encoder_input(
@@ -43,6 +43,7 @@ def _encode_windows(model, X_windows, y_windows, batch_size=64):
 
 
 def _decode_samples(model, z_samples, y_labels, batch_size=64):
+    """Batch-decode latent samples through the model decoder and return the stacked output array."""
     decoded = []
     for start in range(0, len(z_samples), batch_size):
         dec_in = model._get_decoder_input(
@@ -200,6 +201,7 @@ def _decode_from_prior(model, y_windows, batch_size=64):
 
 
 def _generate_window_batch(model, X_windows, y_windows, rng, batch_size=64):
+    """Sample from N(0, I) prior and decode — X_windows and rng unused (v5 always samples from prior)."""
     del X_windows, rng  # v5 generates from prior; X/rng kept for API compatibility
     return _decode_from_prior(model, y_windows, batch_size)
 
@@ -319,6 +321,7 @@ def generate_n_synthetic_weeks(
 
 
 def _run_batched_generation(model, y_windows: np.ndarray, batch_size: int) -> np.ndarray:
+    """Call model.generate() in batches and concatenate the resulting arrays."""
     decoded = []
     for start in range(0, len(y_windows), batch_size):
         yb = y_windows[start : start + batch_size]

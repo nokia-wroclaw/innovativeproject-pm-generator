@@ -11,6 +11,7 @@ logger = get_logger()
 
 
 def run_generation(cfg: GenerateConfig) -> None:
+    """Load artifacts, generate synthetic windows for the configured cell, and save to parquet."""
     logger.info(f"Loading artifacts from {cfg.run_dir_path}")
     model, config_encoder, cell_config_map = load_trained_model(
         run_id_path=Path(cfg.run_dir_path),

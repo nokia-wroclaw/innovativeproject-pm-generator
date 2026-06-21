@@ -15,6 +15,7 @@ def plot_kpi_timeline(
     rolling_window: int = 12,
     color: str = "#2563EB",
 ) -> go.Figure:
+    """Plotly timeline with ±std band, rolling mean, changepoint marker, and distribution fits."""
     WARN = "#F59E0B"
     ERR = "#EF4444"
     palette = [WARN, "#22D3EE", "#A78BFA"]
@@ -163,6 +164,7 @@ def plot_kpi_timeline(
 
 
 def schema(df: DataFrame):
+    """Return DataFrame column types and null percentages as a pandas DataFrame."""
     total = df.count()
 
     null_exprs = [
@@ -196,6 +198,7 @@ def basic_info(df: DataFrame) -> pd.DataFrame:
 
 
 def _matrix_to_json_lists(matrix) -> list[list[float]]:
+    """Convert a numpy matrix to a nested list of Python floats for JSON serialization."""
     return [[float(v) for v in row] for row in matrix.tolist()]
 
 

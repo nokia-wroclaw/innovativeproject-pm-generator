@@ -9,13 +9,13 @@ from pyspark.sql.types import (
 )
 
 
-# Output schema mirrors input + regime_id
 def build_regime_schema(pm_data: DataFrame) -> StructType:
+    """Extend the input DataFrame schema with a regime_id integer column."""
     return StructType(pm_data.schema.fields + [StructField("regime_id", IntegerType(), False)])
 
 
-# No decorator — plain function, (key, data) signature
 def _assign_regimes(key: tuple, group_df: pd.DataFrame) -> pd.DataFrame:
+    """Detect changepoints via PELT and assign a monotonically increasing regime_id per break."""
     _MIN_SIZE = 168
     _MIN_LENGTH = 48
 
@@ -56,6 +56,7 @@ def _assign_regimes(key: tuple, group_df: pd.DataFrame) -> pd.DataFrame:
 
 
 def add_regime_ids(pm_data: DataFrame) -> DataFrame:
+    """Apply regime detection across all (kpi_id, distname) groups using applyInPandas."""
     new_schema = build_regime_schema(pm_data)
     # .repartition(200, "kpi_id", "distname")
     return pm_data.groupby("kpi_id", "distname").applyInPandas(_assign_regimes, schema=new_schema)

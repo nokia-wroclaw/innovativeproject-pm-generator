@@ -1,5 +1,7 @@
+import pandas as pd
 from pyspark.sql import DataFrame
 from pyspark.sql import functions as f
+from pyspark.sql.types import DoubleType, StructField, StructType
 
 
 class GroupedKPIScaler:
@@ -47,6 +49,7 @@ class GroupedKPIScaler:
         self.audit_df: DataFrame | None = None
 
     def _stats_df(self, df: DataFrame) -> DataFrame:
+        """Compute per-group raw statistics (count, mean, std, percentiles, skewness, etc.)."""
         v = f.col(self.value_col).cast("double")
 
         return (
@@ -98,6 +101,7 @@ class GroupedKPIScaler:
         )
 
     def _with_scaler_choice(self, stats_df: DataFrame) -> DataFrame:
+        """Select the best scaler type per group based on distribution shape and outlier score."""
         q01 = f.col("q01")
         q25 = f.col("q25")
         q75 = f.col("q75")
@@ -135,6 +139,7 @@ class GroupedKPIScaler:
         )
 
     def _build_params_df(self, df: DataFrame) -> DataFrame:
+        """Compute all scaler parameters (type, param_a, param_b) ready for fit()."""
         stats_df = self._stats_df(df)
         choice_df = self._with_scaler_choice(stats_df)
 
@@ -240,6 +245,7 @@ class GroupedKPIScaler:
         min_valid_points: int = 4,
         percentile_accuracy: int = 10000,
     ):
+        """Reconstruct a scaler from a previously saved params DataFrame without refitting."""
         instance = cls(
             value_col=value_col,
             group_cols=group_cols,
@@ -251,6 +257,7 @@ class GroupedKPIScaler:
         return instance
 
     def _get_params_df(self) -> DataFrame:
+        """Return params_df broadcast-wrapped for use in Spark joins."""
         if self.params_df is None:
             raise ValueError("Params are not available. Call fit() or load_params() first.")
 
@@ -373,11 +380,79 @@ class SimpleMinMaxScaler:
         self.params_df: DataFrame | None = None
 
     def fit(self, df: DataFrame) -> DataFrame:
+        """Compute per-group min and max values and store as params_df."""
         v = f.col(self.value_col).cast("double")
         self.params_df = df.groupBy(*self.group_cols).agg(
             f.min(v).alias("mm_min"),
             f.max(v).alias("mm_max"),
         )
+        return self.params_df
+
+    @classmethod
+    def load_params(cls, params_df: DataFrame, value_col: str, group_cols: list[str]):
+        """Reconstruct a SimpleMinMaxScaler from a previously saved params DataFrame."""
+        instance = cls(value_col=value_col, group_cols=group_cols)
+        instance.params_df = params_df
+        return instance
+
+    def _get_params_df(self) -> DataFrame:
+        """Return params_df broadcast-wrapped for Spark joins."""
+        if self.params_df is None:
+            raise ValueError("Params are not available. Call fit() or load_params() first.")
+        return f.broadcast(self.params_df)
+
+    def transform(self, df: DataFrame) -> DataFrame:
+        """Scale value_col to [0, 1] per group using fitted mm_min/mm_max."""
+        x = f.col(self.value_col).cast("double")
+        scaled = (x - f.col("mm_min")) / (f.col("mm_max") - f.col("mm_min") + f.lit(1e-8))
+        return (
+            df.join(self._get_params_df(), on=self.group_cols, how="left")
+            .withColumn(self.value_col, scaled)
+            .drop("mm_min", "mm_max")
+        )
+
+    def inverse_transform(self, df: DataFrame) -> DataFrame:
+        """Reverse MinMax scaling to restore the original value range."""
+        x = f.col(self.value_col).cast("double")
+        restored = x * (f.col("mm_max") - f.col("mm_min") + f.lit(1e-8)) + f.col("mm_min")
+        return (
+            df.join(self._get_params_df(), on=self.group_cols, how="left")
+            .withColumn(self.value_col, restored)
+            .drop("mm_min", "mm_max")
+        )
+
+
+class YeoJohnsonScaler:
+    """Yeo-Johnson scaler per group via Pandas UDF. Optimal λ fitted with scipy per group; params stored as yj_lambda."""
+
+    def __init__(self, value_col: str, group_cols: list[str]):
+        self.value_col = value_col
+        self.group_cols = group_cols
+        self.params_df: DataFrame | None = None
+
+    def fit(self, df: DataFrame) -> DataFrame:
+        value_col = self.value_col
+        group_cols = self.group_cols
+
+        out_schema = StructType(
+            [df.schema[c] for c in group_cols] + [StructField("yj_lambda", DoubleType())]
+        )
+
+        def _fit_group(pdf: pd.DataFrame) -> pd.DataFrame:
+            from scipy.stats import yeojohnson as _yj
+
+            values = pdf[value_col].dropna().to_numpy()
+            lam = 1.0
+            if len(values) >= 2:
+                try:
+                    _, lam = _yj(values)
+                except Exception:
+                    lam = 1.0
+            row = {c: [pdf[c].iloc[0]] for c in group_cols}
+            row["yj_lambda"] = [float(lam)]
+            return pd.DataFrame(row)
+
+        self.params_df = df.groupBy(*group_cols).applyInPandas(_fit_group, schema=out_schema)
         return self.params_df
 
     @classmethod
@@ -392,21 +467,61 @@ class SimpleMinMaxScaler:
         return f.broadcast(self.params_df)
 
     def transform(self, df: DataFrame) -> DataFrame:
+        @f.pandas_udf("double")
+        def _yj_forward(x, lam):
+            import numpy as np
+            import pandas as pd
+
+            xv = x.to_numpy(dtype=float, na_value=np.nan)
+            lv = lam.to_numpy(dtype=float, na_value=np.nan)
+            out = np.full(len(xv), np.nan)
+            valid = ~(np.isnan(xv) | np.isnan(lv))
+            pos = valid & (xv >= 0)
+            neg = valid & (xv < 0)
+            m = pos & (np.abs(lv) > 1e-10)
+            out[m] = ((xv[m] + 1) ** lv[m] - 1) / lv[m]
+            m = pos & (np.abs(lv) <= 1e-10)
+            out[m] = np.log1p(xv[m])
+            m = neg & (np.abs(lv - 2) > 1e-10)
+            out[m] = -((-xv[m] + 1) ** (2 - lv[m]) - 1) / (2 - lv[m])
+            m = neg & (np.abs(lv - 2) <= 1e-10)
+            out[m] = -np.log1p(-xv[m])
+            return pd.Series(out)
+
         x = f.col(self.value_col).cast("double")
-        scaled = (x - f.col("mm_min")) / (f.col("mm_max") - f.col("mm_min") + f.lit(1e-8))
         return (
             df.join(self._get_params_df(), on=self.group_cols, how="left")
-            .withColumn(self.value_col, scaled)
-            .drop("mm_min", "mm_max")
+            .withColumn(self.value_col, _yj_forward(x, f.col("yj_lambda")))
+            .drop("yj_lambda")
         )
 
     def inverse_transform(self, df: DataFrame) -> DataFrame:
-        x = f.col(self.value_col).cast("double")
-        restored = x * (f.col("mm_max") - f.col("mm_min") + f.lit(1e-8)) + f.col("mm_min")
+        @f.pandas_udf("double")
+        def _yj_inverse(y, lam):
+            import numpy as np
+            import pandas as pd
+
+            yv = y.to_numpy(dtype=float, na_value=np.nan)
+            lv = lam.to_numpy(dtype=float, na_value=np.nan)
+            out = np.full(len(yv), np.nan)
+            valid = ~(np.isnan(yv) | np.isnan(lv))
+            pos = valid & (yv >= 0)
+            neg = valid & (yv < 0)
+            m = pos & (np.abs(lv) > 1e-10)
+            out[m] = (lv[m] * yv[m] + 1) ** (1 / lv[m]) - 1
+            m = pos & (np.abs(lv) <= 1e-10)
+            out[m] = np.expm1(yv[m])
+            m = neg & (np.abs(lv - 2) > 1e-10)
+            out[m] = 1 - (1 - (2 - lv[m]) * yv[m]) ** (1 / (2 - lv[m]))
+            m = neg & (np.abs(lv - 2) <= 1e-10)
+            out[m] = 1 - np.exp(-yv[m])
+            return pd.Series(out)
+
+        y = f.col(self.value_col).cast("double")
         return (
             df.join(self._get_params_df(), on=self.group_cols, how="left")
-            .withColumn(self.value_col, restored)
-            .drop("mm_min", "mm_max")
+            .withColumn(self.value_col, _yj_inverse(y, f.col("yj_lambda")))
+            .drop("yj_lambda")
         )
 
 

@@ -1,5 +1,3 @@
-"""Driver bootstrap for Spark jobs launched via Airflow SparkSubmit."""
-
 from __future__ import annotations
 
 import glob
@@ -8,6 +6,7 @@ import sys
 
 
 def spark_home() -> str:
+    """Return the SPARK_HOME directory path from the environment."""
     return os.environ.get("SPARK_HOME", "/opt/spark")
 
 
@@ -45,5 +44,6 @@ def ensure_pyspark_python() -> None:
 
 
 def bootstrap_spark_submit_driver() -> None:
+    """Ensure the driver uses the correct Python interpreter and PySpark is importable."""
     ensure_pyspark_python()
     ensure_spark_pythonpath()

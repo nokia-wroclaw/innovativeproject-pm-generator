@@ -1,5 +1,3 @@
-"""Validation utilities: data-format helpers and comparison plots for real vs synthetic KPIs."""
-
 from __future__ import annotations
 
 from pathlib import Path

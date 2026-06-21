@@ -17,6 +17,7 @@ from genpm.utils.utils import when_chained
 
 
 def categorize_kpi_with_definitions(pm_df: DataFrame, kpi_defs_df: DataFrame) -> DataFrame:
+    """Classify each KPI's aggregation method by joining stats and definitions, then attach agg_method to pm_df."""
     # calculate stats required for kpi agg character classification
     kpi_stats = pm_df.groupBy("kpi_id").agg(
         f.round(f.min("kpi_value"), 4).alias("kpi_min"),
@@ -52,6 +53,7 @@ def detect_gap_runs(
     value_col: str,
     max_imputable_gap: int = 6,
 ) -> DataFrame:
+    """Tag each null row with its gap-run length and whether the gap is short enough to impute."""
     w = Window.partitionBy(*group_cols).orderBy(order_col)
 
     base = (
@@ -89,6 +91,7 @@ def detect_gap_runs(
 def build_series_stats(
     df: DataFrame, group_cols: list[str], value_col: str, agg_method_col: str
 ) -> DataFrame:
+    """Compute per-series min/max/median statistics for imputation fallback values."""
     df_stats = df.groupBy(*group_cols).agg(
         f.first(agg_method_col, ignorenulls=True).alias("agg_method"),
         f.min(value_col).alias("min_value"),
@@ -106,6 +109,7 @@ def impute(
     agg_method_col: str,
     max_imputable_gap: int = 6,
 ) -> DataFrame:
+    """Impute null kpi_value entries using agg-method-specific strategies (linear interp, forward fill, local extremes)."""
     tagged_df = detect_gap_runs(pm_df, group_cols, order_col, value_col, max_imputable_gap).drop(
         agg_method_col
     )

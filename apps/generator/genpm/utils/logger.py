@@ -3,17 +3,7 @@ import sys
 
 
 def get_logger(name: str = __name__) -> logging.Logger:
-    """
-    Standardized application logger.
-
-    Includes:
-    - timestamp
-    - log level
-    - filename
-    - function name
-    - line number
-    - message
-    """
+    """Return a logger emitting timestamp, level, filename, function, and line number."""
 
     logger = logging.getLogger(name)
 

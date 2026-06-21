@@ -1,5 +1,3 @@
-"""genpm.modelling — runnable as `python -m genpm.modelling <generate|train>`."""
-
 import argparse
 import json
 import os

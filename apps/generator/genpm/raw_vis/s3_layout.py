@@ -1,5 +1,3 @@
-"""S3 key layout for visualization artifacts (collocated with dataset upload prefix)."""
-
 from __future__ import annotations
 
 from pathlib import PurePosixPath
@@ -18,5 +16,6 @@ def dataset_visualization_prefix(dataset_s3_key: str) -> str:
 
 
 def visualization_artifact_key(dataset_s3_key: str, filename: str) -> str:
+    """Full S3 key for a visualization artifact file, placed alongside the dataset prefix."""
     base = dataset_visualization_prefix(dataset_s3_key).strip("/")
     return f"{base}/{filename.lstrip('/')}"

@@ -1,5 +1,3 @@
-"""genpm.raw_vis — CLI and SparkSubmit entrypoints for PM data visualisation."""
-
 import argparse
 import json
 import os
