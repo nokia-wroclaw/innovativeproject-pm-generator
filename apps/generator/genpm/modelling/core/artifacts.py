@@ -140,26 +140,97 @@ def _resolve_input_dims(
     return int(seq_len), int(feat_dim)
 
 
+def _load_alt_model(
+    arch_version: str,
+    arch_params: dict,
+    weights_path: str | Path,
+    seq_len: int,
+    feat_dim: int,
+    y_dim: int,
+):
+    """Rebuild and weight-load a GAN or diffusion model from saved arch_params.
+
+    Both build_* helpers run a dummy forward pass internally so all variables exist
+    before load_weights; the returned model exposes .generate(y) like the cVAEs.
+    """
+    if arch_version == "gan":
+        from genpm.modelling.core.gan import HP_GAN, build_gan
+
+        model, _g, _c = build_gan(
+            seq_len=seq_len,
+            feat_dim=feat_dim,
+            y_dim=y_dim,
+            latent_dim=arch_params.get("latent_dim", HP_GAN["latent_dim"]),
+            hidden_dim=arch_params.get("hidden_dim", HP_GAN["hidden_dim"]),
+            n_layers=arch_params.get("n_layers", HP_GAN["n_layers"]),
+            use_attention=arch_params.get("use_attention", HP_GAN["use_attention"]),
+            n_heads=arch_params.get("n_heads", HP_GAN["n_heads"]),
+            # Back-compat: pre-split checkpoints only have the single "use_pe" key
+            # and were trained with PE on both nets + a relu KPI projection, so old
+            # runs must fall back to that to keep weight shapes/behaviour matching.
+            gen_use_pe=arch_params.get("gen_use_pe", arch_params.get("use_pe", True)),
+            critic_use_pe=arch_params.get("critic_use_pe", arch_params.get("use_pe", True)),
+            kpi_proj_activation=arch_params.get("kpi_proj_activation", "relu"),
+            # Pre-noise-injection checkpoints (run-1/run-2) have no per-step noise.
+            per_step_noise_dim=arch_params.get("per_step_noise_dim", 0),
+            # run-1..3 critics have neither feature; default off so their weight
+            # shapes are reproduced exactly for load_weights.
+            use_minibatch_stddev=arch_params.get("use_minibatch_stddev", False),
+            use_first_diff=arch_params.get("use_first_diff", False),
+            output_activation=arch_params.get("output_activation", HP_GAN["output_activation"]),
+            corr_l2=arch_params.get("corr_l2", HP_GAN["corr_l2"]),
+        )
+    elif arch_version == "diffusion":
+        from genpm.modelling.core.diffusion import HP_DIFFUSION, build_diffusion
+
+        model, _d = build_diffusion(
+            seq_len=seq_len,
+            feat_dim=feat_dim,
+            y_dim=y_dim,
+            num_timesteps=arch_params.get("num_timesteps", HP_DIFFUSION["num_timesteps"]),
+            # Back-compat: diffusion_run_1 predates the schedule option → it was linear.
+            beta_schedule=arch_params.get("beta_schedule", "linear"),
+            beta_start=arch_params.get("beta_start", HP_DIFFUSION["beta_start"]),
+            beta_end=arch_params.get("beta_end", HP_DIFFUSION["beta_end"]),
+            width=arch_params.get("width", HP_DIFFUSION["width"]),
+            n_blocks=arch_params.get("n_blocks", HP_DIFFUSION["n_blocks"]),
+            dilation_cycle=tuple(arch_params.get("dilation_cycle", HP_DIFFUSION["dilation_cycle"])),
+            time_embed_dim=arch_params.get("time_embed_dim", HP_DIFFUSION["time_embed_dim"]),
+            cond_embed_dim=arch_params.get("cond_embed_dim", HP_DIFFUSION["cond_embed_dim"]),
+            output_clip=arch_params.get("output_clip", HP_DIFFUSION["output_clip"]),
+        )
+    else:
+        raise ValueError(f"Unknown alt arch_version: {arch_version!r}")
+
+    logger.info(f"Loading {arch_version} weights from {weights_path}")
+    model.load_weights(str(weights_path))
+    logger.info("Weights loaded successfully")
+    return model
+
+
 def load_trained_model(
     run_id_path: str | Path,
     weights_path: str | Path,
     scaling_params_path: str | Path | None = None,
-    global_latent_dim: int = HP_V5["global_latent_dim"],
-    local_latent_dim: int = HP_V5["local_latent_dim"],
-    hidden_dim: int = 256,
-    n_layers: int = 2,
-    use_attention: bool = True,
-    n_heads: int = 4,
+    global_latent_dim: int | None = None,
+    local_latent_dim: int | None = None,
+    hidden_dim: int | None = None,
+    n_layers: int | None = None,
+    use_attention: bool | None = None,
+    n_heads: int | None = None,
     free_bits_global: float = HP_V5["free_bits_global"],
     free_bits_local: float = HP_V5["free_bits_local"],
-    output_activation: str = HP_V5["output_activation"],
+    output_activation: str | None = None,
     seq_len: int | None = None,
     feat_dim: int | None = None,
 ) -> tuple[object, object, dict]:
     """Reload saved artifacts and restore the trained model with weights.
 
-    seq_len/feat_dim default to the values saved at training time (arch_params.json /
-    kpi_columns.npy) so they always match the checkpoint; pass them only to override.
+    seq_len/feat_dim/global_latent_dim/hidden_dim/n_layers/use_attention/n_heads/
+    output_activation all default to the values saved at training time
+    (arch_params.json / kpi_columns.npy) so they always match the checkpoint;
+    pass them only to override. These must match exactly or weight loading fails,
+    since they determine layer shapes (Dense units, LSTM units, attention heads).
 
     Returns (model, config_encoder, cell_config_map) where cell_config_map maps each
     training distname to its config values (used to build the conditioning vector).
@@ -183,6 +254,24 @@ def load_trained_model(
     tile_z = bool(arch_params.get("tile_z_in_decoder", True))
     arch_version = arch_params.get("arch_version", "v6")
 
+    # GAN / diffusion are separate model families — build, restore, and return early.
+    # (The VAE-specific kwargs above are ignored; these read their geometry from
+    # arch_params.json saved at training time.)
+    if arch_version in ("gan", "diffusion"):
+        model = _load_alt_model(arch_version, arch_params, weights_path, seq_len, feat_dim, y_dim)
+        return model, config_encoder, cell_config_map
+
+    def _resolve(value, key, default):
+        return value if value is not None else arch_params.get(key, default)
+
+    global_latent_dim = _resolve(global_latent_dim, "global_latent_dim", HP_V5["global_latent_dim"])
+    local_latent_dim = _resolve(local_latent_dim, "local_latent_dim", HP_V5["local_latent_dim"])
+    hidden_dim = _resolve(hidden_dim, "hidden_dim", 256)
+    n_layers = _resolve(n_layers, "n_layers", 2)
+    use_attention = _resolve(use_attention, "use_attention", True)
+    n_heads = _resolve(n_heads, "n_heads", 4)
+    output_activation = _resolve(output_activation, "output_activation", HP_V5["output_activation"])
+
     common_kwargs = dict(
         seq_len=seq_len,
         feat_dim=feat_dim,
@@ -203,8 +292,13 @@ def load_trained_model(
             **common_kwargs,
             ac_weight=arch_params.get("ac_weight", HP_V7["ac_weight"]),
             ac_max_lag=arch_params.get("ac_max_lag", HP_V7["ac_max_lag"]),
+            corr_l2=arch_params.get("corr_l2", 0.0),
         )
-        logger.info(f"Loaded v7 model (ac_weight={arch_params.get('ac_weight')})")
+        logger.info(
+            f"Loaded v7 model (ac_weight={arch_params.get('ac_weight')}, "
+            f"corr_l2={arch_params.get('corr_l2', 0.0)}, hidden_dim={hidden_dim}, "
+            f"global_latent_dim={global_latent_dim})"
+        )
     else:
         _, model = build_cvae_lstm(**common_kwargs)
         logger.info(f"Loaded {arch_version} model")

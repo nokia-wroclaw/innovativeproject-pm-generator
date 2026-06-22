@@ -80,6 +80,44 @@ HP_V7 = dict(
     ac_max_lag=24,  # number of lags (hours) to match; 24 covers one full diurnal cycle
 )
 
+# v8: same architecture as v7 (cVAE_LSTMv7Architecture / cBetaVAE_Hierarchical_v7),
+# tuned hyperparameters following the run-11 post-mortem:
+#   - corr_l2 added: the learned CrossKPICorrelation kernel was unregularised and
+#     went dense (off-diagonal energy 4.6x diagonal, mean diagonal weight -0.67),
+#     which both overstated cross-KPI correlation and leaked 24h periodicity from
+#     genuinely-periodic KPIs into KPIs with flat real autocorrelation.
+#   - ac_weight raised 0.1 -> 0.3: at run-11's settled loss split (recon ~70%,
+#     beta*KL ~20%, ac ~10%) the AC term was too small a fraction of the gradient
+#     to override the shared decoder's tendency toward a single oscillatory mode.
+#   - hidden_dim / global_latent_dim raised: run-11's losses (recon, kl, ac) had
+#     all plateaued by ~epoch 150 with cosine-decayed LR, i.e. converged given
+#     current capacity, not undertrained. More capacity is a secondary lever to
+#     try after corr_l2 + ac_weight, to see if remaining AC/correlation error is
+#     a capacity ceiling rather than just the unregularised-mixing artifact.
+HP_V8 = dict(
+    epochs=200,
+    batch_size=64,
+    global_latent_dim=128,
+    local_latent_dim=0,
+    hidden_dim=384,
+    n_layers=2,
+    use_attention=True,
+    n_heads=4,
+    beta=0.0,
+    learning_rate=3e-4,
+    free_bits_global=0.002,
+    free_bits_local=0.0,
+    output_activation="sigmoid",
+    target_beta=1e-3,
+    anneal_epochs=150,
+    cycle_epochs=30,
+    n_cycles=6,
+    cycle_ratio=0.5,
+    ac_weight=0.3,
+    ac_max_lag=24,
+    corr_l2=1e-5,
+)
+
 
 def build_cvae_lstm(
     seq_len: int,
@@ -151,6 +189,7 @@ def build_cvae_lstm_v7(
     tile_z: bool = True,
     ac_weight: float = 0.1,
     ac_max_lag: int = 24,
+    corr_l2: float = 0.0,
 ):
     """Instantiate and compile the cVAE-LSTM v7 architecture.
 
@@ -162,12 +201,21 @@ def build_cvae_lstm_v7(
     ac_weight: weight of the AC penalty relative to reconstruction loss.
                Start at 0.1; increase if AC mismatch persists after training.
     ac_max_lag: number of hourly lags to penalise (default 24 = one diurnal cycle).
+    corr_l2: L2 weight on the CrossKPICorrelation F×F kernel. Without it nothing
+             penalises the kernel for going dense — on the run-11 checkpoint it
+             learned a mean diagonal of -0.67 with off-diagonal energy 4.6x the
+             diagonal, i.e. every KPI was reconstructed mostly from a dense blend
+             of other KPIs rather than its own projection. L1 at 1e-2..1e-4 over-
+             corrected this to ~0 (constant per-entry gradient regardless of
+             weight magnitude crushed nearly everything); L2's gradient scales
+             with the weight's own value, so it shrinks without forcing genuinely
+             useful entries to exactly zero. Start at 1e-5.
     """
     logger.info(
         f"Building v7 model | seq_len={seq_len} feat_dim={feat_dim} y_dim={y_dim} "
         f"global_latent_dim={global_latent_dim} hidden_dim={hidden_dim} "
         f"n_layers={n_layers} use_attention={use_attention} tile_z={tile_z} "
-        f"ac_weight={ac_weight} ac_max_lag={ac_max_lag}"
+        f"ac_weight={ac_weight} ac_max_lag={ac_max_lag} corr_l2={corr_l2}"
     )
     arch = cVAE_LSTMv7Architecture(
         seq_len=seq_len,
@@ -181,6 +229,7 @@ def build_cvae_lstm_v7(
         n_heads=n_heads,
         output_activation=output_activation,
         tile_z=tile_z,
+        corr_l2=corr_l2,
     )
     model = cBetaVAE_Hierarchical_v7(
         encoder=arch.encoder,

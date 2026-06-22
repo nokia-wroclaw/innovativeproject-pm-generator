@@ -1452,14 +1452,39 @@ class CrossKPICorrelation(keras.layers.Layer):
     residual x_kpi + CrossKPICorrelation(x_kpi) converges to the identity at
     init and learns correlations from gradients only.
 
+    corr_l2 > 0 applies L2 regularisation to the F×F mixing kernel. Without
+    it, nothing in the loss penalises the kernel for becoming dense — on the
+    run-11 v7 checkpoint the learned kernel had off-diagonal energy 4.6x the
+    diagonal energy (mean diagonal weight -0.67, 42% of off-diagonal weights
+    with |w|>0.05), i.e. each KPI's output was reconstructed mostly from a
+    dense blend of every other KPI rather than a small correction on top of
+    its own projection. That over-dense mixing both overstates real cross-KPI
+    correlation and leaks periodic structure from the majority of KPIs into
+    KPIs that have no real autocorrelation.
+
+    L2, not L1: L1's gradient on a weight is a *constant* corr_l1, regardless of
+    the weight's own magnitude — tried at 1e-2 down to 1e-4, this dominated almost
+    every one of the 61,504 entries' (typically weaker) reconstruction-driven
+    gradient and crushed the whole kernel to ~0 (Frobenius norm 0.70 vs run-11's
+    27.26, identity reference 15.75) rather than leaving genuinely useful
+    correlations standing. L2's gradient is proportional to the weight's own
+    value (2*corr_l2*w), so it shrinks every entry but can't force a genuinely
+    useful one all the way to exactly zero the way L1 does.
+
     Input / Output: (B, T, F)
     """
 
-    def __init__(self, feat_dim: int, **kwargs):
+    def __init__(self, feat_dim: int, corr_l2: float = 0.0, **kwargs):
         super().__init__(**kwargs)
         self.feat_dim = feat_dim
+        self.corr_l2 = corr_l2
         self._mix = layers.TimeDistributed(
-            layers.Dense(feat_dim, use_bias=False, kernel_initializer="zeros"),
+            layers.Dense(
+                feat_dim,
+                use_bias=False,
+                kernel_initializer="zeros",
+                kernel_regularizer=keras.regularizers.l2(corr_l2) if corr_l2 > 0 else None,
+            ),
             name="kpi_mix",
         )
 
@@ -1467,7 +1492,7 @@ class CrossKPICorrelation(keras.layers.Layer):
         return self._mix(x)
 
     def get_config(self) -> dict:
-        return {**super().get_config(), "feat_dim": self.feat_dim}
+        return {**super().get_config(), "feat_dim": self.feat_dim, "corr_l2": self.corr_l2}
 
 
 class cVAE_LSTMv7Architecture(BaseVAEArchitecture):
@@ -1509,6 +1534,7 @@ class cVAE_LSTMv7Architecture(BaseVAEArchitecture):
         max_dropout: float = 0.3,
         output_activation: str = "sigmoid",
         tile_z: bool = True,
+        corr_l2: float = 0.0,
     ):
         self._seq_len = seq_len
         self._feat_dim = feat_dim
@@ -1521,6 +1547,7 @@ class cVAE_LSTMv7Architecture(BaseVAEArchitecture):
         self._n_heads = n_heads
         self._output_activation = output_activation
         self._tile_z = tile_z
+        self._corr_l2 = corr_l2
         self._layer_units, self._layer_dropouts = _funnel_schedule(
             hidden_dim, n_layers, min_units, max_dropout
         )
@@ -1606,7 +1633,9 @@ class cVAE_LSTMv7Architecture(BaseVAEArchitecture):
         x_kpi = layers.TimeDistributed(
             layers.Dense(self._feat_dim, activation="relu"), name="kpi_proj"
         )(x)  # (B, T, F)
-        x_corr = CrossKPICorrelation(self._feat_dim)(x_kpi)  # (B, T, F) — learned F×F mix
+        x_corr = CrossKPICorrelation(self._feat_dim, corr_l2=self._corr_l2)(
+            x_kpi
+        )  # (B, T, F) — learned F×F mix, L2-regularised toward sparsity
         d_output = layers.Activation(self._output_activation)(x_kpi + x_corr)
 
         return keras.Model([z_in, cond_in], d_output, name="decoder_v7")
@@ -1685,7 +1714,12 @@ class cBetaVAE_Hierarchical_v7(cBetaVAE_Hierarchical):
             kl_l = self._kl_loss(z_l_mean, z_l_log_var, self.free_bits_local)
         kl_loss = kl_g + kl_l
         ac_loss = self._ac_penalty(x, x_hat)
-        total_loss = reconstruction_loss + self.beta * kl_loss + self.ac_weight * ac_loss
+        # sum(self.losses) picks up weight regularisation losses added by sub-layers
+        # during the forward pass above (e.g. CrossKPICorrelation's corr_l2). These are
+        # NOT included automatically in a custom train_step — without this line the
+        # kernel_regularizer has zero gradient effect despite appearing in model.losses.
+        reg_loss = sum(self.losses) if self.losses else 0.0
+        total_loss = reconstruction_loss + self.beta * kl_loss + self.ac_weight * ac_loss + reg_loss
         return total_loss, reconstruction_loss, kl_loss, ac_loss
 
     def _update_trackers(

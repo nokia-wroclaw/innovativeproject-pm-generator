@@ -5,6 +5,7 @@ from pathlib import Path
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
+from scipy.spatial.distance import cdist
 from scipy.stats import gaussian_kde
 
 from genpm.modelling.core.data import SEQ_LEN
@@ -158,6 +159,74 @@ def compute_kpi_stats(
 
 
 # =============================================================================
+# Memorization check
+# =============================================================================
+
+
+def _flatten_windows(x: np.ndarray) -> np.ndarray:
+    """(N, T, F) -> (N, T*F), one row per window."""
+    return x.reshape(x.shape[0], -1)
+
+
+def nearest_neighbor_check(
+    X_real: np.ndarray,
+    cell_ids: np.ndarray,
+    X_gen: np.ndarray,
+) -> dict:
+    """Memorization probe for ONE config: is generated data closer to specific real
+    windows than real windows normally are to each other?
+
+    real_nn — each real window's distance to its nearest DIFFERENT-CELL real
+    neighbor. Same-cell windows are excluded from this baseline because the
+    24h-stride/168h-window construction makes adjacent same-cell windows ~86%
+    identical by construction — including them would collapse the baseline to
+    ~0 and make memorization undetectable by comparison.
+    gen_nn — each generated window's distance to its nearest real neighbor (any
+    cell) in the same config.
+
+    Distance is mean squared error per element (scaled [0,1] space), comparable
+    to training-loss magnitudes. A memorization signature is gen_nn sitting
+    systematically below the real_nn distribution.
+    """
+    real_flat = _flatten_windows(X_real)
+    gen_flat = _flatten_windows(X_gen)
+    n_elem = real_flat.shape[1]
+
+    real_d = cdist(real_flat, real_flat, metric="sqeuclidean") / n_elem
+    same_cell_or_self = cell_ids[:, None] == cell_ids[None, :]
+    real_d[same_cell_or_self] = np.inf
+    has_baseline = np.isfinite(real_d).any(axis=1)
+    real_nn = real_d[has_baseline].min(axis=1)
+
+    gen_d = cdist(gen_flat, real_flat, metric="sqeuclidean") / n_elem
+    gen_nn_idx = gen_d.argmin(axis=1)
+    gen_nn = gen_d[np.arange(len(gen_flat)), gen_nn_idx]
+
+    return {
+        "real_nn": real_nn,
+        "gen_nn": gen_nn,
+        "gen_nn_match_idx": gen_nn_idx,
+        "gen_nn_match_cell": cell_ids[gen_nn_idx],
+        "n_excluded_real": int((~has_baseline).sum()),
+    }
+
+
+def summarize_nn_check(real_nn: np.ndarray, gen_nn: np.ndarray) -> dict:
+    """Headline numbers from nearest_neighbor_check: compare the two distributions."""
+    real_p05 = float(np.percentile(real_nn, 5))
+    real_median = float(np.percentile(real_nn, 50))
+    gen_median = float(np.percentile(gen_nn, 50))
+    return {
+        "real_median": real_median,
+        "real_p05": real_p05,
+        "gen_median": gen_median,
+        "gen_p05": float(np.percentile(gen_nn, 5)),
+        "ratio_median": gen_median / real_median,
+        "frac_gen_below_real_p05": float(np.mean(gen_nn < real_p05)),
+    }
+
+
+# =============================================================================
 # Plots
 # =============================================================================
 
@@ -287,6 +356,45 @@ def plot_autocorr(
         ax.set_visible(False)
 
     plt.suptitle("Autocorrelation — real vs synthetic", fontsize=11)
+    plt.tight_layout()
+    plt.show()
+
+
+def plot_kpi_correlation(
+    long_real: pd.DataFrame,
+    long_syn: pd.DataFrame,
+    kpi_list: list[str],
+    method: str = "pearson",
+) -> None:
+    """Plot real vs synthetic cross-KPI correlation matrices side by side, plus their difference."""
+    real_wide = long_to_wide(long_real[long_real["kpi_id"].isin(kpi_list)]).reindex(
+        columns=kpi_list
+    )
+    syn_wide = long_to_wide(long_syn[long_syn["kpi_id"].isin(kpi_list)]).reindex(columns=kpi_list)
+
+    real_corr = real_wide.corr(method=method)
+    syn_corr = syn_wide.corr(method=method)
+    diff_corr = syn_corr - real_corr
+
+    n = len(kpi_list)
+    show_labels = n <= 30
+    panels = [(real_corr, "Real"), (syn_corr, "Synthetic"), (diff_corr, "Synthetic − Real")]
+
+    fig, axes = plt.subplots(1, 3, figsize=(15, 4.5))
+    for ax, (corr, title) in zip(axes, panels, strict=False):
+        im = ax.imshow(corr, vmin=-1, vmax=1, cmap="RdBu_r")
+        ax.set_title(title, fontsize=10)
+        if show_labels:
+            ax.set_xticks(range(n))
+            ax.set_xticklabels(kpi_list, rotation=90, fontsize=6)
+            ax.set_yticks(range(n))
+            ax.set_yticklabels(kpi_list, fontsize=6)
+        else:
+            ax.set_xticks([])
+            ax.set_yticks([])
+        fig.colorbar(im, ax=ax, fraction=0.046, pad=0.04)
+
+    plt.suptitle(f"Cross-KPI correlation ({method}) — real vs synthetic", fontsize=11)
     plt.tight_layout()
     plt.show()
 

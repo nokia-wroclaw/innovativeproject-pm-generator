@@ -56,6 +56,14 @@ class TrainConfig:
     # v7-specific: autocorrelation penalty (ignored when arch_version="v6")
     ac_weight: float = 0.1
     ac_max_lag: int = 24
+    # v7-specific: L2 weight on the CrossKPICorrelation F×F kernel, keeps it
+    # sparse/near-identity instead of learning a dense KPI mix (ignored when
+    # arch_version="v6"). 0.0 = no regularisation (run-11 default/behaviour).
+    # L1 was tried first (run_12-14) but its constant per-entry gradient crushed
+    # the kernel to ~0 at every magnitude tested (1e-2 down to 1e-4); L2's
+    # gradient scales with the weight's own value so it shrinks without zeroing
+    # out genuinely useful entries.
+    corr_l2: float = 0.0
     # Training schedule
     epochs: int = 200
     batch_size: int = 64
@@ -65,9 +73,99 @@ class TrainConfig:
     n_cycles: int = 6
     cycle_ratio: float = 0.5
     anneal_epochs: int = 150
+    # Hold beta at exactly 0 for this many epochs before any ramp/cycling starts.
+    # Not just a slower ramp — a hard zero-KL-cost window. Useful alongside corr_l2:
+    # removing the decoder's cross-KPI shortcut can make even a tiny beta enough to
+    # tip the encoder into collapsing z before it discovers the slower "use z" payoff.
+    kl_delay_epochs: int = 0
     lr_patience: int = 20
     early_stop_patience: int = 60
     collapse_monitor: bool = True
+    drop_constant_kpis: bool = True
+
+
+@dataclass
+class GANTrainConfig:
+    """Conditional WGAN-GP training config (core/gan.py).
+
+    Shares the data/path layout of TrainConfig but carries the adversarial knobs.
+    arch_version is fixed to "gan" and written into arch_params.json so generation
+    reloads the right model family.
+    """
+
+    # Paths
+    training_data_path: str
+    run_dir_path: str
+    weights_path: str
+    arch_version: str = "gan"
+    # Generator / critic architecture
+    latent_dim: int = 64
+    hidden_dim: int = 256
+    n_layers: int = 2
+    use_attention: bool = True
+    n_heads: int = 4
+    gen_use_pe: bool = True  # PE ON in generator: with global-only z it is the only
+    # per-step positional signal (run-2 off → diurnal cycle collapsed); see core/gan.py
+    critic_use_pe: bool = True  # PE on in critic too
+    kpi_proj_activation: str = "linear"  # pre-residual KPI projection (linear, not relu)
+    per_step_noise_dim: int = 16  # fresh N(0,1) per timestep — gives the generator entropy…
+    use_minibatch_stddev: bool = (
+        True  # …and this forces it to use it (anti-collapse, see core/gan.py)
+    )
+    use_first_diff: bool = True  # critic also sees ΔX so it can punish over-smoothing
+    output_activation: str = "sigmoid"
+    corr_l2: float = 1e-5
+    # Adversarial optimisation
+    learning_rate: float = 1e-4
+    adam_beta_1: float = 0.5
+    adam_beta_2: float = 0.9
+    n_critic: int = 3  # 5→3: g_loss climbed in run-1/2, critic dominated
+    gp_weight: float = 10.0
+    moment_weight: float = 1.0  # feature-matching START weight (annealed toward final)
+    moment_weight_final: float = 0.1  # anneal target so the generator can't ride moments forever
+    # Training schedule
+    epochs: int = 300
+    batch_size: int = 64
+    drop_constant_kpis: bool = True
+
+
+@dataclass
+class DiffusionTrainConfig:
+    """Conditional DDPM training config (core/diffusion.py).
+
+    arch_version is fixed to "diffusion" and written into arch_params.json so
+    generation reloads the right model family.
+    """
+
+    # Paths
+    training_data_path: str
+    run_dir_path: str
+    weights_path: str
+    arch_version: str = "diffusion"
+    # Diffusion process
+    num_timesteps: int = 1000
+    beta_schedule: str = "cosine"  # run-1 used "linear" → near-noise output; see core/diffusion.py
+    beta_start: float = 1e-4
+    beta_end: float = 2e-2
+    output_clip: bool = True
+    # Denoiser architecture
+    width: int = 256  # must be >= feat_dim (248); run-1's 128 was an under-fitting bottleneck
+    n_blocks: int = 12
+    # Conv dilations cycled across blocks. Includes 64 so the receptive field covers
+    # the full 168-hour window (see HP_DIFFUSION in core/diffusion.py for the RF math).
+    # Recorded in arch_params.json because it changes the forward pass but not weight
+    # shapes — a train/reload mismatch would otherwise pass load_weights silently.
+    dilation_cycle: tuple = (1, 2, 4, 8, 16, 32, 64)
+    time_embed_dim: int = 128
+    cond_embed_dim: int = 128
+    # Optimisation / schedule
+    learning_rate: float = 2e-4
+    use_ema: bool = (
+        True  # EMA of weights — standard diffusion quality boost (see core/diffusion.py)
+    )
+    ema_momentum: float = 0.999
+    epochs: int = 300
+    batch_size: int = 64
     drop_constant_kpis: bool = True
 
 
