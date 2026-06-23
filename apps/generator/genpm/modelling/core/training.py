@@ -37,6 +37,7 @@ class _LinearKLAnnealer(keras.callbacks.Callback):
         self.delay_epochs = delay_epochs
 
     def on_epoch_begin(self, epoch: int, logs=None) -> None:
+        """Set ``model.beta`` for this epoch: 0 during the delay, then a linear ramp."""
         if epoch < self.delay_epochs:
             self.model.beta = 0.0
             return
@@ -69,6 +70,8 @@ class CyclicalKLAnnealer(keras.callbacks.Callback):
         self.delay_epochs = delay_epochs
 
     def on_epoch_begin(self, epoch: int, logs=None) -> None:
+        """Set ``model.beta`` for this epoch: 0 during the delay, then ramp-and-hold
+        within each cycle, pinned to ``target_beta`` once all cycles are done."""
         if epoch < self.delay_epochs:
             self.model.beta = 0.0
             return
@@ -102,6 +105,7 @@ class _DelayedReduceLROnPlateau(keras.callbacks.ReduceLROnPlateau):
         self.start_from_epoch = start_from_epoch
 
     def on_epoch_end(self, epoch: int, logs=None) -> None:
+        """No-op (not even advancing the wait counter) before ``start_from_epoch``."""
         if epoch < self.start_from_epoch:
             return
         super().on_epoch_end(epoch, logs)
@@ -123,6 +127,7 @@ class _DelayedModelCheckpoint(keras.callbacks.ModelCheckpoint):
         self.start_from_epoch = start_from_epoch
 
     def on_epoch_end(self, epoch: int, logs=None) -> None:
+        """No-op (no checkpoint written) before ``start_from_epoch``."""
         if epoch < self.start_from_epoch:
             return
         super().on_epoch_end(epoch, logs)
@@ -137,7 +142,7 @@ class CollapseMonitor(keras.callbacks.Callback):
         self.y = y_sample[:n].astype(np.float32)
 
     def on_epoch_end(self, epoch: int, logs=None) -> None:
-        """Print |z_mean| and mean z_log_var each epoch to diagnose posterior collapse."""
+        """Print |z_mean| and mean(z_log_var) on the probe batch (collapse signal)."""
         if not hasattr(self.model, "encoder"):
             return
         x = keras.ops.convert_to_tensor(self.X)
@@ -172,17 +177,34 @@ def train_cvae(
 ) -> keras.callbacks.History:
     """Train the cVAE with cyclical KL annealing and optional collapse monitoring.
 
-    kl_delay_epochs: hold beta at exactly 0 for this many epochs before any ramp/
-    cycling starts. See _LinearKLAnnealer / CyclicalKLAnnealer docstrings.
-
-    Two checkpoint files are written: weights_path tracks the best
+    Two checkpoint files are written: ``weights_path`` tracks the best
     reconstruction_loss seen *after* beta has finished its first ramp (see
-    monitor_start_epoch below), and a sibling "*_last.weights.h5" file is
-    overwritten unconditionally every epoch regardless of any metric — a
-    guaranteed-valid fallback that doesn't depend on the "best" heuristic being
-    correct, since that heuristic has already needed two rounds of fixes
-    (kl_delay_epochs's beta=0 window, then the ramp that follows it also having
-    an unfair advantage over later, fully-regularised epochs).
+    ``monitor_start_epoch`` below — while beta is still ramping, reconstruction_loss is
+    artificially cheap, so earlier epochs are not valid "best" candidates), and a
+    sibling ``*_last.weights.h5`` is overwritten unconditionally every epoch — a
+    guaranteed-valid fallback that doesn't depend on the "best" heuristic being correct
+    (that heuristic has already needed two rounds of fixes: the kl_delay beta=0 window,
+    then the ramp after it also having an unfair advantage over later epochs).
+
+    Args:
+        model: A compiled cVAE (``cBetaVAE_Hierarchical`` or subclass).
+        X_scaled: Training windows (N, T, F) in scaled [0, 1] space.
+        y: Conditioning vectors (N, y_dim).
+        weights_path: Best-checkpoint path; must end in ``.weights.h5``.
+        epochs, batch_size: Fit schedule.
+        target_beta: Final KL weight the annealer ramps toward.
+        use_cyclical_kl: Cyclical annealing (Fu et al. 2019) vs a single linear ramp.
+        cycle_epochs, n_cycles, cycle_ratio: Cyclical-annealer geometry.
+        anneal_epochs: Linear-annealer ramp length (used when not cyclical).
+        kl_delay_epochs: Hold beta at exactly 0 for this many epochs before any
+            ramp/cycling starts (a hard zero-KL-cost window — see the annealer
+            docstrings for why this differs from a slow ramp).
+        collapse_monitor: Attach :class:`CollapseMonitor` (hierarchical models only).
+        **kwargs: ``lr_patience``/``early_stop_patience`` plus extras forwarded to
+            ``model.fit``.
+
+    Returns:
+        The Keras ``History`` from training.
     """
     weights_path = Path(weights_path)
     weights_path.parent.mkdir(parents=True, exist_ok=True)

@@ -12,6 +12,11 @@ from genpm.utils.logger import get_logger
 
 logger = get_logger()
 
+# Per-version hyperparameter presets (recommended starting points). HP_V5 feeds the
+# defaults in core/training.py and core/artifacts.py; HP_V7 feeds the v7 reload defaults.
+# HP_V6 and HP_V8 are reference recipes only — no build_cvae_lstm_v6/v8 exists (v6 is
+# built by build_cvae_lstm, and HP_V8 is the documented "next run" tuning of v7, kept
+# for its run-11 post-mortem rationale below).
 HP_V5 = dict(
     epochs=300,
     batch_size=64,
@@ -136,7 +141,30 @@ def build_cvae_lstm(
     output_activation: str = "sigmoid",
     tile_z: bool = True,
 ):
-    """Instantiate and compile the cVAE-LSTM v6 architecture."""
+    """Instantiate and compile the cVAE-LSTM **v6** architecture.
+
+    v6 uses an X-only encoder and tiles the global latent ``z`` at every decoder step,
+    which together eliminate the posterior collapse the earlier versions suffered.
+
+    Args:
+        seq_len: Window length T.
+        feat_dim: Number of KPI channels F.
+        y_dim: Conditioning vector width.
+        global_latent_dim: Global latent size.
+        local_latent_dim: Optional per-timestep latent size (0 = none).
+        hidden_dim: LSTM hidden width.
+        n_layers: Number of LSTM layers.
+        use_attention, n_heads: Self-attention in the encoder.
+        beta: Initial KL weight (the annealer overrides it during training).
+        learning_rate: Adam learning rate (clipnorm=1.0).
+        free_bits_global, free_bits_local: Per-dim KL floors (anti-collapse).
+        output_activation: Decoder output activation (sigmoid for scaled [0,1] data).
+        tile_z: Tile ``z`` across timesteps in the decoder input (v6 default).
+
+    Returns:
+        Tuple ``(arch, model)`` — the ``cVAE_LSTMv6Architecture`` (holds the
+        encoder/decoder/cond layers) and the compiled ``cBetaVAE_Hierarchical``.
+    """
     logger.info(
         f"Building model | seq_len={seq_len} feat_dim={feat_dim} y_dim={y_dim} "
         f"global_latent_dim={global_latent_dim} hidden_dim={hidden_dim} "
@@ -198,18 +226,25 @@ def build_cvae_lstm_v7(
       - CrossKPICorrelation residual layer in the decoder output stage.
       - cBetaVAE_Hierarchical_v7 adds autocorrelation penalty to the ELBO.
 
-    ac_weight: weight of the AC penalty relative to reconstruction loss.
-               Start at 0.1; increase if AC mismatch persists after training.
-    ac_max_lag: number of hourly lags to penalise (default 24 = one diurnal cycle).
-    corr_l2: L2 weight on the CrossKPICorrelation F×F kernel. Without it nothing
-             penalises the kernel for going dense — on the run-11 checkpoint it
-             learned a mean diagonal of -0.67 with off-diagonal energy 4.6x the
-             diagonal, i.e. every KPI was reconstructed mostly from a dense blend
-             of other KPIs rather than its own projection. L1 at 1e-2..1e-4 over-
-             corrected this to ~0 (constant per-entry gradient regardless of
-             weight magnitude crushed nearly everything); L2's gradient scales
-             with the weight's own value, so it shrinks without forcing genuinely
-             useful entries to exactly zero. Start at 1e-5.
+    Args:
+        seq_len, feat_dim, y_dim, global_latent_dim, local_latent_dim, hidden_dim,
+        n_layers, use_attention, n_heads, beta, learning_rate, free_bits_global,
+        free_bits_local, output_activation, tile_z: As in :func:`build_cvae_lstm`.
+        ac_weight: Weight of the AC penalty relative to reconstruction loss. Start at
+            0.1; increase if AC mismatch persists after training.
+        ac_max_lag: Number of hourly lags to penalise (default 24 = one diurnal cycle).
+        corr_l2: L2 weight on the CrossKPICorrelation F×F kernel. Without it nothing
+            penalises the kernel for going dense — on the run-11 checkpoint it learned
+            a mean diagonal of -0.67 with off-diagonal energy 4.6x the diagonal, i.e.
+            every KPI was reconstructed mostly from a dense blend of other KPIs rather
+            than its own projection. L1 at 1e-2..1e-4 over-corrected this to ~0 (constant
+            per-entry gradient regardless of weight magnitude crushed nearly everything);
+            L2's gradient scales with the weight's own value, so it shrinks without
+            forcing genuinely useful entries to exactly zero. Start at 1e-5.
+
+    Returns:
+        Tuple ``(arch, model)`` — the ``cVAE_LSTMv7Architecture`` and the compiled
+        ``cBetaVAE_Hierarchical_v7``.
     """
     logger.info(
         f"Building v7 model | seq_len={seq_len} feat_dim={feat_dim} y_dim={y_dim} "

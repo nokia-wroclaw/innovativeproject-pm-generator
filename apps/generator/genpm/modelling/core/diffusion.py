@@ -37,11 +37,13 @@ REVERSE (generation) — 1000 real calls to the trained network, one per step
 
 
 Denoiser architecture: a stack of residual **dilated Conv1D** blocks over the time
-axis with FiLM conditioning (WaveNet/SSSD-lite).  Dilations cycle 1,2,4,8,16,32 so
+axis with FiLM conditioning (WaveNet/SSSD-lite).  Dilations cycle 1,2,4,8,16,32,64 so
 a few blocks cover the full 168-hour receptive field — capturing both the 24h and
-168h cycles.  Conditioning (``y`` config/calendar vector + the sinusoidal diffusion
-timestep embedding) modulates every block via FiLM (per-channel scale/shift).
-``HourlyPositionalEncoding`` is concatenated to the input so the denoiser always
+168h cycles.  Per-sample conditioning (``y`` config/calendar vector + the sinusoidal
+diffusion timestep embedding) modulates every block via FiLM (per-channel scale/shift);
+an optional per-timestep calendar tensor (day-of-week, holiday, ... — features that
+*vary within* the window) is concatenated to the input stream instead, since FiLM is
+per-sample.  ``HourlyPositionalEncoding`` is also concatenated so the denoiser always
 knows where each step sits in the day/week.  Operating on the full window jointly,
 PE here does not cause the spurious-sinusoid problem the VAE decoder had — the MSE
 objective only rewards periodicity the data actually contains.
@@ -49,9 +51,11 @@ objective only rewards periodicity the data actually contains.
 Data is min-max-scaled to ~[0,1]; internally we map to [-1,1] for the noise
 process (DDPM assumes roughly zero-centred data) and map back at sample time.
 
-Deliberately a *first* version: epsilon-prediction, linear beta schedule, full
-ancestral sampling.  Natural next steps: DDIM / fewer sampling steps for speed,
-a v-prediction or cosine schedule, self-conditioning, or a 1D U-Net denoiser.
+Current shape: epsilon-prediction, **cosine** beta schedule (default; linear retained
+for reloading older runs), full ancestral sampling with **per-step x0 thresholding**
+(clamp the predicted x0 to [-1,1] every step — load-bearing under the cosine schedule,
+see ``_generate_loop``).  Natural next steps: DDIM / fewer sampling steps for speed,
+v-prediction, self-conditioning, learned variance, or a 1D U-Net denoiser.
 
 Backend note: torch is the real path (tsgm forces KERAS_BACKEND=torch) and is
 implemented in full; a tf mirror is provided, jax raises NotImplementedError.
@@ -177,11 +181,38 @@ def build_denoiser(
     dilation_cycle: tuple = HP_DIFFUSION["dilation_cycle"],
     time_embed_dim: int = HP_DIFFUSION["time_embed_dim"],
     cond_embed_dim: int = HP_DIFFUSION["cond_embed_dim"],
+    cond_dim: int = 0,
 ) -> keras.Model:
-    """Build epsilon-prediction denoiser: (x_noisy, t, y) -> predicted noise (B,T,F)."""
+    """Build the epsilon-prediction denoiser network.
+
+    Maps ``(x_noisy, t, y[, c]) -> predicted noise`` of shape ``(B, T, feat_dim)``.
+    ``cond_dim`` > 0 adds a per-timestep conditioning input ``c`` (B, T, cond_dim) —
+    calendar features (day-of-week, holiday, ...) that VARY within the window, so
+    they cannot ride the broadcast ``y``/FiLM (which is per-sample). They join the
+    spatial input stream and are processed by the conv stack alongside the KPIs.
+
+    Args:
+        seq_len: Window length T (168 hours).
+        feat_dim: Number of KPI channels F.
+        y_dim: Width of the broadcast conditioning vector ``y`` (config one-hot +
+            holiday + seasonal).
+        width: Channel width inside the conv stack. Must be >= feat_dim (an in_proj
+            narrower than the data under-fits — see ``HP_DIFFUSION``).
+        n_blocks: Number of residual dilated-conv blocks.
+        dilation_cycle: Dilation rates cycled across blocks; sized so the receptive
+            field spans the full 168h week.
+        time_embed_dim: Width of the sinusoidal timestep embedding.
+        cond_embed_dim: Width of the per-sample conditioning MLP outputs (FiLM source).
+        cond_dim: Per-timestep calendar channels; 0 disables the ``c`` input.
+
+    Returns:
+        A ``keras.Model`` named ``"denoiser"`` whose inputs are ``[x_noisy, t, y]``
+        (plus ``c`` when ``cond_dim > 0``) and whose output is the predicted noise.
+    """
     x_in = keras.Input(shape=(seq_len, feat_dim), name="x_noisy")
     t_in = keras.Input(shape=(), name="t")
     y_in = keras.Input(shape=(y_dim,), name="y")
+    c_in = keras.Input(shape=(seq_len, cond_dim), name="c") if cond_dim > 0 else None
 
     # Conditioning embedding = timestep embedding ⊕ config/calendar embedding.
     t_emb = SinusoidalTimeEmbedding(time_embed_dim)(t_in)
@@ -190,9 +221,10 @@ def build_denoiser(
     y_emb = layers.Dense(cond_embed_dim, activation="swish", name="y_mlp")(y_in)
     cond = layers.Concatenate(name="cond")([t_emb, y_emb])  # (B, 2*cond_embed_dim)
 
-    # Input: noisy KPIs ⊕ broadcast conditioning ⊕ hourly positional encoding.
+    # Input: noisy KPIs ⊕ broadcast conditioning ⊕ (per-timestep calendar) ⊕ PE.
     cond_rep = CellConditioning(y_dim, seq_len)(y_in)  # (B, T, y_dim)
-    h = ops.concatenate([x_in, cond_rep], axis=-1)
+    parts = [x_in, cond_rep] if c_in is None else [x_in, cond_rep, c_in]
+    h = ops.concatenate(parts, axis=-1)
     h = HourlyPositionalEncoding(seq_len)(h)
     h = layers.Conv1D(width, kernel_size=1, name="in_proj")(h)
 
@@ -210,7 +242,8 @@ def build_denoiser(
         bias_initializer="zeros",
         name="eps_out",
     )(h)
-    return keras.Model([x_in, t_in, y_in], eps_out, name="denoiser")
+    inputs = [x_in, t_in, y_in] if c_in is None else [x_in, t_in, y_in, c_in]
+    return keras.Model(inputs, eps_out, name="denoiser")
 
 
 def _make_beta_schedule(
@@ -254,12 +287,14 @@ class ConditionalDDPM(keras.Model):
         beta_start: float = 1e-4,
         beta_end: float = 2e-2,
         output_clip: bool = True,
+        cond_dim: int = 0,
         **kwargs,
     ):
         super().__init__(**kwargs)
         self.denoiser = denoiser
         self._seq_len = seq_len
         self._feat_dim = feat_dim
+        self.cond_dim = cond_dim  # per-timestep calendar channels (0 = none)
         self.num_timesteps = num_timesteps
         self.beta_schedule = beta_schedule
         self.beta_start = beta_start
@@ -291,11 +326,25 @@ class ConditionalDDPM(keras.Model):
 
     def call(self, data):
         # Convenience: one denoising prediction at t=0 (used only for graph building).
+        if isinstance(data, (list, tuple)) and len(data) == 3:  # noqa
+            x, y, c = data
+            t = ops.zeros((ops.shape(x)[0],), dtype="float32")
+            return self.denoiser([x, t, y, c], training=False)
         if isinstance(data, (list, tuple)) and len(data) == 2:  # noqa
             x, y = data
             t = ops.zeros((ops.shape(x)[0],), dtype="float32")
             return self.denoiser([x, t, y], training=False)
         return data
+
+    def _split_inputs(self, data):
+        """Unpack model.fit data into (x0, y, c). With calendar on, fit is called with
+        x=(X, C) so data = ((x0, c), y); otherwise data = (x0, y)."""
+        inputs, y = data
+        if self.cond_dim > 0:
+            x0, c = inputs
+        else:
+            x0, c = inputs, None
+        return x0, y, c
 
     @staticmethod
     def _to_pm1(x):
@@ -307,7 +356,7 @@ class ConditionalDDPM(keras.Model):
         """[-1,1] → [0,1]."""
         return (x + 1.0) / 2.0
 
-    def _compute_loss(self, x0, y):
+    def _compute_loss(self, x0, y, c=None):
         """Sample t and noise, build x_t, predict noise, return MSE(eps, eps_hat)."""
         batch = ops.shape(x0)[0]
         t = keras.random.randint((batch,), 0, self.num_timesteps)  # (B,) int
@@ -315,15 +364,19 @@ class ConditionalDDPM(keras.Model):
         sqrt_acp = ops.reshape(ops.take(self._sqrt_acp, t), (-1, 1, 1))
         sqrt_om = ops.reshape(ops.take(self._sqrt_one_minus_acp, t), (-1, 1, 1))
         x_t = sqrt_acp * x0 + sqrt_om * eps
-        eps_hat = self.denoiser([x_t, ops.cast(t, "float32"), y], training=True)
+        t_f = ops.cast(t, "float32")
+        inputs = [x_t, t_f, y] if c is None else [x_t, t_f, y, c]
+        eps_hat = self.denoiser(inputs, training=True)
         return ops.mean(ops.square(eps - eps_hat))
 
     def train_step_torch(self, torch, data) -> dict:
-        x0, y = data
+        x0, y, c = self._split_inputs(data)
         if hasattr(y, "dtype"):
             y = ops.cast(y, "float32")
         x0 = self._to_pm1(ops.cast(x0, "float32"))
-        loss = self._compute_loss(x0, y)
+        if c is not None:
+            c = ops.cast(c, "float32")
+        loss = self._compute_loss(x0, y, c)
         self.zero_grad()
         loss.backward()
         variables = self.trainable_weights
@@ -334,10 +387,12 @@ class ConditionalDDPM(keras.Model):
         return {"loss": self.loss_tracker.result()}
 
     def train_step_tf(self, tf, data) -> dict:
-        x0, y = data
+        x0, y, c = self._split_inputs(data)
         x0 = self._to_pm1(ops.cast(x0, "float32"))
+        if c is not None:
+            c = ops.cast(c, "float32")
         with tf.GradientTape() as tape:
-            loss = self._compute_loss(x0, y)
+            loss = self._compute_loss(x0, y, c)
         grads = tape.gradient(loss, self.trainable_weights)
         self.optimizer.apply_gradients(zip(grads, self.trainable_weights, strict=False))
         self.loss_tracker.update_state(loss)
@@ -361,23 +416,41 @@ class ConditionalDDPM(keras.Model):
     def generate(
         self,
         y_compact,
+        calendar=None,
         num_steps: int | None = None,
         var_type: str | None = None,
         noise_scale: float | None = None,
     ) -> tuple:
-        """Ancestral DDPM sampling conditioned on y. Returns (X_hat in [0,1], y).
+        """Ancestral DDPM sampling conditioned on ``y``.
 
-        num_steps is accepted for API symmetry but full ancestral sampling always
-        runs over all num_timesteps; subsampling (DDIM) is a planned follow-up.
+        Matches the cVAE ``generate`` API so ``core.generation`` works unchanged.
 
-        Sampling-diversity knobs (default to the model's stored values, which default
-        to the standard sampler so existing callers are unchanged):
-          var_type    — "small" = posterior variance β̃ (DDPM fixedsmall, default);
-                        "large" = β (DDPM fixedlarge), which samples more diversely.
-          noise_scale — multiplier on the injected per-step noise std (>1 = more
-                        diverse). A cheap continuous dial complementing var_type.
+        Args:
+            y_compact: Broadcast conditioning, shape (B, y_dim).
+            calendar: Per-timestep calendar features (B, T, cond_dim). Required when
+                the model was trained with them (cond_dim > 0); ignored otherwise.
+            num_steps: Accepted for API symmetry only — full ancestral sampling always
+                runs over all ``num_timesteps`` (DDIM subsampling is a planned follow-up).
+            var_type: Posterior-variance choice. ``"small"`` = β̃ (DDPM fixedsmall,
+                default, less diverse); ``"large"`` = β (DDPM fixedlarge, more diverse).
+                Defaults to the model's stored value (the standard sampler).
+            noise_scale: Multiplier on the injected per-step noise std (>1 = more
+                diverse) — a cheap continuous dial complementing ``var_type``. Defaults
+                to the model's stored value (1.0).
+
+        Returns:
+            Tuple ``(X_hat, y_compact)`` with ``X_hat`` in [0, 1], shape (B, T, F).
+
+        Raises:
+            ValueError: If the model was trained with calendar conditioning but
+                ``calendar`` is not supplied.
         """
         del num_steps
+        if self.cond_dim > 0 and calendar is None:
+            raise ValueError(
+                "This model was trained with per-timestep calendar conditioning "
+                f"(cond_dim={self.cond_dim}); pass calendar=(B, {self._seq_len}, {self.cond_dim})."
+            )
         var_type = var_type if var_type is not None else self._sample_var_type
         noise_scale = noise_scale if noise_scale is not None else self._sample_noise_scale
         backend = os.environ.get("KERAS_BACKEND")
@@ -386,20 +459,23 @@ class ConditionalDDPM(keras.Model):
 
             torch = get_backend()
             with torch.no_grad():
-                return self._generate_loop(y_compact, var_type, noise_scale)
-        return self._generate_loop(y_compact, var_type, noise_scale)
+                return self._generate_loop(y_compact, var_type, noise_scale, calendar)
+        return self._generate_loop(y_compact, var_type, noise_scale, calendar)
 
-    def _generate_loop(self, y_compact, var_type="small", noise_scale=1.0) -> tuple:
+    def _generate_loop(self, y_compact, var_type="small", noise_scale=1.0, calendar=None) -> tuple:
         # Must run grad-free (see generate()): 1000 sequential forward passes
         # through the denoiser would otherwise chain into one giant autograd graph
         # and OOM the GPU well before sampling finishes.
         y_compact = ops.convert_to_tensor(y_compact, dtype="float32")
+        if calendar is not None:
+            calendar = ops.convert_to_tensor(calendar, dtype="float32")
         batch = int(ops.shape(y_compact)[0])
         x = keras.random.normal((batch, self._seq_len, self._feat_dim))
 
         for i in range(self.num_timesteps - 1, -1, -1):
             t = ops.full((batch,), float(i), dtype="float32")
-            eps_hat = self.denoiser([x, t, y_compact], training=False)
+            den_in = [x, t, y_compact] if calendar is None else [x, t, y_compact, calendar]
+            eps_hat = self.denoiser(den_in, training=False)
             beta_i = float(self._betas_np[i])
             alpha_i = float(self._alphas_np[i])
             acp_i = float(self._acp_np[i])
@@ -445,12 +521,36 @@ def build_diffusion(
     cond_embed_dim: int = HP_DIFFUSION["cond_embed_dim"],
     learning_rate: float = HP_DIFFUSION["learning_rate"],
     output_clip: bool = HP_DIFFUSION["output_clip"],
+    cond_dim: int = 0,
 ) -> tuple[ConditionalDDPM, keras.Model]:
-    """Instantiate and compile the conditional DDPM. Returns (model, denoiser)."""
+    """Instantiate and compile the conditional DDPM.
+
+    Builds the denoiser, wraps it in a ``ConditionalDDPM``, compiles with Adam, and
+    runs a dummy forward pass so ``model.built`` is True and weights can be
+    saved/loaded immediately (calling the wrapper also builds the denoiser).
+
+    Args:
+        seq_len: Window length T.
+        feat_dim: Number of KPI channels F.
+        y_dim: Width of the broadcast conditioning vector.
+        num_timesteps: Number of diffusion steps.
+        beta_schedule: ``"cosine"`` (default) or ``"linear"`` (back-compat).
+        beta_start, beta_end: Endpoints used only by the linear schedule.
+        width, n_blocks, dilation_cycle, time_embed_dim, cond_embed_dim: Denoiser
+            geometry — forwarded to :func:`build_denoiser`.
+        learning_rate: Adam learning rate (clipnorm=1.0).
+        output_clip: Clip samples to [-1, 1] before mapping back to [0, 1].
+        cond_dim: Per-timestep calendar channels; 0 disables calendar conditioning.
+
+    Returns:
+        Tuple ``(model, denoiser)`` — the compiled ``ConditionalDDPM`` and the inner
+        denoiser ``keras.Model`` (the latter is what EMA tracks).
+    """
     logger.info(
         f"Building diffusion | seq_len={seq_len} feat_dim={feat_dim} y_dim={y_dim} "
         f"num_timesteps={num_timesteps} beta_schedule={beta_schedule} width={width} "
-        f"n_blocks={n_blocks} time_embed_dim={time_embed_dim} cond_embed_dim={cond_embed_dim}"
+        f"n_blocks={n_blocks} time_embed_dim={time_embed_dim} cond_embed_dim={cond_embed_dim} "
+        f"cond_dim={cond_dim}"
     )
     denoiser = build_denoiser(
         seq_len=seq_len,
@@ -461,6 +561,7 @@ def build_diffusion(
         dilation_cycle=dilation_cycle,
         time_embed_dim=time_embed_dim,
         cond_embed_dim=cond_embed_dim,
+        cond_dim=cond_dim,
     )
     model = ConditionalDDPM(
         denoiser=denoiser,
@@ -471,6 +572,7 @@ def build_diffusion(
         beta_start=beta_start,
         beta_end=beta_end,
         output_clip=output_clip,
+        cond_dim=cond_dim,
     )
     # EMA is applied via EMACallback (Keras optimizer use_ema does not update through
     # this model's custom torch train_step), so the optimizer here is plain Adam.
@@ -479,7 +581,11 @@ def build_diffusion(
     # denoiser at t=0) so weights can be saved/loaded immediately.
     dummy_x = np.zeros((1, seq_len, feat_dim), dtype=np.float32)
     dummy_y = np.zeros((1, y_dim), dtype=np.float32)
-    model([dummy_x, dummy_y], training=False)
+    if cond_dim > 0:
+        dummy_c = np.zeros((1, seq_len, cond_dim), dtype=np.float32)
+        model([dummy_x, dummy_y, dummy_c], training=False)
+    else:
+        model([dummy_x, dummy_y], training=False)
     logger.info("Diffusion model built and compiled")
     return model, denoiser
 
@@ -518,6 +624,7 @@ class DiffusionEvalCallback(keras.callbacks.Callback):
         every_n_epochs: int = 25,
         n_samples: int = 16,
         n_feat_sample: int = 20,
+        calendar_probe: np.ndarray | None = None,
     ):
         super().__init__()
         self._y_probe = np.asarray(y_probe, dtype=np.float32)
@@ -526,12 +633,19 @@ class DiffusionEvalCallback(keras.callbacks.Callback):
         self._every = max(1, every_n_epochs)
         self._n_samples = n_samples
         self._n_feat = n_feat_sample
+        # per-timestep calendar for the probe window (1, T, cond_dim) or None
+        self._calendar_probe = (
+            np.asarray(calendar_probe, dtype=np.float32) if calendar_probe is not None else None
+        )
         self._cached = {"gen_diversity": float("nan"), "gen_ac1": float("nan")}
 
     def _evaluate(self) -> dict:
         row = self._y_probe[0]
         yb = np.repeat(row[None], self._n_samples, axis=0).astype(np.float32)
-        xf = self.model.generate(yb)[0]
+        cb = None
+        if self._calendar_probe is not None:
+            cb = np.repeat(self._calendar_probe[:1], self._n_samples, axis=0)
+        xf = self.model.generate(yb, calendar=cb)[0]
         xf = xf.detach().cpu().numpy() if hasattr(xf, "detach") else np.asarray(xf)
         rng = np.random.default_rng(0)
         fi = rng.choice(xf.shape[2], min(self._n_feat, xf.shape[2]), replace=False)

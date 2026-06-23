@@ -45,7 +45,20 @@ def save_training_artifacts(
     arch_params: dict | None = None,
     history=None,
 ) -> None:
-    """Persist all training artifacts needed to reload the model and generate data."""
+    """Persist all training artifacts needed to reload the model and generate data.
+
+    Model-agnostic: writes the data tensors (X/y), window metadata, the fitted
+    config encoder, the distname→config map, optional scaler params, and the loss
+    history/plot. ``arch_params`` (with ``arch_version`` and the input dims) is what
+    :func:`load_trained_model` later branches on to rebuild the right model family.
+
+    Args:
+        out_dir: Destination directory (created if missing).
+        data: The dict returned by :func:`load_training_windows`.
+        arch_params: Architecture/hyperparameter dict saved to ``arch_params.json``;
+            ``arch_version`` and ``seq_len``/``feat_dim`` are filled in if absent.
+        history: Optional Keras ``History`` to dump as JSON + a loss-curve PNG.
+    """
     out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
     logger.info(f"Saving artifacts to {out_dir}")
@@ -198,6 +211,8 @@ def _load_alt_model(
             time_embed_dim=arch_params.get("time_embed_dim", HP_DIFFUSION["time_embed_dim"]),
             cond_embed_dim=arch_params.get("cond_embed_dim", HP_DIFFUSION["cond_embed_dim"]),
             output_clip=arch_params.get("output_clip", HP_DIFFUSION["output_clip"]),
+            # Back-compat: run-1..3 have no per-timestep calendar → cond_dim 0.
+            cond_dim=arch_params.get("cond_dim", 0),
         )
     else:
         raise ValueError(f"Unknown alt arch_version: {arch_version!r}")
@@ -226,14 +241,26 @@ def load_trained_model(
 ) -> tuple[object, object, dict]:
     """Reload saved artifacts and restore the trained model with weights.
 
-    seq_len/feat_dim/global_latent_dim/hidden_dim/n_layers/use_attention/n_heads/
-    output_activation all default to the values saved at training time
-    (arch_params.json / kpi_columns.npy) so they always match the checkpoint;
-    pass them only to override. These must match exactly or weight loading fails,
-    since they determine layer shapes (Dense units, LSTM units, attention heads).
+    Branches on ``arch_params.json["arch_version"]``: GAN/diffusion models are rebuilt
+    via :func:`_load_alt_model` (the cVAE kwargs below are ignored for them); otherwise
+    a cVAE-LSTM v6/v7 is rebuilt, a dummy forward pass builds the graph, and weights
+    are loaded.
 
-    Returns (model, config_encoder, cell_config_map) where cell_config_map maps each
-    training distname to its config values (used to build the conditioning vector).
+    Args:
+        run_id_path: Run directory holding ``config_encoder.pkl``,
+            ``cell_config_map.pkl``, ``arch_params.json``, ``kpi_columns.npy``, etc.
+        weights_path: Checkpoint to load into the rebuilt model.
+        scaling_params_path: Unused here; accepted for caller symmetry.
+        global_latent_dim, local_latent_dim, hidden_dim, n_layers, use_attention,
+            n_heads, free_bits_global, free_bits_local, output_activation, seq_len,
+            feat_dim: cVAE geometry overrides. Each defaults to the value saved at
+            training time (``arch_params.json`` / ``kpi_columns.npy``) so it matches
+            the checkpoint exactly — override only deliberately, since a mismatch
+            changes layer shapes and breaks weight loading.
+
+    Returns:
+        Tuple ``(model, config_encoder, cell_config_map)``, where ``cell_config_map``
+        maps each training distname to its config values (used to build ``y``).
     """
     run_id_path = Path(run_id_path)
     logger.info(f"Loading config_encoder from {run_id_path}")

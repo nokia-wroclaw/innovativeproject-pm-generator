@@ -33,6 +33,10 @@ SEED = 0
 
 
 def main() -> None:
+    """Run the memorization probe per config and print the NN-distance summary.
+
+    Edit ``RUN_DIR``/``WEIGHTS_PATH`` above to point at the checkpoint to probe.
+    """
     print(f"Loading model from {WEIGHTS_PATH}")
     model, config_encoder, _cell_config_map = load_trained_model(RUN_DIR, WEIGHTS_PATH)
 

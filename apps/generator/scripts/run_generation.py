@@ -1,5 +1,9 @@
 """Quick-run generation with hardcoded dev values.
 
+Reloads a trained run (the configured ``RUN_DIR`` below is a cVAE-LSTM v7 run) and
+generates synthetic windows by CONFIG. The reload path is model-agnostic, so pointing
+``RUN_DIR``/``weights_path`` at a GAN or diffusion run works too.
+
 Usage:  python scripts/run_generation.py
         (from the repo root, no install needed)
 """

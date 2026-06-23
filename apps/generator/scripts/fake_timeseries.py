@@ -1,3 +1,11 @@
+"""Synthetic time-series fixtures and pandas→Spark conversion helpers (dev utility).
+
+Builds small fake single/multi-KPI series and converts pandas frames to Spark with an
+explicit schema, mapping NaN/NaT to proper SQL NULLs (Spark does not treat NaN as
+NULL). Used to exercise the preprocessing/Spark paths without the real PM dataset; not
+part of the model pipeline.
+"""
+
 from datetime import datetime
 
 import numpy as np

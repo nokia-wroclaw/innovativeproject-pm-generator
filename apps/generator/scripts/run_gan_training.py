@@ -3,10 +3,11 @@
 Usage:  python scripts/run_gan_training.py
         (from the repo root, no install needed)
 
-First GAN iteration on the same windowed dataset the cVAE runs use. WGAN-GP +
-config conditioning + per-hour feature matching. Inspect <run>/training_losses.png
-afterwards: a healthy run shows w_dist settling to a small positive band and gp
-hovering near 0 (its target is a unit-norm critic gradient).
+Trains the conditional WGAN-GP on the same windowed dataset the cVAE runs use
+(config conditioning + per-hour feature matching); the configured run below is one of
+the gan_run_* lineage. Inspect <run>/training_losses.png afterwards: a healthy run
+shows w_dist settling to a small positive band and gp hovering near 0 (its target is
+a unit-norm critic gradient).
 """
 
 import sys

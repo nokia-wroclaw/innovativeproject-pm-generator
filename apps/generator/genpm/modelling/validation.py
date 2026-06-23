@@ -68,6 +68,9 @@ def enrich_with_window_cols(long_df: pd.DataFrame, seq_len: int = SEQ_LEN) -> pd
     if "window_anchor" in df.columns:
         anchor = pd.to_datetime(df["window_anchor"])
     else:
+        # No explicit anchor: infer window boundaries from time gaps. Rows are hourly,
+        # so a gap > 1h (or the first row of a cell, NaN diff) starts a new window;
+        # cumulative-summing those flags per cell gives each window a contiguous id.
         gap_h = df.groupby("distname")["timestamp"].diff().dt.total_seconds().div(3600)
         new_window = gap_h.isna() | (gap_h > 1)
         df["_window_id"] = new_window.groupby(df["distname"]).cumsum()
@@ -99,17 +102,23 @@ def long_to_wide(long_df: pd.DataFrame) -> pd.DataFrame:
 def long_to_windows_3d(
     long_df: pd.DataFrame, kpi_columns: list[str], seq_len: int = SEQ_LEN
 ) -> np.ndarray:
-    """Convert long-format data to a 3-D array (n_windows, seq_len, n_kpis)."""
+    """Convert long-format data to a 3-D array (n_windows, seq_len, n_kpis).
+
+    Only complete windows are kept: a group is silently skipped if it doesn't have
+    exactly ``seq_len`` rows or is missing any of ``kpi_columns`` — partial windows
+    can't be stacked into a fixed (seq_len, n_kpis) tensor, and this is a downstream
+    validation helper (the loader already drops incomplete windows upstream).
+    """
     enriched = enrich_with_window_cols(long_df, seq_len=seq_len)
     windows = []
     for _, g in enriched.groupby(["distname", "window_anchor"], sort=False):
         g = g.sort_values("hour_in_window")
-        if len(g) != seq_len:
+        if len(g) != seq_len:  # incomplete window — cannot stack to fixed shape
             continue
         wide = g.pivot_table(
             index="hour_in_window", columns="kpi_id", values="kpi_value", aggfunc="first"
         )
-        if not set(kpi_columns).issubset(wide.columns):
+        if not set(kpi_columns).issubset(wide.columns):  # missing a requested KPI
             continue
         windows.append(wide.reindex(columns=kpi_columns).to_numpy(dtype=np.float32))
     if not windows:
@@ -136,7 +145,17 @@ def autocorr_lags(series, max_lag: int = 48) -> np.ndarray:
 def compute_kpi_stats(
     long_real: pd.DataFrame, long_syn: pd.DataFrame, kpi_list: list[str]
 ) -> pd.DataFrame:
-    """Return a per-KPI statistics table comparing real and synthetic distributions."""
+    """Return a per-KPI statistics table comparing real and synthetic distributions.
+
+    Args:
+        long_real: Real data in long format (``kpi_id``/``kpi_value`` columns).
+        long_syn: Synthetic data in the same long format.
+        kpi_list: KPIs to summarise (one row each).
+
+    Returns:
+        DataFrame indexed by KPI with real/synthetic mean, std, min, max and the
+        relative ``mean_diff%``.
+    """
     rows = []
     for kpi in kpi_list:
         r = kpi_series(long_real, kpi)
@@ -187,6 +206,17 @@ def nearest_neighbor_check(
     Distance is mean squared error per element (scaled [0,1] space), comparable
     to training-loss magnitudes. A memorization signature is gen_nn sitting
     systematically below the real_nn distribution.
+
+    Args:
+        X_real: Real windows (N_real, T, F) for one config.
+        cell_ids: Cell id per real window (N_real,), used for the same-cell exclusion.
+        X_gen: Generated windows (N_gen, T, F) for the same config.
+
+    Returns:
+        Dict with ``real_nn`` / ``gen_nn`` (the two distance distributions),
+        ``gen_nn_match_idx`` / ``gen_nn_match_cell`` (each gen window's nearest real
+        window and its cell), and ``n_excluded_real`` (real windows with no
+        different-cell neighbour, dropped from the baseline).
     """
     real_flat = _flatten_windows(X_real)
     gen_flat = _flatten_windows(X_gen)

@@ -1,7 +1,8 @@
+"""Synthetic KPI generation: the generate_windows entrypoint and inverse-scaling utils."""
+
 import numpy as np
 import pandas as pd
 
-from genpm.modelling.core.data import CONTEXT_DIM, SEQ_LEN, SYNTHETIC_ORIGIN
 from genpm.utils.logger import get_logger
 
 logger = get_logger()
@@ -18,42 +19,6 @@ def _to_numpy(tensor) -> np.ndarray:
         return tensor.detach().cpu().numpy()
 
 
-def _sample_z(z_mean, z_log_var, n_samples, rng):
-    """Reparameterized sample from q(z|x), clamping log-variance to match training clamp."""
-    # Mirror the [-6, 2] clamp applied to z_log_var during training so that
-    # generation uses the same effective variance range the decoder was trained on.
-    z_log_var = np.clip(z_log_var, -6.0, 2.0)
-    z_std = np.exp(0.5 * z_log_var)
-    eps = rng.standard_normal((n_samples, z_mean.shape[0]))
-    return (z_mean + z_std * eps).astype(np.float32)
-
-
-def _encode_windows(model, X_windows, y_windows, batch_size=64):
-    """Batch-encode windows through the model encoder and return concatenated z_mean/z_log_var arrays."""
-    z_means, z_log_vars = [], []
-    for start in range(0, len(X_windows), batch_size):
-        enc_in = model._get_encoder_input(
-            X_windows[start : start + batch_size],
-            y_windows[start : start + batch_size],
-        )
-        z_mean, z_log_var, _ = model.encoder(enc_in, training=False)
-        z_means.append(_to_numpy(z_mean))
-        z_log_vars.append(_to_numpy(z_log_var))
-    return np.concatenate(z_means), np.concatenate(z_log_vars)
-
-
-def _decode_samples(model, z_samples, y_labels, batch_size=64):
-    """Batch-decode latent samples through the model decoder and return the stacked output array."""
-    decoded = []
-    for start in range(0, len(z_samples), batch_size):
-        dec_in = model._get_decoder_input(
-            z_samples[start : start + batch_size],
-            y_labels[start : start + batch_size],
-        )
-        decoded.append(_to_numpy(model.decoder(dec_in, training=False)))
-    return np.concatenate(decoded)
-
-
 def _inverse_transform(
     df: pd.DataFrame,
     params_df: pd.DataFrame,
@@ -61,7 +26,11 @@ def _inverse_transform(
     value_col: str,
     keep_params: bool = False,
 ) -> pd.DataFrame:
-    """Restore original-scale value_col using fitted group params."""
+    """Restore original-scale value_col using fitted group params.
+
+    Currently unused by ``generate_windows`` (which returns scaled output); kept as a
+    ready utility for when callers need real-scale values from a long-format frame.
+    """
     joined = df.merge(params_df, on=group_cols, how="left")
 
     x = joined[value_col].astype("float64")
@@ -101,11 +70,13 @@ def _inverse_transform_3d(
     kpi_columns: list[str],
     cell_id: str,
 ) -> np.ndarray:
-    """
-    Inverse-transform decoder output using per-(distname, kpi_id) scaler params.
+    """Inverse-transform decoder output using per-(distname, kpi_id) scaler params.
 
     params_df columns: distname, kpi_id, scaler, param_a, param_b (+ audit cols).
     kpi_columns must match params_df['kpi_id'] values.
+
+    Currently unused by ``generate_windows`` (which returns scaled output); kept as a
+    ready utility for when callers need real-scale values from a (N, T, F) array.
     """
     if params_df is None:
         raise ValueError("params_df is None — set data['params_df'] before generation.")
@@ -163,169 +134,16 @@ def _inverse_transform_3d(
     return result.astype(np.float32)
 
 
-def _holiday_col_index(y_labels: np.ndarray) -> int:
-    """Holiday column index — first of the trailing context block [holiday | seasonal(4)]."""
-    return y_labels.shape[1] - CONTEXT_DIM
-
-
-def _select_cell_windows(
-    X_scaled,
-    y,
-    window_anchors,
-    cell_ids,
-    cell_id,
-    date_start=None,
-    date_end=None,
-    holiday=None,
-):
-    """Filter the training pool to windows matching cell, date range, and holiday flag."""
-    anchors_dt = pd.to_datetime(window_anchors)
-    mask = cell_ids == cell_id
-    if date_start is not None:
-        mask &= anchors_dt >= pd.Timestamp(date_start)
-    if date_end is not None:
-        mask &= anchors_dt <= pd.Timestamp(date_end)
-    if holiday is not None:
-        mask &= y[:, _holiday_col_index(y)].astype(int) == int(holiday)
-    return X_scaled[mask], y[mask], anchors_dt[mask]
-
-
-def _decode_from_prior(model, y_windows, batch_size=64):
-    """Sample from N(0, I) prior and decode — true synthetic generation (v5)."""
+def _run_batched_generation(
+    model, y_windows: np.ndarray, batch_size: int, c_windows: np.ndarray | None = None
+) -> np.ndarray:
     decoded = []
     for start in range(0, len(y_windows), batch_size):
         yb = y_windows[start : start + batch_size]
-        x_syn, _ = model.generate(yb)
-        decoded.append(_to_numpy(x_syn))
-    return np.concatenate(decoded)
-
-
-def _generate_window_batch(model, X_windows, y_windows, rng, batch_size=64):
-    """Sample from N(0, I) prior and decode — X_windows and rng unused (v5 always samples from prior)."""
-    del X_windows, rng  # v5 generates from prior; X/rng kept for API compatibility
-    return _decode_from_prior(model, y_windows, batch_size)
-
-
-def generate_for_date_range(
-    model,
-    X_scaled: np.ndarray,
-    y: np.ndarray,
-    window_anchors,
-    cell_ids: np.ndarray,
-    kpi_columns: list[str],
-    params_df: pd.DataFrame,
-    cell_id: str,
-    date_start: str,
-    date_end: str,
-    holiday: int | None = None,
-    seed: int | None = None,
-    batch_size: int = 64,
-    **_,
-) -> pd.DataFrame:
-    """Generate synthetic KPIs for a cell within a calendar date range."""
-    rng = np.random.default_rng(seed)
-    X_m, y_m, anchors_m = _select_cell_windows(
-        X_scaled,
-        y,
-        window_anchors,
-        cell_ids,
-        cell_id,
-        date_start,
-        date_end,
-        holiday,
-    )
-    if len(X_m) == 0:
-        raise ValueError(
-            f"No windows found for cell_id='{cell_id}' "
-            f"date_start={date_start}, date_end={date_end}, holiday={holiday}."
-        )
-    logger.info(
-        f"Matched {len(X_m)} windows for '{cell_id}' [{date_start} → {date_end}] "
-        f"→ {len(X_m) * SEQ_LEN:,} rows"
-    )
-
-    x_syn = _generate_window_batch(model, X_m, y_m, rng, batch_size)
-    x_inv = x_syn
-
-    n_windows, seq_len, n_kpis = x_inv.shape
-    anchors_arr = anchors_m.to_numpy()
-    kpi_flat = x_inv.reshape(n_windows * seq_len, n_kpis)
-
-    df = pd.DataFrame(kpi_flat, columns=kpi_columns)
-    df.insert(0, "seed", seed)
-    df.insert(
-        0,
-        "timestamp",
-        pd.to_datetime(np.repeat(anchors_arr, seq_len))
-        + pd.to_timedelta(np.tile(np.arange(seq_len), n_windows), unit="h"),
-    )
-    df.insert(0, "window_anchor", np.repeat(anchors_arr, seq_len))
-    df.insert(0, "cell_id", cell_id)
-    return df
-
-
-def generate_n_synthetic_weeks(
-    model,
-    X_scaled: np.ndarray,
-    y: np.ndarray,
-    window_anchors,
-    cell_ids: np.ndarray,
-    params_df: pd.DataFrame,
-    kpi_columns: list[str],
-    cell_id: str,
-    n_weeks: int,
-    holiday: int | None = None,
-    seed: int | None = None,
-    batch_size: int = 64,
-    **_,
-) -> pd.DataFrame:
-    """Generate N continuous synthetic weeks for a given cell."""
-    if n_weeks < 1:
-        raise ValueError("n_weeks must be >= 1")
-
-    rng = np.random.default_rng(seed)
-    X_pool, y_pool, _ = _select_cell_windows(
-        X_scaled,
-        y,
-        window_anchors,
-        cell_ids,
-        cell_id,
-        holiday=holiday,
-    )
-    if len(X_pool) == 0:
-        raise ValueError(f"No windows found for cell_id='{cell_id}' with holiday={holiday}.")
-
-    pool_size = len(X_pool)
-    logger.info(f"Pool for '{cell_id}': {pool_size} windows (holiday={holiday})")
-    idx = rng.choice(pool_size, size=n_weeks, replace=(n_weeks > pool_size))
-    logger.info(f"Sampled {n_weeks} windows → {n_weeks * SEQ_LEN:,} rows")
-
-    x_syn = _generate_window_batch(model, X_pool[idx], y_pool[idx], rng, batch_size)
-    x_inv = x_syn
-    n_w, seq_len, n_kpis = x_inv.shape
-    week_idx = np.repeat(np.arange(n_w), seq_len)
-    hour_in_week = np.tile(np.arange(seq_len), n_w)
-    kpi_flat = x_inv.reshape(n_w * seq_len, n_kpis)
-
-    df = pd.DataFrame(kpi_flat, columns=kpi_columns)
-    df.insert(0, "seed", seed)
-    df.insert(
-        0,
-        "timestamp",
-        SYNTHETIC_ORIGIN + pd.to_timedelta(week_idx * seq_len + hour_in_week, unit="h"),
-    )
-    df.insert(0, "hour_in_week", hour_in_week)
-    df.insert(0, "week_number", week_idx + 1)
-    df.insert(0, "cell_id", cell_id)
-    return df
-
-
-def _run_batched_generation(model, y_windows: np.ndarray, batch_size: int) -> np.ndarray:
-    """Call model.generate() in batches and concatenate the resulting arrays."""
-    decoded = []
-    for start in range(0, len(y_windows), batch_size):
-        yb = y_windows[start : start + batch_size]
-        x_syn, _ = model.generate(yb)
+        if c_windows is not None:
+            x_syn, _ = model.generate(yb, calendar=c_windows[start : start + batch_size])
+        else:
+            x_syn, _ = model.generate(yb)
         decoded.append(_to_numpy(x_syn))
     return np.concatenate(decoded)
 
@@ -350,13 +168,38 @@ def generate_windows(
 ) -> pd.DataFrame:
     """Generate synthetic windows conditioned on cell config values.
 
-    Configs come from `cell_configs` if given, else are looked up from
-    `cell_config_map` by `cell_id`. The output is keyed by a `cell_id` column when a
-    cell_id is provided, otherwise by a `config_id` column holding the joined config
-    values. seq_len and n_dim are taken from the generated array (which matches the
-    trained checkpoint).
+    This is the generation entrypoint shared by every model family — cVAE, GAN, and
+    diffusion all expose ``generate(y[, calendar]) -> (x, y)``. Configs come from
+    ``cell_configs`` if given, else are looked up from ``cell_config_map`` by
+    ``cell_id``. seq_len and n_dim are taken from the generated array (which matches
+    the trained checkpoint).
+
+    Args:
+        model: A trained generator exposing ``generate``; ``model.cond_dim`` > 0
+            signals it needs per-timestep calendar features (rebuilt here).
+        config_encoder: Fitted one-hot encoder for config values.
+        cell_config_map: ``{"map": {cell_id: config_values}}`` saved at training time.
+        cell_id: Cell to generate for; its configs are looked up unless
+            ``cell_configs`` is given. Also labels the output (``cell_id`` column).
+        anchor_date: Start date of the first synthetic week.
+        n_weeks: Number of consecutive weekly windows to generate.
+        holiday: Holiday flag written into every window's ``y``.
+        batch_size: Generation batch size.
+        seed: Currently unused — reserved for reproducibility once a seedable prior
+            path is added (diffusion/GAN noise is drawn from the keras RNG today).
+        kpi_list: Column names for the output KPIs.
+        cell_configs: Explicit config values; when provided, output is keyed by a
+            ``config_id`` column (the joined values) instead of ``cell_id``.
+
+    Returns:
+        Long-format DataFrame: id column, ``window_anchor``, ``timestamp``, one
+        column per KPI; ``n_weeks * seq_len`` rows.
+
+    Raises:
+        ValueError: If neither ``cell_id`` nor ``cell_configs`` is provided, or the
+            ``cell_id`` is absent from ``cell_config_map``.
     """
-    from genpm.modelling.core.data import encode_seasonal_features
+    from genpm.modelling.core.data import build_calendar_features, encode_seasonal_features
 
     if cell_configs is None:
         if cell_id is None:
@@ -388,12 +231,19 @@ def generate_windows(
     y_windows = np.array(y_windows, dtype=np.float32)
     anchors_arr = np.array(anchors)
 
-    kpi_array = _run_batched_generation(model, y_windows, batch_size=batch_size)
+    # Per-timestep calendar conditioning, rebuilt from the target anchors with the
+    # same logic used at training time (only if the model was trained with it).
+    c_windows = None
+    if getattr(model, "cond_dim", 0) > 0:
+        c_windows = build_calendar_features(anchors_arr, seq_len=model._seq_len)
+
+    kpi_array = _run_batched_generation(
+        model, y_windows, batch_size=batch_size, c_windows=c_windows
+    )
     _, seq_len, n_dim = kpi_array.shape
     kpi_flat = kpi_array.reshape(n_weeks * seq_len, n_dim)
 
     df = pd.DataFrame(kpi_flat, columns=kpi_list)
-    # df.insert(0, "seed", seed)
     df.insert(
         0,
         "timestamp",

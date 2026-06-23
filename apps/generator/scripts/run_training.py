@@ -1,4 +1,8 @@
-"""Quick-run training with hardcoded dev values.
+"""Quick-run cVAE-LSTM (v7) training with hardcoded dev values.
+
+Trains the v7 architecture (X-only encoder + tiled z + cross-KPI correlation +
+autocorrelation penalty) with cyclical KL annealing. The run_* lineage comment below
+records why each knob is set the way it is.
 
 Usage:  python scripts/run_training.py
         (from the repo root, no install needed)

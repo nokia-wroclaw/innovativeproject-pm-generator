@@ -39,6 +39,8 @@ Backend note: the real training path is torch (tsgm forces KERAS_BACKEND=torch).
 The torch ``train_step`` is implemented in full; tf/jax raise NotImplementedError
 because the gradient penalty needs a backend-specific double-backward that has not
 been validated outside torch.
+
+Results -> Mode collpase, pivot to diffusion models
 """
 
 import os
@@ -454,6 +456,13 @@ class ConditionalWGANGP(keras.Model):
             optimizer.apply_gradients(list(zip(grads, variables, strict=False)))
 
     def train_step_torch(self, torch, data) -> dict:
+        """One WGAN-GP step: update the critic every batch, the generator 1-in-n_critic.
+
+        Critic: maximise the Wasserstein estimate ``E[D(real)] - E[D(fake)]`` minus the
+        gradient penalty (``c_loss = -w_dist + gp_weight * gp``). Generator (only when
+        ``_step % n_critic == 0``): minimise ``-E[D(fake)]`` plus the feature-matching
+        moment loss. Torch-only — the gradient penalty needs a validated double-backward.
+        """
         x_real, y = data
         if hasattr(y, "dtype"):
             y = ops.cast(y, "float32")
@@ -530,7 +539,32 @@ def build_gan(
 ) -> tuple[ConditionalWGANGP, keras.Model, keras.Model]:
     """Instantiate and compile the conditional WGAN-GP.
 
-    Returns (model, generator, critic).
+    Builds the generator and critic, wraps them in a ``ConditionalWGANGP``, compiles
+    with separate Adam optimisers, and runs dummy forward passes so all variables exist
+    and the model is marked built (the critic is off the wrapper's forward path, so it
+    is built with its own dummy call).
+
+    Args:
+        seq_len: Window length T.
+        feat_dim: Number of KPI channels F.
+        y_dim: Conditioning vector width.
+        latent_dim: Generator noise dimension (global z).
+        hidden_dim, n_layers, use_attention, n_heads: Shared net capacity.
+        gen_use_pe, critic_use_pe: Hourly positional encoding per net (with a global-only
+            z the generator PE is load-bearing — run-2 off collapsed the diurnal cycle).
+        kpi_proj_activation: Pre-residual KPI projection activation in the generator.
+        per_step_noise_dim: Fresh per-timestep noise channels (entropy against collapse).
+        use_minibatch_stddev: Add the minibatch-stddev feature to the critic.
+        use_first_diff: Also feed ΔX to the critic (punishes over-smoothing).
+        output_activation: Generator output activation.
+        corr_l2: L2 on the generator's CrossKPICorrelation kernel.
+        learning_rate, adam_beta_1, adam_beta_2: Optimiser settings for both nets.
+        n_critic: Critic updates per generator update.
+        gp_weight: Gradient-penalty weight.
+        moment_weight: Initial feature-matching weight (annealed by a callback).
+
+    Returns:
+        Tuple ``(model, generator, critic)``.
     """
     logger.info(
         f"Building GAN | seq_len={seq_len} feat_dim={feat_dim} y_dim={y_dim} "

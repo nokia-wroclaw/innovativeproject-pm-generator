@@ -23,6 +23,7 @@ dependencies = [
     "ruptures>=1.1.10",
     "boto3>=1.35.0",
     "astropy>=7.2.0",
+    "holidays>=0.57",
 ]
 
 [build-system]

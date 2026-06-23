@@ -16,7 +16,17 @@ logger = get_logger()
 
 
 def run_training(cfg: TrainConfig):
-    """Run the full training pipeline: load data → build model → train → save artifacts."""
+    """Train a cVAE-LSTM: load data → build model → train → save artifacts.
+
+    Builds the v6 or v7 architecture per ``cfg.arch_version`` and trains it with the
+    KL-annealing/collapse-monitoring loop in :func:`train_cvae`.
+
+    Args:
+        cfg: Populated :class:`TrainConfig` (paths, architecture, schedule).
+
+    Returns:
+        The Keras ``History`` from training.
+    """
     logger.info(f"Loading training data from {cfg.training_data_path}")
     data = load_training_windows(
         Path(cfg.training_data_path),
@@ -143,7 +153,19 @@ def _build_diversity_probe(
 
 
 def run_gan_training(cfg: GANTrainConfig):
-    """Train the conditional WGAN-GP: load data → build → fit → save artifacts."""
+    """Train the conditional WGAN-GP: load data → build → fit → save artifacts.
+
+    Adds a per-epoch diversity probe (mode-collapse is the GAN's failure mode, so it
+    is logged live against the real within-config diversity) and a feature-matching
+    weight anneal. Periodic weight snapshots are kept because GAN quality is
+    non-monotonic — there is no clean "best" metric to checkpoint on.
+
+    Args:
+        cfg: Populated :class:`GANTrainConfig`.
+
+    Returns:
+        The Keras ``History`` from training.
+    """
     from genpm.modelling.core.gan import (
         GANDiversityMonitor,
         MomentWeightScheduler,
@@ -254,7 +276,21 @@ def run_gan_training(cfg: GANTrainConfig):
 
 
 def run_diffusion_training(cfg: DiffusionTrainConfig):
-    """Train the conditional DDPM: load data → build → fit → save artifacts."""
+    """Train the conditional DDPM: load data → build → fit → save artifacts.
+
+    Optionally builds per-timestep calendar features (``cfg.use_calendar``) and feeds
+    them alongside ``X`` as ``fit_x = (X, calendar)``. The denoising MSE is a genuine
+    quality signal, so the best-by-loss checkpoint is kept (plus a ``_last`` fallback)
+    and a periodic structure probe logs ``gen_ac1``/``gen_diversity``. With EMA on, the
+    averaged weights are written into the primary checkpoint after fit (they sample
+    better than the raw weights).
+
+    Args:
+        cfg: Populated :class:`DiffusionTrainConfig`.
+
+    Returns:
+        The Keras ``History`` from training.
+    """
     from genpm.modelling.core.diffusion import (
         DiffusionEvalCallback,
         EMACallback,
@@ -266,11 +302,15 @@ def run_diffusion_training(cfg: DiffusionTrainConfig):
     data = load_training_windows(
         Path(cfg.training_data_path),
         drop_constant_kpis=cfg.drop_constant_kpis,
+        add_calendar=cfg.use_calendar,
+        calendar_country=cfg.calendar_country,
     )
+    cond_dim = data["cond_dim"]
+    calendar = data["calendar"]  # (N, T, cond_dim) or None
 
     logger.info(
         f"Building diffusion: num_timesteps={cfg.num_timesteps}, width={cfg.width}, "
-        f"n_blocks={cfg.n_blocks}"
+        f"n_blocks={cfg.n_blocks}, cond_dim={cond_dim}"
     )
     model, _denoiser = build_diffusion(
         seq_len=data["seq_len"],
@@ -287,6 +327,7 @@ def run_diffusion_training(cfg: DiffusionTrainConfig):
         cond_embed_dim=cfg.cond_embed_dim,
         learning_rate=cfg.learning_rate,
         output_clip=cfg.output_clip,
+        cond_dim=cond_dim,
     )
 
     weights_path = Path(cfg.weights_path)
@@ -323,15 +364,27 @@ def run_diffusion_training(cfg: DiffusionTrainConfig):
         probe_real[:, :, _fi].transpose(0, 2, 1).reshape(-1, probe_real.shape[1])
     )
     logger.info(f"Diffusion eval probe: real_diversity={real_div:.4f} real_ac1={real_ac1:.4f}")
+    # calendar for the probe window (first row matching the probe config), if used
+    calendar_probe = None
+    if calendar is not None:
+        probe_idx = int(np.argmax(np.all(data["y"] == probe_row, axis=1)))
+        calendar_probe = calendar[probe_idx : probe_idx + 1]
     callbacks.append(
-        DiffusionEvalCallback(probe_row[None], real_diversity=real_div, real_ac1=real_ac1)
+        DiffusionEvalCallback(
+            probe_row[None],
+            real_diversity=real_div,
+            real_ac1=real_ac1,
+            calendar_probe=calendar_probe,
+        )
     )
     ema_cb = EMACallback(model.denoiser, momentum=cfg.ema_momentum) if cfg.use_ema else None
     if ema_cb is not None:
         callbacks.append(ema_cb)
     logger.info(f"Training diffusion for {cfg.epochs} epochs → {weights_path}")
+    # With calendar on, x is a tuple (X, C) so train_step receives ((x, c), y).
+    fit_x = (data["X_scaled"], calendar) if calendar is not None else data["X_scaled"]
     history = model.fit(
-        data["X_scaled"],
+        fit_x,
         data["y"],
         epochs=cfg.epochs,
         batch_size=cfg.batch_size,
@@ -363,6 +416,9 @@ def run_diffusion_training(cfg: DiffusionTrainConfig):
         "cond_embed_dim": cfg.cond_embed_dim,
         "use_ema": cfg.use_ema,
         "ema_momentum": cfg.ema_momentum,
+        "cond_dim": cond_dim,
+        "use_calendar": cfg.use_calendar,
+        "calendar_country": cfg.calendar_country,
     }
     logger.info(f"Saving artifacts to {cfg.run_dir_path}")
     save_training_artifacts(Path(cfg.run_dir_path), data, history=history, arch_params=arch_params)

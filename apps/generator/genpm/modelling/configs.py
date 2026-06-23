@@ -3,6 +3,14 @@ from dataclasses import dataclass, field
 
 @dataclass
 class GenerateConfig:
+    """Generation request for a trained model (cVAE / GAN / diffusion).
+
+    Conditioning identity comes from either ``cell_id`` (configs looked up from the
+    training ``cell_config_map``) or explicit ``cell_configs``. The architecture
+    fields default to the values saved at training time and should be overridden only
+    deliberately, since they must match the checkpoint.
+    """
+
     # Paths
     run_dir_path: str
     weights_path: str
@@ -35,6 +43,14 @@ class GenerateConfig:
 
 @dataclass
 class TrainConfig:
+    """cVAE-LSTM training config (core/model.py + core/training.py).
+
+    Drives :func:`run_training`. ``arch_version`` selects v7 (default; adds the
+    autocorrelation penalty and cross-KPI correlation layer) or v6. The KL-annealing
+    schedule fields (cyclical KL, delay, anneal) are the main levers against posterior
+    collapse — see core/training.py.
+    """
+
     # Paths
     training_data_path: str
     run_dir_path: str
@@ -158,6 +174,11 @@ class DiffusionTrainConfig:
     dilation_cycle: tuple = (1, 2, 4, 8, 16, 32, 64)
     time_embed_dim: int = 128
     cond_embed_dim: int = 128
+    # Per-timestep calendar conditioning (day-of-week, holiday, ...). When on, a
+    # (B, 168, 6) tensor is fed to the denoiser to fix the over-regular-days residual
+    # (R2). See build_calendar_features in core/data.py.
+    use_calendar: bool = True
+    calendar_country: str = "US"
     # Optimisation / schedule
     learning_rate: float = 2e-4
     use_ema: bool = (
@@ -171,6 +192,13 @@ class DiffusionTrainConfig:
 
 @dataclass
 class ValidateConfig:
+    """Real-vs-synthetic validation config (validation.py).
+
+    Compares generated output against real data for one cell over a date range
+    (per-hour profiles, marginals, autocorrelation, cross-KPI correlation). The
+    architecture fields must match the trained checkpoint being validated.
+    """
+
     # Paths
     run_dir_path: str
     weights_path: str
