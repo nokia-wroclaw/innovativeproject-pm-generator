@@ -304,7 +304,10 @@ def run_preprocessing(sdm: SparkDataManager, preprocessing_cfg: PreprocessingCon
     #     how="inner",
     # )
 
-    _scaling_group_cols = ["kpi_id", *[x for x in _GROUPING_COLS if x != "distname"]]
+    _scaling_group_cols = [
+        "kpi_id",
+        *[x for x in _GROUPING_COLS if x not in ["distname", "bts_id"]],
+    ]
 
     logger.info("Stage: fitting and applying Yeo-Johnson scaler")
     yj_scaler = scaling.YeoJohnsonScaler(
@@ -433,6 +436,7 @@ def run_preprocessing(sdm: SparkDataManager, preprocessing_cfg: PreprocessingCon
         "pm_df_wide_materialized_windows": pm_df_wide_materialized_windows,
         "pm_df_long_indexed_winds": pm_df_long_indexed_winds,
         "pm_df_wide_indexed_winds": pm_df_wide_indexed_windows,
+        "pm_df_long_testing": pm_df_long_imputed,
         "yj_scaling_params_df": yj_params_df,
         "scaling_params_df": params_df,
         # Visual and forms HELPER dfs
