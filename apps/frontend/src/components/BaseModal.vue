@@ -88,22 +88,21 @@ onUnmounted(() => {
 <style scoped>
 .modal-overlay {
   position: fixed;
-  top: 0;
-  left: 0;
-  width: 100%;
-  height: 100%;
+  inset: 0;
   background-color: rgba(0, 0, 0, 0.4);
   backdrop-filter: blur(2px);
   display: flex;
   justify-content: center;
   align-items: center;
+  padding: 1.5rem;
   z-index: 1000;
+  overscroll-behavior: contain;
 }
 
 .modal-container {
   background: white;
   width: 90%;
-  max-height: 90vh;
+  max-height: min(90dvh, calc(100vh - 3rem));
   border-radius: 12px;
   box-shadow: 0 20px 25px -5px rgba(0, 0, 0, 0.1), 0 10px 10px -5px rgba(0, 0, 0, 0.04);
   display: flex;
@@ -148,10 +147,10 @@ onUnmounted(() => {
   font-size: 0.95rem;
   color: #374151;
   line-height: 1.5;
-  overflow-y: auto;
-  overscroll-behavior: contain;
   flex: 1 1 auto;
   min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
 }
 
 .modal-footer {

@@ -95,6 +95,20 @@ class GenerateRunRequest(BaseModel):
     kpis: list[str] = Field(default_factory=list)
 
 
+class ModelingAutofillRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    instruction: str = Field(min_length=1, max_length=4000)
+    current_values: dict[str, Any] = Field(default_factory=dict)
+
+
+class ModelingAutofillResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    process_type: ModelingProcessType
+    values: dict[str, Any]
+
+
 class ModelingRunCreated(BaseModel):
     model_config = ConfigDict(extra="forbid")
 

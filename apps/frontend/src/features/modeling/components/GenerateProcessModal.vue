@@ -2,7 +2,7 @@
   <BaseModal
     :show="show"
     :title="process.title"
-    width="680px"
+    width="760px"
     @close="onClose"
   >
     <div class="space-y-4">
@@ -32,6 +32,13 @@
         :class="phase !== 'form' && phase !== 'error' ? 'pointer-events-none opacity-60' : ''"
         @submit.prevent="submit"
       >
+        <ModelingAutofillPanel
+          :process-type="process.processType"
+          :current-values="form"
+          :disabled="phase !== 'form' && phase !== 'error'"
+          @apply="applyAutofill"
+        />
+
         <!-- Model selection -->
         <ModelingFormSelect
           v-model="form.model_id"
@@ -40,8 +47,6 @@
           placeholder="Select model"
           :options="modelOptions"
         />
-
-        <!-- KPI selection (appears after model is selected) -->
         <ModelingFormKpiSelector
           v-if="false"
           v-model="form.selected_kpis"
@@ -164,7 +169,9 @@ import { Loader2 } from 'lucide-vue-next';
 import BaseModal from '@/components/BaseModal.vue';
 import { Button } from '@/components/ui';
 import { useModelingModels, useModelingDatasets, useModelKpis, useModelCells } from '../composables/queries.js';
+import { applyModelingAutofillValues } from '../composables/applyModelingAutofillValues.js';
 import { useModelingProcessRun } from '../composables/useModelingProcessRun.js';
+import ModelingAutofillPanel from './ModelingAutofillPanel.vue';
 import ModelingFormInput from './form-fields/ModelingFormInput.vue';
 import ModelingFormSelect from './form-fields/ModelingFormSelect.vue';
 import ModelingFormKpiSelector from './form-fields/ModelingFormKpiSelector.vue';
@@ -174,6 +181,7 @@ import { isAdmin } from '@/auth/keycloak';
 const props = defineProps({
   show: { type: Boolean, required: true },
   process: { type: Object, required: true },
+  datasets: { type: Array, default: () => [] },
 });
 
 const emit = defineEmits(['close', 'started']);
@@ -206,6 +214,7 @@ const {
   triggerRun,
   reset,
 } = useModelingProcessRun(props.process.processType, props.process.title);
+
 
 const form = reactive({
   model_id: '',
@@ -311,44 +320,25 @@ watch(
 );
 
 
-watch(
-  () => cells.value,
-  () => {
-    // cell_id is optional — do not auto-select
-  },
-  { immediate: true },
-);
+function applyAutofill(values) {
+  applyModelingAutofillValues(form, values);
+  formError.value = '';
+}
+
+function getFormError() {
+  if (!form.model_id) return 'Select a trained model.';
+  if (!form.encoder_s3_key.trim()) return 'The Encoder S3 Key is required.';
+  if (!form.config_s3_key.trim()) return 'The Config S3 Key is required.';
+  if (!form.anchor_date) return 'Provide a start date.';
+  if (!form.n_weeks || Number(form.n_weeks) < 1) return 'Number of weeks must be at least 1.';
+  if (form.selected_kpis.length === 0) return 'Select at least one KPI.';
+  return null;
+}
 
 async function submit() {
-  if (!form.model_id) {
-    formError.value = 'Select a trained model.';
-    phase.value = 'error';
-    return;
-  }
-  const encoderKey = form.encoder_s3_key.trim();
-  const configKey = form.config_s3_key.trim();
-  if (!encoderKey) {
-    formError.value = 'The Encoder S3 Key is required.';
-    phase.value = 'error';
-    return;
-  }
-  if (!configKey) {
-    formError.value = 'The Config S3 Key is required.';
-    phase.value = 'error';
-    return;
-  }
-  if (!form.anchor_date) {
-    formError.value = 'Provide a start date.';
-    phase.value = 'error';
-    return;
-  }
-  if (!form.n_weeks || Number(form.n_weeks) < 1) {
-    formError.value = 'Number of weeks must be at least 1.';
-    phase.value = 'error';
-    return;
-  }
-  if (form.selected_kpis.length === 0) {
-    formError.value = 'Select at least one KPI.';
+  const error = getFormError();
+  if (error) {
+    formError.value = error;
     phase.value = 'error';
     return;
   }
@@ -358,8 +348,8 @@ async function submit() {
       model_id: String(form.model_id),
       prompt: '',
       comparison_dataset_id: form.comparison_dataset_id ? Number(form.comparison_dataset_id) : null,
-      encoder_s3_key: encoderKey,
-      config_s3_key: configKey,
+      encoder_s3_key: form.encoder_s3_key.trim(),
+      config_s3_key: form.config_s3_key.trim(),
       cell_id: form.cell_id,
       anchor_date: form.anchor_date,
       n_weeks: Number(form.n_weeks),

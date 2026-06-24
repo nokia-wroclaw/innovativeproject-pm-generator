@@ -47,3 +47,12 @@ export const fetchModelKpis = (modelId) =>
 
 export const fetchModelCells = (modelId) =>
   authorizedRequest(`${BASE}/models/${enc(modelId)}/cells`);
+
+const AUTOFILL_TIMEOUT_MS = 90_000;
+
+export const autofillModelingForm = (processType, body) =>
+  authorizedRequest(`${BASE}/processes/${enc(processType)}/autofill`, {
+    method: 'POST',
+    body: JSON.stringify(body),
+    timeoutMs: AUTOFILL_TIMEOUT_MS,
+  });
