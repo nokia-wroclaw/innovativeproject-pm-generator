@@ -329,13 +329,20 @@ def plot_kde(long_real: pd.DataFrame, long_syn: pd.DataFrame, kpi_list: list[str
     for ax, kpi in zip(axes, kpi_list, strict=False):
         r_vals = kpi_series(long_real, kpi).dropna().to_numpy()
         s_vals = kpi_series(long_syn, kpi).dropna().to_numpy()
-        lo = min(r_vals.min(), s_vals.min())
-        hi = max(r_vals.max(), s_vals.max())
-        xs = np.linspace(lo, hi, 300)
-        if r_vals.std() > 0:
-            ax.plot(xs, gaussian_kde(r_vals)(xs), color="steelblue", label="real")
-        if s_vals.std() > 0:
-            ax.plot(xs, gaussian_kde(s_vals)(xs), color="tomato", label="synthetic")
+        if r_vals.size == 0 or s_vals.size == 0:
+            ax.set_title(f"{kpi} (no data)", fontsize=9)
+            continue
+        try:
+            lo = min(r_vals.min(), s_vals.min())
+            hi = max(r_vals.max(), s_vals.max())
+            xs = np.linspace(lo, hi, 300)
+            if r_vals.std() > 0:
+                ax.plot(xs, gaussian_kde(r_vals)(xs), color="steelblue", label="real")
+            if s_vals.std() > 0:
+                ax.plot(xs, gaussian_kde(s_vals)(xs), color="tomato", label="synthetic")
+        except Exception as e:
+            ax.set_title(f"{kpi} (error: {e})", fontsize=9)
+            continue
         ax.set_title(kpi, fontsize=9)
         ax.legend(fontsize=7)
         ax.set_xlabel("value")
@@ -362,16 +369,22 @@ def plot_autocorr(
     axes = np.array(axes).flatten()
 
     for ax, kpi in zip(axes, kpi_list, strict=False):
-        real_ac = autocorr_lags(
-            long_real.loc[long_real["kpi_id"] == kpi]
-            .sort_values("timestamp")["kpi_value"]
-            .dropna(),
-            max_lag,
-        )
-        syn_ac = autocorr_lags(
-            long_syn.loc[long_syn["kpi_id"] == kpi].sort_values("timestamp")["kpi_value"].dropna(),
-            max_lag,
-        )
+        try:
+            real_ac = autocorr_lags(
+                long_real.loc[long_real["kpi_id"] == kpi]
+                .sort_values("timestamp")["kpi_value"]
+                .dropna(),
+                max_lag,
+            )
+            syn_ac = autocorr_lags(
+                long_syn.loc[long_syn["kpi_id"] == kpi]
+                .sort_values("timestamp")["kpi_value"]
+                .dropna(),
+                max_lag,
+            )
+        except Exception as e:
+            ax.set_title(f"{kpi} (error: {e})", fontsize=9)
+            continue
         lags = np.arange(1, max_lag + 1)
         ax.plot(lags, real_ac, color="steelblue", label="real")
         ax.plot(lags, syn_ac, color="tomato", label="synthetic")
