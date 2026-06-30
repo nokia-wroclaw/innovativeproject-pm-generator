@@ -9,22 +9,18 @@ from genpm.modelling.train import run_training
 
 
 def _add_generate_args(p: argparse.ArgumentParser) -> None:
-    p.add_argument(
-        "--conf-json",
-        default=None,
-        help=(
-            "Finalized dag_run.conf as a JSON string. When set, downloads artifacts from S3 and "
-            "runs generation end-to-end; all other flags are ignored."
-        ),
-    )
-    p.add_argument("--run-dir-path", default=None)
-    p.add_argument("--weights-path", default=None)
-    p.add_argument("--output-path", default=None)
-    p.add_argument("--cell-id", default=None)
-    # Not required at parse time: in --conf-json mode these come from dag_args inside the JSON.
-    # Validated below for the manual (non-conf-json) CLI path.
-    p.add_argument("--anchor-date", default=None)
-    p.add_argument("--n-weeks", type=int, default=None)
+    """Register the ``generate`` subcommand's CLI arguments on ``p``.
+
+    The architecture flags (``--seq-len``, ``--hidden-dim``, ...) must match the
+    trained checkpoint; they exist for overrides — the loader otherwise reads the
+    saved values.
+    """
+    p.add_argument("--run-dir-path", required=True)
+    p.add_argument("--weights-path", required=True)
+    p.add_argument("--output-path", required=True)
+    p.add_argument("--cell-id", required=True)
+    p.add_argument("--anchor-date", required=True)
+    p.add_argument("--n-weeks", type=int, required=True)
     p.add_argument("--holiday", type=int, default=0)
     p.add_argument("--batch-size", type=int, default=64)
     p.add_argument("--seed", type=int, default=42)
@@ -40,6 +36,8 @@ def _add_generate_args(p: argparse.ArgumentParser) -> None:
     p.add_argument("--local-latent-dim", type=int, default=0)
     p.add_argument("--hidden-dim", type=int, default=256)
     p.add_argument("--n-layers", type=int, default=2)
+    # NOTE: store_true + default=True makes this a no-op flag (always True). Kept as-is
+    # to avoid changing behaviour; use a store_false/--no-attention flag to toggle off.
     p.add_argument("--use-attention", action="store_true", default=True)
     p.add_argument("--n-heads", type=int, default=4)
     p.add_argument("--free-bits-global", type=float, default=0.002)
@@ -55,6 +53,7 @@ def _add_generate_args(p: argparse.ArgumentParser) -> None:
 
 
 def _add_train_args(p: argparse.ArgumentParser) -> None:
+    """Register the ``train`` subcommand's CLI arguments on ``p`` (cVAE-LSTM)."""
     p.add_argument("--training-data-path", required=True)
     p.add_argument("--run-dir-path", required=True)
     p.add_argument("--weights-path", required=True)
@@ -62,6 +61,7 @@ def _add_train_args(p: argparse.ArgumentParser) -> None:
     p.add_argument("--local-latent-dim", type=int, default=0)
     p.add_argument("--hidden-dim", type=int, default=256)
     p.add_argument("--n-layers", type=int, default=2)
+    # NOTE: no-op flag (always True) — see the matching note in _add_generate_args.
     p.add_argument("--use-attention", action="store_true", default=True)
     p.add_argument("--n-heads", type=int, default=4)
     p.add_argument("--beta", type=float, default=0.0)
@@ -83,6 +83,11 @@ def _add_train_args(p: argparse.ArgumentParser) -> None:
 
 
 def main(argv=None):
+    """CLI entrypoint: parse args and dispatch to ``run_generation`` or ``run_training``.
+
+    For ``generate``, ``kpi_list`` is loaded from ``kpi_columns.npy`` in the run dir
+    (or ``--kpi-columns-path``) so the output columns match the trained checkpoint.
+    """
     parser = argparse.ArgumentParser(description="PM synthetic data generation/training pipeline")
     subparsers = parser.add_subparsers(dest="command", required=True)
 

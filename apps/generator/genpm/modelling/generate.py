@@ -1,3 +1,9 @@
+"""Generation entrypoint: reload a trained model and write synthetic windows.
+
+Thin orchestration over :func:`load_trained_model` and :func:`generate_windows`; the
+runnable CLI wrapper lives in ``__main__.py``.
+"""
+
 from pathlib import Path
 
 import polars as pl
@@ -11,7 +17,16 @@ logger = get_logger()
 
 
 def run_generation(cfg: GenerateConfig) -> None:
-    """Load artifacts, generate synthetic windows for the configured cell, and save to parquet."""
+    """Reload the trained model and generate synthetic KPI windows to parquet.
+
+    Loads the model/encoder/config-map from ``cfg.run_dir_path``, generates
+    ``cfg.n_weeks`` weeks conditioned on ``cfg.cell_id`` (or ``cfg.cell_configs``), and
+    writes one parquet file to ``cfg.output_path``. The output is labelled by the
+    cell_id when given, otherwise by a label derived from the explicit config values.
+
+    Args:
+        cfg: Populated :class:`GenerateConfig`.
+    """
     logger.info(f"Loading artifacts from {cfg.run_dir_path}")
     model, config_encoder, cell_config_map = load_trained_model(
         run_id_path=Path(cfg.run_dir_path),

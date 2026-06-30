@@ -1,4 +1,7 @@
-"""Quick-run raw_vis with hardcoded dev values.
+"""Quick-run raw-data EDA (raw_vis) with hardcoded dev values.
+
+Pre-training data exploration over the raw PM parquet — model-agnostic. Toggle which
+analysis runs in ``__main__`` below.
 
 Usage:  python scripts/run_raw_vis.py
         (from the repo root, no install needed)
@@ -17,6 +20,7 @@ from genpm.utils.spark_session import SparkDataManager
 
 
 def run_summary(sdm: SparkDataManager) -> None:
+    """Write a dataset-level summary JSON over the raw PM parquet."""
     cfg = RawVisConfig(
         raw_pm_data_path=str(SHARED_DIR_PATH / "raw_data" / "pm_data"),
         output_path=str(SHARED_DIR_PATH / "raw_vis_output" / "data_summary.json"),
@@ -26,11 +30,12 @@ def run_summary(sdm: SparkDataManager) -> None:
 
 
 def run_kpi_analysis(sdm: SparkDataManager) -> None:
+    """Write a per-KPI analysis JSON; set ``kpi_list`` to the KPI ids of interest."""
     cfg = RawVisConfig(
         raw_pm_data_path=str(SHARED_DIR_PATH / "raw_data" / "pm_data"),
         output_path=str(SHARED_DIR_PATH / "raw_vis_output" / "kpi_analysis.json"),
     )
-    kpi_list = []  # replace with desired KPI IDs
+    kpi_list = []  # set to the desired KPI ids (empty = all)
     raw_df = sdm.read_parquet(cfg.raw_pm_data_path)
     make_kpi_analysis(raw_df, kpi_list, cfg.output_path)
 

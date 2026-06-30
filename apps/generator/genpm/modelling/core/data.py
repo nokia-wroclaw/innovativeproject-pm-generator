@@ -1,3 +1,18 @@
+"""Data loading and conditioning construction, shared across all model families.
+
+Reads the windowed hourly parquet into ``(N, 168, F)`` KPI tensors and builds the
+conditioning that every generator (cVAE, WGAN-GP, diffusion) consumes:
+
+* ``y`` — one broadcast vector per window: ``[config one-hot | holiday | seasonal(4)]``
+  (:func:`build_conditioning_vector`). Conditioning is config-based; the cell
+  ``distname`` is never a model input, only a grouping/output key.
+* ``calendar`` — optional per-timestep features (day-of-week, holiday, ...) that VARY
+  within a window (:func:`build_calendar_features`); used by the diffusion denoiser.
+
+The loader is model-agnostic — the chosen architecture is recorded by the training
+entrypoint in ``arch_params.json``, not here.
+"""
+
 from pathlib import Path
 
 import numpy as np
@@ -59,11 +74,19 @@ def build_conditioning_vector(
     config_encoder: OneHotEncoder,
     holiday_flags: np.ndarray | None = None,
 ) -> np.ndarray:
-    """
-    Conditioning vector — cell configs are one-hot encoded and concatenated.
+    """Build the broadcast conditioning vector ``y`` for a batch of windows.
 
-    Layout: [one-hot configs (C) | holiday (1) | seasonal (4)]
-    Returns shape (N, C + CONTEXT_DIM).
+    Layout per window: ``[one-hot configs (C) | holiday (1) | seasonal (4)]``.
+
+    Args:
+        configs: Per-window config values, shape (N, n_config_cols), to one-hot encode.
+        window_anchors: Window start timestamps (N,), source of the seasonal sin/cos.
+        config_encoder: Fitted ``OneHotEncoder`` for the config columns.
+        holiday_flags: Optional 0/1 holiday flag per window; zeros when None.
+
+    Returns:
+        Float32 array of shape ``(N, C + CONTEXT_DIM)`` where C is the total one-hot
+        width and ``CONTEXT_DIM`` is 5 (holiday + 4 seasonal).
     """
     n = len(configs)
     config_onehot = config_encoder.transform(configs).astype(np.float32)
@@ -86,6 +109,85 @@ def build_conditioning_vector(
         [config_onehot, y_holiday, y_seasonal],
         axis=1,
     ).astype(np.float32)
+
+
+# Per-timestep calendar channels (order matters — generation must match):
+#   0 day_of_week sin, 1 day_of_week cos, 2 is_weekend,
+#   3 is_holiday, 4 is_holiday_eve, 5 is_long_weekend
+CALENDAR_DIM = 6
+
+
+def build_calendar_features(
+    window_anchors: np.ndarray, seq_len: int = SEQ_LEN, country: str = "US"
+) -> np.ndarray:
+    """Build per-timestep calendar conditioning, shape (N, seq_len, CALENDAR_DIM).
+
+    Unlike the broadcast ``y`` (one vector per window), these features VARY within a
+    168h window — day-of-week cycles every 24h and holidays fall on specific days —
+    so they are computed for each hour ``anchor + t`` and fed to the denoiser per
+    timestep. Same anchor-derived source as ``y``, just evaluated hourly instead of
+    collapsed to the anchor's value (which would mis-label the other 6 days).
+
+    Args:
+        window_anchors: Window start timestamps (N,).
+        seq_len: Window length in hours.
+        country: Country code for the ``holidays`` calendar lookup.
+
+    Returns:
+        Float32 array (N, seq_len, CALENDAR_DIM) with channels: day-of-week sin/cos,
+        is_weekend, is_holiday, is_holiday_eve, is_long_weekend (a day inside a run of
+        >=3 consecutive off-days = weekend|holiday).
+    """
+    import holidays as holidays_lib
+
+    anchors = pd.DatetimeIndex(pd.to_datetime(window_anchors))
+    # +2 years of padding so eve/long-weekend lookups never run off the holiday table.
+    years = list(range(anchors.min().year, anchors.max().year + 2))
+    hol = holidays_lib.country_holidays(country, years=years)
+    hol_dates = set(hol.keys())
+
+    # Per-day lookup table over the full span the windows can touch.
+    span_end = anchors.max().normalize() + pd.Timedelta(days=seq_len // 24 + 3)
+    days = pd.date_range(anchors.min().normalize(), span_end, freq="D")
+    day_dates = np.array([d.date() for d in days])
+    is_off = np.array([(d.weekday() >= 5) or (d in hol_dates) for d in day_dates])
+    # long weekend = membership in a maximal run of >=3 consecutive off-days
+    long_wk = np.zeros(len(days), dtype=bool)
+    i = 0
+    while i < len(is_off):
+        if is_off[i]:
+            j = i
+            while j < len(is_off) and is_off[j]:
+                j += 1
+            if j - i >= 3:
+                long_wk[i:j] = True
+            i = j
+        else:
+            i += 1
+    day_lookup = {
+        d: (
+            d in hol_dates,
+            (pd.Timestamp(d) + pd.Timedelta(days=1)).date() in hol_dates,
+            bool(lw),
+        )
+        for d, lw in zip(day_dates, long_wk, strict=True)
+    }
+
+    n = len(anchors)
+    out = np.zeros((n, seq_len, CALENDAR_DIM), dtype=np.float32)
+    hours = np.arange(seq_len)
+    for w, anchor in enumerate(anchors):
+        ts = anchor + pd.to_timedelta(hours, unit="h")
+        dow = ts.dayofweek.to_numpy()
+        out[w, :, 0] = np.sin(2 * np.pi * dow / 7)
+        out[w, :, 1] = np.cos(2 * np.pi * dow / 7)
+        out[w, :, 2] = (dow >= 5).astype(np.float32)
+        for h, t in enumerate(ts):
+            is_hol, is_eve, is_lw = day_lookup[t.date()]
+            out[w, h, 3] = is_hol
+            out[w, h, 4] = is_eve
+            out[w, h, 5] = is_lw
+    return out
 
 
 def _stack_hourly_parquet_to_windows(
@@ -207,11 +309,13 @@ def load_training_windows(
     meta_cols: set[str] | None = None,
     drop_constant_kpis: bool = True,
     const_std_threshold: float = CONST_KPI_STD_THRESHOLD,
+    add_calendar: bool = False,
+    calendar_country: str = "US",
 ) -> dict:
-    """
-    Load windowed parquet and build X tensor + conditioning vector Y.
+    """Load windowed parquet into an X tensor plus the conditioning vector ``y``.
 
-    Expected schema (hourly format):
+    Expected schema (hourly format)::
+
         distname       string    — cell identifier (grouping key)
         window_anchor  timestamp — start of the 168-hour window
         hour_idx       integer   — 0..167 within the window
@@ -221,9 +325,31 @@ def load_training_windows(
     Conditioning is built from the config columns (one-hot encoded), not the
     distname. distname is kept as cell_ids for output identity / inverse scaling.
 
-    Returns dict with keys:
-        X_scaled, y, window_anchors, cell_ids, configs, holiday_flags,
-        params_df, config_encoder, kpi_columns, seq_len, feat_dim, y_dim, config_dims
+    Args:
+        wide_scaled_path: Directory of windowed (already-scaled) parquet files.
+        scaled_params_path: Optional parquet of per-(distname, kpi) scaler params,
+            attached as ``params_df`` for inverse scaling; None to skip.
+        cell_id_col, anchor_col, hour_col: Column names for the grouping key, window
+            start, and within-window hour index.
+        holiday_col: Optional holiday-flag column; zeros are used when absent/missing.
+        config_cols: Config columns to one-hot encode; auto-detected by the
+            ``[CELL]`` prefix when None.
+        meta_cols: Non-KPI, non-config columns to exclude from the KPI set; defaults
+            to ``_META_COLS``.
+        drop_constant_kpis: Drop KPI channels with std below ``const_std_threshold``
+            (a sigmoid decoder cannot learn a constant ~0/1 channel cleanly).
+        const_std_threshold: Std cutoff for the constant-KPI drop.
+        add_calendar: Also build per-timestep calendar features (for diffusion).
+        calendar_country: Country code for the holiday calendar when ``add_calendar``.
+
+    Returns:
+        Dict with keys: ``X_scaled``, ``y``, ``calendar`` (or None), ``cond_dim``,
+        ``window_anchors``, ``cell_ids``, ``configs``, ``config_cols``,
+        ``holiday_flags``, ``params_df``, ``config_encoder``, ``kpi_columns``,
+        ``seq_len``, ``feat_dim``, ``y_dim``, ``config_dims``.
+
+    Raises:
+        ValueError: If no config columns, no KPI columns, or no valid windows are found.
     """
     if meta_cols is None:
         meta_cols = _META_COLS
@@ -290,14 +416,23 @@ def load_training_windows(
     y = build_conditioning_vector(configs_arr, window_anchors, config_encoder, holiday_flags)
     y_dim = y.shape[1]
 
+    calendar = None
+    cond_dim = 0
+    if add_calendar:
+        calendar = build_calendar_features(window_anchors, SEQ_LEN, country=calendar_country)
+        cond_dim = calendar.shape[-1]
+        logger.info(f"Built per-timestep calendar features — shape {calendar.shape}")
+
     logger.info(
         f"Data ready | windows={len(X_scaled):,}  feat_dim={len(feat_cols)}  "
-        f"config_dims={config_dims}  y_dim={y_dim}"
+        f"config_dims={config_dims}  y_dim={y_dim}  cond_dim={cond_dim}"
     )
 
     return {
         "X_scaled": X_scaled,
         "y": y,
+        "calendar": calendar,
+        "cond_dim": cond_dim,
         "window_anchors": window_anchors,
         "cell_ids": cell_ids_arr,
         "configs": configs_arr,
@@ -310,5 +445,4 @@ def load_training_windows(
         "feat_dim": len(feat_cols),
         "y_dim": y_dim,
         "config_dims": config_dims,
-        "arch_version": "v6",
     }

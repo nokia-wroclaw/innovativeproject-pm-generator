@@ -1,5 +1,9 @@
 """Quick-run generation with hardcoded dev values.
 
+Reloads a trained run (the configured ``RUN_DIR`` below is a cVAE-LSTM v7 run) and
+generates synthetic windows by CONFIG. The reload path is model-agnostic, so pointing
+``RUN_DIR``/``weights_path`` at a GAN or diffusion run works too.
+
 Usage:  python scripts/run_generation.py
         (from the repo root, no install needed)
 """
@@ -16,7 +20,7 @@ from genpm.modelling.configs import GenerateConfig
 from genpm.modelling.generate import run_generation
 from genpm.utils.consts import SHARED_DIR_PATH
 
-RUN_DIR = SHARED_DIR_PATH / "model_runs" / "run_6_dummy"
+RUN_DIR = SHARED_DIR_PATH / "model_runs" / "run_14"
 KPI_COLS = np.load(RUN_DIR / "kpi_columns.npy", allow_pickle=True).tolist()
 
 # The config column order that cell_configs must follow, plus the valid value set
@@ -28,7 +32,7 @@ print("valid values per column:", [list(c) for c in _encoder.categories_])
 
 cfg = GenerateConfig(
     run_dir_path=str(RUN_DIR),
-    weights_path=str(RUN_DIR / "models_weights_debug" / "cvae_lstm_v6_0.weights.h5"),
+    weights_path=str(RUN_DIR / "models_weights_debug" / "cvae_lstm_v7_75.weights.h5"),
     output_path=str(SHARED_DIR_PATH / "generated"),
     # Generate by CONFIG (not cell_id): leave cell_id unset and pass values in the
     # same order as config_cols printed above, e.g. ["A", "X"]. Output is labeled

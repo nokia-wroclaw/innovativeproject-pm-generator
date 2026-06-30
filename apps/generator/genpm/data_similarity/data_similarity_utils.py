@@ -408,6 +408,11 @@ def kde_curves(
     if len(real_values) < 2 or len(synth_values) < 2:
         return np.array([]), np.array([]), np.array([])
 
+    # gaussian_kde needs non-zero variance: a constant series gives a singular
+    # covariance matrix and Cholesky raises LinAlgError.
+    if real_values.std() < 1e-12 or synth_values.std() < 1e-12:
+        return np.array([]), np.array([]), np.array([])
+
     lo = float(min(real_values.min(), synth_values.min()))
     hi = float(max(real_values.max(), synth_values.max()))
     pad = (hi - lo) * pad_frac

@@ -1,7 +1,7 @@
-"""Quick-run data similarity check: real PM-CM data vs generated output.
+"""Quick-run data similarity check: real PM-CM data vs generated output (cVAE run).
 
 Real data:  preprocessed_dataset/final_pmcm/pm_df_wide_indexed_winds
-Synth data: generated/config_both_TDD_100_1900(B25)_NR2500(B41)_100MHz_2024-01-15.parquet
+Synth data: generated/config_NR2500(B41)_100MHz_1900(B25)_100_TDD_both_2024-01-15.parquet
 
 Usage:  python scripts/run_data_similarity.py
         (from the repo root, no install needed)
@@ -43,7 +43,7 @@ _CONFIG_VALUES = {
 CELL_CONFIG_COLS = _cmap["config_cols"]
 CELL_CONFIGS = [_CONFIG_VALUES[col] for col in CELL_CONFIG_COLS]
 
-# This should be given by front
+# Hardcoded for dev; in the real flow these KPI ids come from the frontend request.
 KPI_COLS = [
     "NR_6",
     "NR_11",
