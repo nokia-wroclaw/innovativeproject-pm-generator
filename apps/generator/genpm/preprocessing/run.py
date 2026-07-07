@@ -264,7 +264,23 @@ def run_preprocessing(sdm: SparkDataManager, preprocessing_cfg: PreprocessingCon
         good_windows_cleaned, _GROUPING_COLS, total_distinct_cells=n_cells
     )
 
-    valid_kpi_candidates = kpi_coverage.prefilter_kpis(kpi_yield_stats)
+    if preprocessing_cfg.explicit_kpis:
+        # Force-include mode: exactly the requested KPIs, bypassing prefilter_kpis.
+        # Keep only those that still have good-window data (survived the upstream
+        # per-series imputability gate). kpi_yield_stats already aggregates
+        # good_windows_cleaned, so reuse it instead of a second full pass.
+        available = {r["kpi_id"] for r in kpi_yield_stats.select("kpi_id").distinct().collect()}
+        requested = list(dict.fromkeys(preprocessing_cfg.explicit_kpis))  # dedupe, keep order
+        valid_kpi_candidates = [k for k in requested if k in available]
+        missing = [k for k in requested if k not in available]
+        if missing:
+            logger.warning(
+                f"[explicit] requested KPIs with no good-window data — dropping: {missing}"
+            )
+        if not valid_kpi_candidates:
+            raise ValueError("explicit_kpis produced no KPIs with good-window data")
+    else:
+        valid_kpi_candidates = kpi_coverage.prefilter_kpis(kpi_yield_stats)
 
     if preprocessing_cfg.verbose:
         logger.info(f"[DIAG] after prefilter_kpis | candidates={len(valid_kpi_candidates):,}")
@@ -327,13 +343,19 @@ def run_preprocessing(sdm: SparkDataManager, preprocessing_cfg: PreprocessingCon
 
     # Greedy joint KPI selection
     logger.info("Stage: greedy joint KPI selection")
-    selected_kpis = kpi_coverage.greedy_joint_kpi_selection(
-        good_windows_candidates,
-        valid_kpi_candidates,
-        _GROUPING_COLS,
-        min_joint_windows_abs=preprocessing_cfg.min_joint_windows_abs,
-        forced_kpis=preprocessing_cfg.forced_kpis,
-    )
+    if preprocessing_cfg.explicit_kpis:
+        selected_kpis = valid_kpi_candidates
+        logger.info(
+            f"[explicit] using {len(selected_kpis)} requested KPIs " f"(greedy selection bypassed)"
+        )
+    else:
+        selected_kpis = kpi_coverage.greedy_joint_kpi_selection(
+            good_windows_candidates,
+            valid_kpi_candidates,
+            _GROUPING_COLS,
+            min_joint_windows_abs=preprocessing_cfg.min_joint_windows_abs,
+            forced_kpis=preprocessing_cfg.forced_kpis,
+        )
     logger.info(f"Selected {len(selected_kpis)} KPIs from {len(valid_kpi_candidates)} candidates.")
 
     good_windows_selected = good_windows_candidates.filter(f.col("kpi_id").isin(selected_kpis))

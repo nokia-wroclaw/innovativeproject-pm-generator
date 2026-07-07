@@ -52,6 +52,10 @@ class PreprocessingConfig:
     # Greedy approach - minimal joint windows available in data
     min_joint_windows_abs: int | None = None
     forced_kpis: list | None = None
+    # Explicit KPI selection: when set, use exactly these KPIs and bypass the
+    # greedy joint selection + structural prefilter (force-include mode).
+    # Requested KPIs with no good-window data are dropped with a warning.
+    explicit_kpis: list[str] | None = None
     # TODO: introcude preference for kpi selection in greedy approach
     # Floor relaxation: effective floor = min(elbow_floor, seed_coverage × frac).
     # 1.0 = use elbow as-is.  Lower values trade joint-window count for more KPIs.
