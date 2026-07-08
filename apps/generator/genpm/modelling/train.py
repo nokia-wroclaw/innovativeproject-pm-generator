@@ -307,10 +307,12 @@ def run_diffusion_training(cfg: DiffusionTrainConfig):
     )
     cond_dim = data["cond_dim"]
     calendar = data["calendar"]  # (N, T, cond_dim) or None
+    n_cells = data["n_cells"] if cfg.use_cell_embedding else 0
+    cell_idx = data["cell_idx"]  # (N,) int, ignored below when n_cells == 0
 
     logger.info(
         f"Building diffusion: num_timesteps={cfg.num_timesteps}, width={cfg.width}, "
-        f"n_blocks={cfg.n_blocks}, cond_dim={cond_dim}"
+        f"n_blocks={cfg.n_blocks}, cond_dim={cond_dim}, cell_vocab_size={n_cells}"
     )
     model, _denoiser = build_diffusion(
         seq_len=data["seq_len"],
@@ -328,6 +330,8 @@ def run_diffusion_training(cfg: DiffusionTrainConfig):
         learning_rate=cfg.learning_rate,
         output_clip=cfg.output_clip,
         cond_dim=cond_dim,
+        cell_vocab_size=n_cells,
+        cell_embed_dim=cfg.cell_embed_dim,
     )
 
     weights_path = Path(cfg.weights_path)
@@ -364,25 +368,33 @@ def run_diffusion_training(cfg: DiffusionTrainConfig):
         probe_real[:, :, _fi].transpose(0, 2, 1).reshape(-1, probe_real.shape[1])
     )
     logger.info(f"Diffusion eval probe: real_diversity={real_div:.4f} real_ac1={real_ac1:.4f}")
-    # calendar for the probe window (first row matching the probe config), if used
-    calendar_probe = None
-    if calendar is not None:
-        probe_idx = int(np.argmax(np.all(data["y"] == probe_row, axis=1)))
-        calendar_probe = calendar[probe_idx : probe_idx + 1]
+    # window index for the probe config (first match) — sources both calendar_probe and
+    # cell_idx_probe below.
+    probe_idx = int(np.argmax(np.all(data["y"] == probe_row, axis=1)))
+    calendar_probe = calendar[probe_idx : probe_idx + 1] if calendar is not None else None
+    cell_idx_probe = int(cell_idx[probe_idx]) if n_cells > 0 else None
     callbacks.append(
         DiffusionEvalCallback(
             probe_row[None],
             real_diversity=real_div,
             real_ac1=real_ac1,
             calendar_probe=calendar_probe,
+            cell_idx_probe=cell_idx_probe,
         )
     )
     ema_cb = EMACallback(model.denoiser, momentum=cfg.ema_momentum) if cfg.use_ema else None
     if ema_cb is not None:
         callbacks.append(ema_cb)
     logger.info(f"Training diffusion for {cfg.epochs} epochs → {weights_path}")
-    # With calendar on, x is a tuple (X, C) so train_step receives ((x, c), y).
-    fit_x = (data["X_scaled"], calendar) if calendar is not None else data["X_scaled"]
+    # With calendar and/or the cell embedding on, x is a tuple of (X, extras...) so
+    # train_step receives ((x0, c?, cell_idx?), y) — order must match
+    # ConditionalDDPM._split_inputs (c before cell_idx).
+    extras = []
+    if calendar is not None:
+        extras.append(calendar)
+    if n_cells > 0:
+        extras.append(cell_idx)
+    fit_x = (data["X_scaled"], *extras) if extras else data["X_scaled"]
     history = model.fit(
         fit_x,
         data["y"],
@@ -419,6 +431,8 @@ def run_diffusion_training(cfg: DiffusionTrainConfig):
         "cond_dim": cond_dim,
         "use_calendar": cfg.use_calendar,
         "calendar_country": cfg.calendar_country,
+        "cell_vocab_size": n_cells,
+        "cell_embed_dim": cfg.cell_embed_dim,
     }
     logger.info(f"Saving artifacts to {cfg.run_dir_path}")
     save_training_artifacts(Path(cfg.run_dir_path), data, history=history, arch_params=arch_params)

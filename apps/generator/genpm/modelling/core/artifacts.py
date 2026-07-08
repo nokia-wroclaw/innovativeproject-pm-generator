@@ -84,7 +84,14 @@ def save_training_artifacts(
         str(cid): list(cfg) for cid, cfg in zip(data["cell_ids"], data["configs"], strict=False)
     }
     joblib.dump(
-        {"config_cols": config_cols, "map": cell_config_map},
+        {
+            "config_cols": config_cols,
+            "map": cell_config_map,
+            # Fitted LabelEncoder for the diffusion cell-identity embedding (core/diffusion.py).
+            # Stored here (not a separate file) to avoid changing load_trained_model's
+            # return signature; unused by cVAE/GAN. None for runs that predate this feature.
+            "cell_encoder": data.get("cell_encoder"),
+        },
         out_dir / "cell_config_map.pkl",
     )
     logger.info(f"Saved cell_config_map.pkl — {len(cell_config_map)} cells")
@@ -213,6 +220,10 @@ def _load_alt_model(
             output_clip=arch_params.get("output_clip", HP_DIFFUSION["output_clip"]),
             # Back-compat: run-1..3 have no per-timestep calendar → cond_dim 0.
             cond_dim=arch_params.get("cond_dim", 0),
+            # Back-compat: runs before the cell-identity embedding have no
+            # cell_vocab_size → 0 disables it, reproducing the old weight shapes.
+            cell_vocab_size=arch_params.get("cell_vocab_size", 0),
+            cell_embed_dim=arch_params.get("cell_embed_dim", HP_DIFFUSION["cell_embed_dim"]),
         )
     else:
         raise ValueError(f"Unknown alt arch_version: {arch_version!r}")

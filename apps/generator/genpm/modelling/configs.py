@@ -179,6 +179,12 @@ class DiffusionTrainConfig:
     # (R2). See build_calendar_features in core/data.py.
     use_calendar: bool = True
     calendar_country: str = "US"
+    # Learned per-cell (distname) embedding — an independent signal alongside the
+    # config-based y (config is a many-to-one function of cell identity here, so this
+    # only has to learn the residual per-cell deviation on top of y's pooled
+    # per-config signal; see core/diffusion.py:build_denoiser for the full rationale).
+    use_cell_embedding: bool = True
+    cell_embed_dim: int = 16
     # Optimisation / schedule
     learning_rate: float = 2e-4
     use_ema: bool = (

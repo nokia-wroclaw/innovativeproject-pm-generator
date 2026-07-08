@@ -4,10 +4,16 @@ Reads the windowed hourly parquet into ``(N, 168, F)`` KPI tensors and builds th
 conditioning that every generator (cVAE, WGAN-GP, diffusion) consumes:
 
 * ``y`` — one broadcast vector per window: ``[config one-hot | holiday | seasonal(4)]``
-  (:func:`build_conditioning_vector`). Conditioning is config-based; the cell
-  ``distname`` is never a model input, only a grouping/output key.
+  (:func:`build_conditioning_vector`). Conditioning is config-based, pooled across every
+  cell sharing a config.
 * ``calendar`` — optional per-timestep features (day-of-week, holiday, ...) that VARY
   within a window (:func:`build_calendar_features`); used by the diffusion denoiser.
+* ``cell_idx`` — per-window integer index into a cell-identity vocabulary
+  (``cell_encoder``, index 0 reserved for "unknown"), for the diffusion denoiser's
+  optional learned per-cell embedding (core/diffusion.py). This is a separate, additive
+  signal from ``y``: config is a many-to-one function of ``distname`` here, so ``y``
+  captures the pooled "typical config behaviour" and ``cell_idx`` lets the embedding
+  learn only the residual per-cell deviation on top of it.
 
 The loader is model-agnostic — the chosen architecture is recorded by the training
 entrypoint in ``arch_params.json``, not here.
@@ -18,7 +24,7 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 import polars as pl
-from sklearn.preprocessing import OneHotEncoder
+from sklearn.preprocessing import LabelEncoder, OneHotEncoder
 
 from genpm.utils.logger import get_logger
 
@@ -346,7 +352,8 @@ def load_training_windows(
         Dict with keys: ``X_scaled``, ``y``, ``calendar`` (or None), ``cond_dim``,
         ``window_anchors``, ``cell_ids``, ``configs``, ``config_cols``,
         ``holiday_flags``, ``params_df``, ``config_encoder``, ``kpi_columns``,
-        ``seq_len``, ``feat_dim``, ``y_dim``, ``config_dims``.
+        ``seq_len``, ``feat_dim``, ``y_dim``, ``config_dims``, ``cell_idx``,
+        ``cell_encoder``, ``n_cells``.
 
     Raises:
         ValueError: If no config columns, no KPI columns, or no valid windows are found.
@@ -416,6 +423,14 @@ def load_training_windows(
     y = build_conditioning_vector(configs_arr, window_anchors, config_encoder, holiday_flags)
     y_dim = y.shape[1]
 
+    # Cell-identity vocabulary for the optional learned distname embedding (diffusion
+    # only, see core/diffusion.py). Index 0 is reserved for "unknown cell" (config-only
+    # generation, or a cell_id the encoder never saw), so known cells map to 1..n_cells-1.
+    cell_encoder = LabelEncoder()
+    cell_encoder.fit(cell_ids_arr)
+    cell_idx = (cell_encoder.transform(cell_ids_arr) + 1).astype(np.int32)
+    n_cells = len(cell_encoder.classes_) + 1
+
     calendar = None
     cond_dim = 0
     if add_calendar:
@@ -445,4 +460,7 @@ def load_training_windows(
         "feat_dim": len(feat_cols),
         "y_dim": y_dim,
         "config_dims": config_dims,
+        "cell_idx": cell_idx,
+        "cell_encoder": cell_encoder,
+        "n_cells": n_cells,
     }
