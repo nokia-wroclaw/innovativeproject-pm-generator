@@ -464,3 +464,196 @@ def load_training_windows(
         "cell_encoder": cell_encoder,
         "n_cells": n_cells,
     }
+
+
+def split_holdout_cells(
+    cell_ids: np.ndarray,
+    configs: np.ndarray,
+    fraction: float = 0.20,
+    seed: int = 42,
+) -> np.ndarray:
+    """Per-config stratified random split of CELLS (not windows) into held-out vs train.
+
+    Whole-cell split — a cell's windows are never divided between train/test (168h
+    windows at 24h stride overlap ~86%, so a window-level split would leak). Not a
+    temporal split: cells are chosen uniformly at random within each config,
+    independent of window dates — see report_holdout_date_coverage to check the
+    resulting date coverage after the fact.
+
+    Args:
+        cell_ids: Per-window cell id array (N,), e.g. data["cell_ids"].
+        configs: Per-window config array (N, n_config_cols), same row order as
+            cell_ids, e.g. data["configs"]. Config is constant per cell.
+        fraction: Target fraction of CELLS (not windows) to hold out, per config.
+        seed: Seeds one np.random.default_rng shared across all configs (processed
+            in sorted-config order) — deterministic given the four arguments.
+
+    Returns:
+        Sorted np.ndarray of held-out cell ids (a subset of the unique cell_ids). A
+        config with fewer than 2 cells cannot be split (holding out its only cell
+        would leave zero train cells for it) and is skipped entirely (logged).
+    """
+    cell_ids = np.asarray(cell_ids)
+    configs = np.asarray(configs)
+
+    cell_to_config: dict = {}
+    for cid, cfg_row in zip(cell_ids, configs, strict=True):
+        cell_to_config.setdefault(cid, tuple(cfg_row))
+
+    cells_by_config: dict = {}
+    for cid, combo in cell_to_config.items():
+        cells_by_config.setdefault(combo, []).append(cid)
+
+    rng = np.random.default_rng(seed)
+    heldout: list = []
+    for combo in sorted(cells_by_config):
+        cells = sorted(cells_by_config[combo])
+        n = len(cells)
+        if n < 2:
+            logger.warning(
+                f"split_holdout_cells: config {combo} has only {n} cell(s) — cannot "
+                "hold out any (would leave zero train cells); training on it entirely."
+            )
+            continue
+        n_test = min(max(round(n * fraction), 1), n - 1)
+        chosen = rng.choice(np.array(cells, dtype=object), size=n_test, replace=False)
+        heldout.extend(chosen.tolist())
+
+    return np.sort(np.array(heldout, dtype=cell_ids.dtype))
+
+
+def report_holdout_date_coverage(
+    cell_ids: np.ndarray,
+    configs: np.ndarray,
+    window_anchors,
+    heldout_cell_ids,
+    config_cols: list[str],
+) -> pd.DataFrame:
+    """Print + return a per-config train-vs-heldout date-coverage table.
+
+    Report only — never drops or reweights data. For each config, for each split
+    (train/heldout): cell count, window count, and min/max window_anchor date, plus a
+    logged per-calendar-month window-count breakdown (the season here spans only a
+    handful of months, so month buckets are cheap and informative). Lets a human
+    eyeball whether a random per-config cell split happened to also land on
+    comparable date coverage — it isn't forced to by construction (the split is
+    purely by cell), it's just verified after the fact.
+    """
+    cell_ids = np.asarray(cell_ids)
+    configs = np.asarray(configs)
+    anchors = pd.DatetimeIndex(window_anchors)
+    heldout_set = {str(c) for c in heldout_cell_ids}
+    is_heldout = np.array([str(c) in heldout_set for c in cell_ids])
+
+    combo_labels = np.array(
+        [
+            "/".join(f"{col}={val}" for col, val in zip(config_cols, row, strict=True))
+            for row in configs
+        ]
+    )
+    df = pd.DataFrame(
+        {
+            "config": combo_labels,
+            "cell_id": cell_ids,
+            "month": anchors.strftime("%Y-%m"),
+            "anchor": anchors,
+            "split": np.where(is_heldout, "heldout", "train"),
+        }
+    )
+
+    summary = (
+        df.groupby(["config", "split"])
+        .agg(
+            n_cells=("cell_id", "nunique"),
+            n_windows=("cell_id", "size"),
+            date_min=("anchor", "min"),
+            date_max=("anchor", "max"),
+        )
+        .reset_index()
+        .sort_values(["config", "split"])
+        .reset_index(drop=True)
+    )
+
+    month_hist = (
+        df.groupby(["config", "split", "month"]).size().unstack("month", fill_value=0).sort_index()
+    )
+
+    logger.info(
+        "Holdout date-coverage report (train vs heldout, per config):\n"
+        + summary.to_string(index=False)
+        + "\n\nPer-month window counts (train vs heldout, per config):\n"
+        + month_hist.to_string()
+    )
+    return summary
+
+
+def apply_cell_holdout(
+    data: dict,
+    fraction: float,
+    seed: int,
+) -> tuple[dict, dict | None, list[str]]:
+    """Split a load_training_windows() dict into (train_data, heldout_data, heldout_cell_ids).
+
+    Whole-cell holdout (see split_holdout_cells) — a cell's windows are never divided
+    across train/test. ``fraction <= 0`` is a no-op: returns ``(data, None, [])`` with
+    the SAME ``data`` object (not a copy), so the default (0.0) preserves today's
+    all-cells training behavior exactly, byte-for-byte.
+
+    Encoders and dataset-level metadata (config_encoder, cell_encoder, n_cells,
+    kpi_columns, feat_dim, seq_len, y_dim, config_cols, config_dims, cond_dim,
+    params_df) are kept GLOBAL — identical objects/values in both returned dicts,
+    never re-fit on train-only cells. This is safe because split_holdout_cells
+    guarantees every config keeps at least one train cell (so config_encoder's fitted
+    categories are unaffected), and it keeps train_data/heldout_data shape-compatible
+    (same y_dim/feat_dim), which downstream evaluation code depends on.
+
+    Also prints a train-vs-heldout date-coverage report for the resulting split (see
+    report_holdout_date_coverage) — informational only, never drops data.
+
+    Returns:
+        train_data: like ``data``, with the window-indexed arrays (X_scaled, y,
+            calendar, window_anchors, cell_ids, configs, holiday_flags, cell_idx)
+            masked to train-cell windows only.
+        heldout_data: same shape/keys, masked to held-out-cell windows; ``None`` when
+            nothing was held out (``fraction <= 0``, or every config had <2 cells).
+        heldout_cell_ids: sorted ``list[str]`` of held-out cell ids (JSON-dumpable);
+            ``[]`` when ``heldout_data`` is ``None``.
+    """
+    if fraction <= 0:
+        return data, None, []
+
+    heldout_ids = split_holdout_cells(data["cell_ids"], data["configs"], fraction, seed)
+    if len(heldout_ids) == 0:
+        logger.warning(
+            "apply_cell_holdout: split produced zero held-out cells (every config had "
+            "<2 cells) — training on all cells."
+        )
+        return data, None, []
+
+    mask = np.isin(data["cell_ids"], heldout_ids)
+    window_keys = (
+        "X_scaled",
+        "y",
+        "calendar",
+        "window_anchors",
+        "cell_ids",
+        "configs",
+        "holiday_flags",
+        "cell_idx",
+    )
+    train_data = dict(data)
+    heldout_data = dict(data)
+    for key in window_keys:
+        arr = data.get(key)
+        train_data[key] = None if arr is None else arr[~mask]
+        heldout_data[key] = None if arr is None else arr[mask]
+
+    heldout_cell_ids = sorted(str(c) for c in heldout_ids)
+    report_holdout_date_coverage(
+        data["cell_ids"],
+        data["configs"],
+        data["window_anchors"],
+        heldout_cell_ids,
+        data["config_cols"],
+    )
+    return train_data, heldout_data, heldout_cell_ids

@@ -194,6 +194,14 @@ class DiffusionTrainConfig:
     epochs: int = 300
     batch_size: int = 64
     drop_constant_kpis: bool = True
+    # Cell-holdout evaluation split (whole-cell, stratified per config). 0.0 = train
+    # on all cells (default, backward compatible with every existing run). See
+    # core/data.py:split_holdout_cells / apply_cell_holdout. Held-out cell ids are
+    # written to <run_dir_path>/heldout_cells.json for later evaluation
+    # (model_tests/run_heldout_cells_eval.ipynb). When enabling, point
+    # run_dir_path/weights_path at a NEW run dir — this changes what model.fit sees.
+    heldout_cell_fraction: float = 0.0
+    heldout_seed: int = 42
 
 
 @dataclass

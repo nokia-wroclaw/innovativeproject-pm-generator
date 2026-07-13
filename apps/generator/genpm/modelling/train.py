@@ -7,7 +7,7 @@ import numpy as np
 
 from genpm.modelling.configs import DiffusionTrainConfig, GANTrainConfig, TrainConfig
 from genpm.modelling.core.artifacts import save_training_artifacts
-from genpm.modelling.core.data import load_training_windows
+from genpm.modelling.core.data import apply_cell_holdout, load_training_windows
 from genpm.modelling.core.model import build_cvae_lstm, build_cvae_lstm_v7
 from genpm.modelling.core.training import train_cvae
 from genpm.utils.logger import get_logger
@@ -305,19 +305,30 @@ def run_diffusion_training(cfg: DiffusionTrainConfig):
         add_calendar=cfg.use_calendar,
         calendar_country=cfg.calendar_country,
     )
-    cond_dim = data["cond_dim"]
-    calendar = data["calendar"]  # (N, T, cond_dim) or None
-    n_cells = data["n_cells"] if cfg.use_cell_embedding else 0
-    cell_idx = data["cell_idx"]  # (N,) int, ignored below when n_cells == 0
+    train_data, heldout_data, heldout_cell_ids = apply_cell_holdout(
+        data, fraction=cfg.heldout_cell_fraction, seed=cfg.heldout_seed
+    )
+    if heldout_cell_ids:
+        logger.info(
+            f"Cell holdout: {len(heldout_cell_ids)} cells held out "
+            f"(fraction={cfg.heldout_cell_fraction}, seed={cfg.heldout_seed}) — "
+            f"{len(train_data['X_scaled']):,} train windows, "
+            f"{len(heldout_data['X_scaled']):,} held-out windows"
+        )
+
+    cond_dim = train_data["cond_dim"]
+    calendar = train_data["calendar"]  # (N, T, cond_dim) or None
+    n_cells = train_data["n_cells"] if cfg.use_cell_embedding else 0
+    cell_idx = train_data["cell_idx"]  # (N,) int, ignored below when n_cells == 0
 
     logger.info(
         f"Building diffusion: num_timesteps={cfg.num_timesteps}, width={cfg.width}, "
         f"n_blocks={cfg.n_blocks}, cond_dim={cond_dim}, cell_vocab_size={n_cells}"
     )
     model, _denoiser = build_diffusion(
-        seq_len=data["seq_len"],
-        feat_dim=data["feat_dim"],
-        y_dim=data["y_dim"],
+        seq_len=train_data["seq_len"],
+        feat_dim=train_data["feat_dim"],
+        y_dim=train_data["y_dim"],
         num_timesteps=cfg.num_timesteps,
         beta_schedule=cfg.beta_schedule,
         beta_start=cfg.beta_start,
@@ -357,9 +368,9 @@ def run_diffusion_training(cfg: DiffusionTrainConfig):
     # Periodic structure probe: pick the most common config and log whether generated
     # series develop temporal structure (gen_ac1) and stay diverse (gen_diversity).
     # Sampling is ~1000 steps so it runs sparsely (see DiffusionEvalCallback).
-    uy, counts = np.unique(data["y"], axis=0, return_counts=True)
+    uy, counts = np.unique(train_data["y"], axis=0, return_counts=True)
     probe_row = uy[int(np.argmax(counts))]
-    probe_real = data["X_scaled"][np.all(data["y"] == probe_row, axis=1)]
+    probe_real = train_data["X_scaled"][np.all(train_data["y"] == probe_row, axis=1)]
     real_div = float(probe_real.std(axis=0).mean())
     _fi = np.random.default_rng(0).choice(
         probe_real.shape[2], min(20, probe_real.shape[2]), replace=False
@@ -370,7 +381,7 @@ def run_diffusion_training(cfg: DiffusionTrainConfig):
     logger.info(f"Diffusion eval probe: real_diversity={real_div:.4f} real_ac1={real_ac1:.4f}")
     # window index for the probe config (first match) — sources both calendar_probe and
     # cell_idx_probe below.
-    probe_idx = int(np.argmax(np.all(data["y"] == probe_row, axis=1)))
+    probe_idx = int(np.argmax(np.all(train_data["y"] == probe_row, axis=1)))
     calendar_probe = calendar[probe_idx : probe_idx + 1] if calendar is not None else None
     cell_idx_probe = int(cell_idx[probe_idx]) if n_cells > 0 else None
     callbacks.append(
@@ -394,10 +405,10 @@ def run_diffusion_training(cfg: DiffusionTrainConfig):
         extras.append(calendar)
     if n_cells > 0:
         extras.append(cell_idx)
-    fit_x = (data["X_scaled"], *extras) if extras else data["X_scaled"]
+    fit_x = (train_data["X_scaled"], *extras) if extras else train_data["X_scaled"]
     history = model.fit(
         fit_x,
-        data["y"],
+        train_data["y"],
         epochs=cfg.epochs,
         batch_size=cfg.batch_size,
         callbacks=callbacks,
@@ -415,7 +426,7 @@ def run_diffusion_training(cfg: DiffusionTrainConfig):
 
     arch_params = {
         "arch_version": "diffusion",
-        "y_dim": data["y_dim"],
+        "y_dim": train_data["y_dim"],
         "num_timesteps": cfg.num_timesteps,
         "beta_schedule": cfg.beta_schedule,
         "beta_start": cfg.beta_start,
@@ -435,5 +446,20 @@ def run_diffusion_training(cfg: DiffusionTrainConfig):
         "cell_embed_dim": cfg.cell_embed_dim,
     }
     logger.info(f"Saving artifacts to {cfg.run_dir_path}")
-    save_training_artifacts(Path(cfg.run_dir_path), data, history=history, arch_params=arch_params)
+    save_training_artifacts(
+        Path(cfg.run_dir_path),
+        train_data,
+        history=history,
+        arch_params=arch_params,
+        all_cells_map_data=data if heldout_cell_ids else None,
+        heldout_info={
+            "heldout_cell_fraction": cfg.heldout_cell_fraction,
+            "heldout_seed": cfg.heldout_seed,
+            "heldout_cell_ids": heldout_cell_ids,
+            "n_train_cells": int(len(set(train_data["cell_ids"]))),
+            "n_heldout_cells": len(heldout_cell_ids),
+        }
+        if heldout_cell_ids
+        else None,
+    )
     return history
