@@ -44,6 +44,8 @@ def save_training_artifacts(
     data: dict,
     arch_params: dict | None = None,
     history=None,
+    all_cells_map_data: dict | None = None,
+    heldout_info: dict | None = None,
 ) -> None:
     """Persist all training artifacts needed to reload the model and generate data.
 
@@ -54,10 +56,21 @@ def save_training_artifacts(
 
     Args:
         out_dir: Destination directory (created if missing).
-        data: The dict returned by :func:`load_training_windows`.
+        data: The dict returned by :func:`load_training_windows` (or a cell-holdout
+            subset of it, e.g. the ``train_data`` half of
+            :func:`genpm.modelling.core.data.apply_cell_holdout`) — this is what
+            ``X_scaled.npy``/``y.npy``/etc. are saved from.
         arch_params: Architecture/hyperparameter dict saved to ``arch_params.json``;
             ``arch_version`` and ``seq_len``/``feat_dim`` are filled in if absent.
         history: Optional Keras ``History`` to dump as JSON + a loss-curve PNG.
+        all_cells_map_data: When ``data`` only covers a subset of cells (a cell
+            holdout split), pass the FULL (unsplit) data dict here so
+            ``cell_config_map.pkl`` still resolves every cell's config — including
+            held-out ones, which evaluation code needs to look up. Defaults to
+            ``data`` (today's behavior) when omitted.
+        heldout_info: When set, written verbatim to ``heldout_cells.json`` — the
+            held-out cell ids + split params, for evaluation code to reload without
+            re-deriving the split (see ``model_tests/run_heldout_cells_eval.ipynb``).
     """
     out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -79,15 +92,31 @@ def save_training_artifacts(
     logger.info(f"Saved config_encoder.pkl — config_dims={data.get('config_dims')}")
 
     # distname → its config values, so generation-by-cell_id can look up the configs.
-    config_cols = data["config_cols"]
+    # Sourced from all_cells_map_data (ALL cells, train + held-out) when given, so a
+    # cell-holdout run's map still resolves held-out cells' configs for evaluation —
+    # falls back to `data` (today's behavior) for every existing/non-holdout caller.
+    map_source = all_cells_map_data if all_cells_map_data is not None else data
+    config_cols = map_source["config_cols"]
     cell_config_map = {
-        str(cid): list(cfg) for cid, cfg in zip(data["cell_ids"], data["configs"], strict=False)
+        str(cid): list(cfg)
+        for cid, cfg in zip(map_source["cell_ids"], map_source["configs"], strict=False)
     }
     joblib.dump(
-        {"config_cols": config_cols, "map": cell_config_map},
+        {
+            "config_cols": config_cols,
+            "map": cell_config_map,
+            # Fitted LabelEncoder for the diffusion cell-identity embedding (core/diffusion.py).
+            # Stored here (not a separate file) to avoid changing load_trained_model's
+            # return signature; unused by cVAE/GAN. None for runs that predate this feature.
+            "cell_encoder": map_source.get("cell_encoder"),
+        },
         out_dir / "cell_config_map.pkl",
     )
     logger.info(f"Saved cell_config_map.pkl — {len(cell_config_map)} cells")
+
+    if heldout_info is not None:
+        (out_dir / "heldout_cells.json").write_text(json.dumps(heldout_info, indent=2))
+        logger.info(f"Saved heldout_cells.json — {heldout_info['n_heldout_cells']} held-out cells")
 
     if data.get("params_df") is not None:
         data["params_df"].to_parquet(out_dir / "params_df.parquet", index=False)
@@ -213,6 +242,10 @@ def _load_alt_model(
             output_clip=arch_params.get("output_clip", HP_DIFFUSION["output_clip"]),
             # Back-compat: run-1..3 have no per-timestep calendar → cond_dim 0.
             cond_dim=arch_params.get("cond_dim", 0),
+            # Back-compat: runs before the cell-identity embedding have no
+            # cell_vocab_size → 0 disables it, reproducing the old weight shapes.
+            cell_vocab_size=arch_params.get("cell_vocab_size", 0),
+            cell_embed_dim=arch_params.get("cell_embed_dim", HP_DIFFUSION["cell_embed_dim"]),
         )
     else:
         raise ValueError(f"Unknown alt arch_version: {arch_version!r}")

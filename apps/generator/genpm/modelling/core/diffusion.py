@@ -100,6 +100,11 @@ HP_DIFFUSION = dict(
     dilation_cycle=(1, 2, 4, 8, 16, 32, 64),
     time_embed_dim=128,
     cond_embed_dim=128,
+    cell_embed_dim=16,  # learned per-cell (distname) embedding width. Vocab is small
+    # (~250 cells in run-6), so this stays modest relative to cond_embed_dim=128 — it
+    # only has to carry the residual per-cell deviation on top of the pooled config
+    # signal in y, not re-derive the whole distribution (see core/data.py's docstring
+    # and the "why separate, not merged into y" note in build_denoiser below).
     learning_rate=2e-4,
     use_ema=True,  # exponential moving average of weights — standard diffusion quality boost
     ema_momentum=0.999,  # EMA decay; generation/saving use the averaged weights
@@ -182,14 +187,32 @@ def build_denoiser(
     time_embed_dim: int = HP_DIFFUSION["time_embed_dim"],
     cond_embed_dim: int = HP_DIFFUSION["cond_embed_dim"],
     cond_dim: int = 0,
+    cell_vocab_size: int = 0,
+    cell_embed_dim: int = HP_DIFFUSION["cell_embed_dim"],
 ) -> keras.Model:
     """Build the epsilon-prediction denoiser network.
 
-    Maps ``(x_noisy, t, y[, c]) -> predicted noise`` of shape ``(B, T, feat_dim)``.
-    ``cond_dim`` > 0 adds a per-timestep conditioning input ``c`` (B, T, cond_dim) —
-    calendar features (day-of-week, holiday, ...) that VARY within the window, so
-    they cannot ride the broadcast ``y``/FiLM (which is per-sample). They join the
-    spatial input stream and are processed by the conv stack alongside the KPIs.
+    Maps ``(x_noisy, t, y[, c][, cell_idx]) -> predicted noise`` of shape
+    ``(B, T, feat_dim)``. ``cond_dim`` > 0 adds a per-timestep conditioning input ``c``
+    (B, T, cond_dim) — calendar features (day-of-week, holiday, ...) that VARY within
+    the window, so they cannot ride the broadcast ``y``/FiLM (which is per-sample).
+    They join the spatial input stream and are processed by the conv stack alongside
+    the KPIs. ``cell_vocab_size`` > 0 adds a per-sample cell-identity input ``cell_idx``
+    (B,) — a learned embedding of *which specific cell* this window belongs to.
+
+    ``cell_idx`` is deliberately an independent signal from ``y``, not folded into the
+    same one-hot/vocab: config (in ``y``) is a many-to-one function of cell identity
+    here (every cell has exactly one fixed config), so ``y`` captures the *pooled*
+    "typical behaviour for this config" (gradient signal from every cell sharing it),
+    while the cell embedding only has to learn the *residual* per-cell deviation on
+    top of that (geography, real traffic mix, install quirks) — the standard
+    "category embedding + entity embedding" pattern. Folding cell identity into the
+    same one-hot as config would lose that pooling (each cell's own ~dozens of windows
+    would have to relearn everything from scratch) and would break the existing
+    config-only generation path (no cell_id — see core/generation.py), which has
+    nothing to fall back on if identity subsumes config. The cell embedding gets the
+    same dual treatment as ``y``: folded into the FiLM ``cond`` AND broadcast raw into
+    the spatial stream (via the same ``CellConditioning`` repeat-layer used for ``y``).
 
     Args:
         seq_len: Window length T (168 hours).
@@ -204,27 +227,50 @@ def build_denoiser(
         time_embed_dim: Width of the sinusoidal timestep embedding.
         cond_embed_dim: Width of the per-sample conditioning MLP outputs (FiLM source).
         cond_dim: Per-timestep calendar channels; 0 disables the ``c`` input.
+        cell_vocab_size: Size of the cell-identity vocabulary (including the reserved
+            "unknown" index 0); 0 disables the ``cell_idx`` input/embedding entirely.
+        cell_embed_dim: Width of the learned per-cell embedding.
 
     Returns:
-        A ``keras.Model`` named ``"denoiser"`` whose inputs are ``[x_noisy, t, y]``
-        (plus ``c`` when ``cond_dim > 0``) and whose output is the predicted noise.
+        A ``keras.Model`` named ``"denoiser"`` whose inputs are
+        ``[x_noisy, t, y]`` plus ``c`` when ``cond_dim > 0`` plus ``cell_idx`` when
+        ``cell_vocab_size > 0`` (in that order), and whose output is the predicted noise.
     """
     x_in = keras.Input(shape=(seq_len, feat_dim), name="x_noisy")
     t_in = keras.Input(shape=(), name="t")
     y_in = keras.Input(shape=(y_dim,), name="y")
     c_in = keras.Input(shape=(seq_len, cond_dim), name="c") if cond_dim > 0 else None
+    cell_in = keras.Input(shape=(), dtype="int32", name="cell_idx") if cell_vocab_size > 0 else None
 
-    # Conditioning embedding = timestep embedding ⊕ config/calendar embedding.
+    # Conditioning embedding = timestep embedding ⊕ config/calendar embedding ⊕
+    # (optional) cell-identity embedding.
     t_emb = SinusoidalTimeEmbedding(time_embed_dim)(t_in)
     t_emb = layers.Dense(cond_embed_dim, activation="swish", name="t_mlp1")(t_emb)
     t_emb = layers.Dense(cond_embed_dim, activation="swish", name="t_mlp2")(t_emb)
     y_emb = layers.Dense(cond_embed_dim, activation="swish", name="y_mlp")(y_in)
-    cond = layers.Concatenate(name="cond")([t_emb, y_emb])  # (B, 2*cond_embed_dim)
+    cond_parts = [t_emb, y_emb]
 
-    # Input: noisy KPIs ⊕ broadcast conditioning ⊕ (per-timestep calendar) ⊕ PE.
+    # Input: noisy KPIs ⊕ broadcast conditioning ⊕ (per-timestep calendar) ⊕
+    # (broadcast cell embedding) ⊕ PE.
     cond_rep = CellConditioning(y_dim, seq_len)(y_in)  # (B, T, y_dim)
-    parts = [x_in, cond_rep] if c_in is None else [x_in, cond_rep, c_in]
-    h = ops.concatenate(parts, axis=-1)
+    spatial_parts = [x_in, cond_rep]
+    if c_in is not None:
+        spatial_parts.append(c_in)
+
+    if cell_in is not None:
+        cell_emb_raw = layers.Embedding(cell_vocab_size, cell_embed_dim, name="cell_embedding")(
+            cell_in
+        )  # (B, cell_embed_dim)
+        cell_emb = layers.Dense(cond_embed_dim, activation="swish", name="cell_mlp")(cell_emb_raw)
+        cond_parts.append(cell_emb)
+        # Reuse CellConditioning (a generic per-sample-vector → per-timestep broadcast
+        # repeat layer despite the "y_dim"-named ctor arg) for the cell embedding too.
+        cell_rep = CellConditioning(cell_embed_dim, seq_len)(cell_emb_raw)  # (B, T, cell_embed_dim)
+        spatial_parts.append(cell_rep)
+
+    cond = layers.Concatenate(name="cond")(cond_parts)  # (B, (2 or 3)*cond_embed_dim)
+
+    h = ops.concatenate(spatial_parts, axis=-1)
     h = HourlyPositionalEncoding(seq_len)(h)
     h = layers.Conv1D(width, kernel_size=1, name="in_proj")(h)
 
@@ -242,7 +288,11 @@ def build_denoiser(
         bias_initializer="zeros",
         name="eps_out",
     )(h)
-    inputs = [x_in, t_in, y_in] if c_in is None else [x_in, t_in, y_in, c_in]
+    inputs = [x_in, t_in, y_in]
+    if c_in is not None:
+        inputs.append(c_in)
+    if cell_in is not None:
+        inputs.append(cell_in)
     return keras.Model(inputs, eps_out, name="denoiser")
 
 
@@ -288,6 +338,7 @@ class ConditionalDDPM(keras.Model):
         beta_end: float = 2e-2,
         output_clip: bool = True,
         cond_dim: int = 0,
+        cell_vocab_size: int = 0,
         **kwargs,
     ):
         super().__init__(**kwargs)
@@ -295,6 +346,7 @@ class ConditionalDDPM(keras.Model):
         self._seq_len = seq_len
         self._feat_dim = feat_dim
         self.cond_dim = cond_dim  # per-timestep calendar channels (0 = none)
+        self.cell_vocab_size = cell_vocab_size  # cell-identity embedding vocab (0 = none)
         self.num_timesteps = num_timesteps
         self.beta_schedule = beta_schedule
         self.beta_start = beta_start
@@ -325,26 +377,32 @@ class ConditionalDDPM(keras.Model):
         return [self.loss_tracker]
 
     def call(self, data):
-        # Convenience: one denoising prediction at t=0 (used only for graph building).
-        if isinstance(data, (list, tuple)) and len(data) == 3:  # noqa
-            x, y, c = data
+        # Convenience: one denoising prediction at t=0 (used only for graph building —
+        # see build_diffusion's dummy forward pass). data is a flat [x, y, ...] list
+        # (NOT the nested (inputs, y) structure train_step/_split_inputs use), with any
+        # extra per-sample/spatial tensors (c, cell_idx) appended in denoiser-input order.
+        if isinstance(data, (list, tuple)) and len(data) >= 2:  # noqa
+            x, y, *rest = data
             t = ops.zeros((ops.shape(x)[0],), dtype="float32")
-            return self.denoiser([x, t, y, c], training=False)
-        if isinstance(data, (list, tuple)) and len(data) == 2:  # noqa
-            x, y = data
-            t = ops.zeros((ops.shape(x)[0],), dtype="float32")
-            return self.denoiser([x, t, y], training=False)
+            return self.denoiser([x, t, y, *rest], training=False)
         return data
 
     def _split_inputs(self, data):
-        """Unpack model.fit data into (x0, y, c). With calendar on, fit is called with
-        x=(X, C) so data = ((x0, c), y); otherwise data = (x0, y)."""
+        """Unpack model.fit data into (x0, y, c, cell_idx). With calendar and/or the
+        cell embedding on, fit is called with x=(X, C, cell_idx) (some subset), so
+        data = ((x0, c, cell_idx), y); otherwise data = (x0, y)."""
         inputs, y = data
-        if self.cond_dim > 0:
+        if self.cond_dim > 0 and self.cell_vocab_size > 0:
+            x0, c, cell_idx = inputs
+        elif self.cond_dim > 0:
             x0, c = inputs
+            cell_idx = None
+        elif self.cell_vocab_size > 0:
+            x0, cell_idx = inputs
+            c = None
         else:
-            x0, c = inputs, None
-        return x0, y, c
+            x0, c, cell_idx = inputs, None, None
+        return x0, y, c, cell_idx
 
     @staticmethod
     def _to_pm1(x):
@@ -356,7 +414,7 @@ class ConditionalDDPM(keras.Model):
         """[-1,1] → [0,1]."""
         return (x + 1.0) / 2.0
 
-    def _compute_loss(self, x0, y, c=None):
+    def _compute_loss(self, x0, y, c=None, cell_idx=None):
         """Sample t and noise, build x_t, predict noise, return MSE(eps, eps_hat)."""
         batch = ops.shape(x0)[0]
         t = keras.random.randint((batch,), 0, self.num_timesteps)  # (B,) int
@@ -365,18 +423,22 @@ class ConditionalDDPM(keras.Model):
         sqrt_om = ops.reshape(ops.take(self._sqrt_one_minus_acp, t), (-1, 1, 1))
         x_t = sqrt_acp * x0 + sqrt_om * eps
         t_f = ops.cast(t, "float32")
-        inputs = [x_t, t_f, y] if c is None else [x_t, t_f, y, c]
+        inputs = [x_t, t_f, y]
+        if c is not None:
+            inputs.append(c)
+        if cell_idx is not None:
+            inputs.append(cell_idx)
         eps_hat = self.denoiser(inputs, training=True)
         return ops.mean(ops.square(eps - eps_hat))
 
     def train_step_torch(self, torch, data) -> dict:
-        x0, y, c = self._split_inputs(data)
+        x0, y, c, cell_idx = self._split_inputs(data)
         if hasattr(y, "dtype"):
             y = ops.cast(y, "float32")
         x0 = self._to_pm1(ops.cast(x0, "float32"))
         if c is not None:
             c = ops.cast(c, "float32")
-        loss = self._compute_loss(x0, y, c)
+        loss = self._compute_loss(x0, y, c, cell_idx)
         self.zero_grad()
         loss.backward()
         variables = self.trainable_weights
@@ -387,12 +449,12 @@ class ConditionalDDPM(keras.Model):
         return {"loss": self.loss_tracker.result()}
 
     def train_step_tf(self, tf, data) -> dict:
-        x0, y, c = self._split_inputs(data)
+        x0, y, c, cell_idx = self._split_inputs(data)
         x0 = self._to_pm1(ops.cast(x0, "float32"))
         if c is not None:
             c = ops.cast(c, "float32")
         with tf.GradientTape() as tape:
-            loss = self._compute_loss(x0, y, c)
+            loss = self._compute_loss(x0, y, c, cell_idx)
         grads = tape.gradient(loss, self.trainable_weights)
         self.optimizer.apply_gradients(zip(grads, self.trainable_weights, strict=False))
         self.loss_tracker.update_state(loss)
@@ -417,6 +479,7 @@ class ConditionalDDPM(keras.Model):
         self,
         y_compact,
         calendar=None,
+        cell_idx=None,
         num_steps: int | None = None,
         var_type: str | None = None,
         noise_scale: float | None = None,
@@ -429,6 +492,10 @@ class ConditionalDDPM(keras.Model):
             y_compact: Broadcast conditioning, shape (B, y_dim).
             calendar: Per-timestep calendar features (B, T, cond_dim). Required when
                 the model was trained with them (cond_dim > 0); ignored otherwise.
+            cell_idx: Cell-identity index per sample, shape (B,) int. Required when
+                the model was trained with the cell embedding (cell_vocab_size > 0);
+                pass 0 for "unknown cell" (e.g. config-only generation). Ignored
+                otherwise.
             num_steps: Accepted for API symmetry only — full ancestral sampling always
                 runs over all ``num_timesteps`` (DDIM subsampling is a planned follow-up).
             var_type: Posterior-variance choice. ``"small"`` = β̃ (DDPM fixedsmall,
@@ -443,13 +510,20 @@ class ConditionalDDPM(keras.Model):
 
         Raises:
             ValueError: If the model was trained with calendar conditioning but
-                ``calendar`` is not supplied.
+                ``calendar`` is not supplied, or with the cell embedding but
+                ``cell_idx`` is not supplied.
         """
         del num_steps
         if self.cond_dim > 0 and calendar is None:
             raise ValueError(
                 "This model was trained with per-timestep calendar conditioning "
                 f"(cond_dim={self.cond_dim}); pass calendar=(B, {self._seq_len}, {self.cond_dim})."
+            )
+        if self.cell_vocab_size > 0 and cell_idx is None:
+            raise ValueError(
+                "This model was trained with the cell-identity embedding "
+                f"(cell_vocab_size={self.cell_vocab_size}); pass cell_idx=(B,) int "
+                "(use 0 for 'unknown cell' if generating config-only)."
             )
         var_type = var_type if var_type is not None else self._sample_var_type
         noise_scale = noise_scale if noise_scale is not None else self._sample_noise_scale
@@ -459,22 +533,30 @@ class ConditionalDDPM(keras.Model):
 
             torch = get_backend()
             with torch.no_grad():
-                return self._generate_loop(y_compact, var_type, noise_scale, calendar)
-        return self._generate_loop(y_compact, var_type, noise_scale, calendar)
+                return self._generate_loop(y_compact, var_type, noise_scale, calendar, cell_idx)
+        return self._generate_loop(y_compact, var_type, noise_scale, calendar, cell_idx)
 
-    def _generate_loop(self, y_compact, var_type="small", noise_scale=1.0, calendar=None) -> tuple:
+    def _generate_loop(
+        self, y_compact, var_type="small", noise_scale=1.0, calendar=None, cell_idx=None
+    ) -> tuple:
         # Must run grad-free (see generate()): 1000 sequential forward passes
         # through the denoiser would otherwise chain into one giant autograd graph
         # and OOM the GPU well before sampling finishes.
         y_compact = ops.convert_to_tensor(y_compact, dtype="float32")
         if calendar is not None:
             calendar = ops.convert_to_tensor(calendar, dtype="float32")
+        if cell_idx is not None:
+            cell_idx = ops.convert_to_tensor(cell_idx, dtype="int32")
         batch = int(ops.shape(y_compact)[0])
         x = keras.random.normal((batch, self._seq_len, self._feat_dim))
 
         for i in range(self.num_timesteps - 1, -1, -1):
             t = ops.full((batch,), float(i), dtype="float32")
-            den_in = [x, t, y_compact] if calendar is None else [x, t, y_compact, calendar]
+            den_in = [x, t, y_compact]
+            if calendar is not None:
+                den_in.append(calendar)
+            if cell_idx is not None:
+                den_in.append(cell_idx)
             eps_hat = self.denoiser(den_in, training=False)
             beta_i = float(self._betas_np[i])
             alpha_i = float(self._alphas_np[i])
@@ -522,6 +604,8 @@ def build_diffusion(
     learning_rate: float = HP_DIFFUSION["learning_rate"],
     output_clip: bool = HP_DIFFUSION["output_clip"],
     cond_dim: int = 0,
+    cell_vocab_size: int = 0,
+    cell_embed_dim: int = HP_DIFFUSION["cell_embed_dim"],
 ) -> tuple[ConditionalDDPM, keras.Model]:
     """Instantiate and compile the conditional DDPM.
 
@@ -541,6 +625,9 @@ def build_diffusion(
         learning_rate: Adam learning rate (clipnorm=1.0).
         output_clip: Clip samples to [-1, 1] before mapping back to [0, 1].
         cond_dim: Per-timestep calendar channels; 0 disables calendar conditioning.
+        cell_vocab_size: Size of the cell-identity vocabulary (incl. the reserved
+            "unknown" index 0); 0 disables the learned per-cell embedding.
+        cell_embed_dim: Width of the learned per-cell embedding.
 
     Returns:
         Tuple ``(model, denoiser)`` — the compiled ``ConditionalDDPM`` and the inner
@@ -550,7 +637,7 @@ def build_diffusion(
         f"Building diffusion | seq_len={seq_len} feat_dim={feat_dim} y_dim={y_dim} "
         f"num_timesteps={num_timesteps} beta_schedule={beta_schedule} width={width} "
         f"n_blocks={n_blocks} time_embed_dim={time_embed_dim} cond_embed_dim={cond_embed_dim} "
-        f"cond_dim={cond_dim}"
+        f"cond_dim={cond_dim} cell_vocab_size={cell_vocab_size} cell_embed_dim={cell_embed_dim}"
     )
     denoiser = build_denoiser(
         seq_len=seq_len,
@@ -562,6 +649,8 @@ def build_diffusion(
         time_embed_dim=time_embed_dim,
         cond_embed_dim=cond_embed_dim,
         cond_dim=cond_dim,
+        cell_vocab_size=cell_vocab_size,
+        cell_embed_dim=cell_embed_dim,
     )
     model = ConditionalDDPM(
         denoiser=denoiser,
@@ -573,6 +662,7 @@ def build_diffusion(
         beta_end=beta_end,
         output_clip=output_clip,
         cond_dim=cond_dim,
+        cell_vocab_size=cell_vocab_size,
     )
     # EMA is applied via EMACallback (Keras optimizer use_ema does not update through
     # this model's custom torch train_step), so the optimizer here is plain Adam.
@@ -581,11 +671,12 @@ def build_diffusion(
     # denoiser at t=0) so weights can be saved/loaded immediately.
     dummy_x = np.zeros((1, seq_len, feat_dim), dtype=np.float32)
     dummy_y = np.zeros((1, y_dim), dtype=np.float32)
+    dummy_args = [dummy_x, dummy_y]
     if cond_dim > 0:
-        dummy_c = np.zeros((1, seq_len, cond_dim), dtype=np.float32)
-        model([dummy_x, dummy_y, dummy_c], training=False)
-    else:
-        model([dummy_x, dummy_y], training=False)
+        dummy_args.append(np.zeros((1, seq_len, cond_dim), dtype=np.float32))
+    if cell_vocab_size > 0:
+        dummy_args.append(np.zeros((1,), dtype=np.int32))
+    model(dummy_args, training=False)
     logger.info("Diffusion model built and compiled")
     return model, denoiser
 
@@ -625,6 +716,7 @@ class DiffusionEvalCallback(keras.callbacks.Callback):
         n_samples: int = 16,
         n_feat_sample: int = 20,
         calendar_probe: np.ndarray | None = None,
+        cell_idx_probe: int | None = None,
     ):
         super().__init__()
         self._y_probe = np.asarray(y_probe, dtype=np.float32)
@@ -637,6 +729,8 @@ class DiffusionEvalCallback(keras.callbacks.Callback):
         self._calendar_probe = (
             np.asarray(calendar_probe, dtype=np.float32) if calendar_probe is not None else None
         )
+        # cell-identity index for the probe window, or None when the embedding is off
+        self._cell_idx_probe = cell_idx_probe
         self._cached = {"gen_diversity": float("nan"), "gen_ac1": float("nan")}
 
     def _evaluate(self) -> dict:
@@ -645,7 +739,10 @@ class DiffusionEvalCallback(keras.callbacks.Callback):
         cb = None
         if self._calendar_probe is not None:
             cb = np.repeat(self._calendar_probe[:1], self._n_samples, axis=0)
-        xf = self.model.generate(yb, calendar=cb)[0]
+        cell_idx_b = None
+        if self._cell_idx_probe is not None:
+            cell_idx_b = np.full((self._n_samples,), self._cell_idx_probe, dtype=np.int32)
+        xf = self.model.generate(yb, calendar=cb, cell_idx=cell_idx_b)[0]
         xf = xf.detach().cpu().numpy() if hasattr(xf, "detach") else np.asarray(xf)
         rng = np.random.default_rng(0)
         fi = rng.choice(xf.shape[2], min(self._n_feat, xf.shape[2]), replace=False)

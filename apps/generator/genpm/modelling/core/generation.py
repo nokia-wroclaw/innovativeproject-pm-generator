@@ -134,16 +134,35 @@ def _inverse_transform_3d(
     return result.astype(np.float32)
 
 
+def _cell_id_to_idx(cell_encoder, cell_id: str | None) -> int:
+    """Resolve a cell_id to its embedding index (see core/data.py's LabelEncoder
+    convention: known cells are 1..n_cells-1, index 0 = "unknown"). Returns 0 (unknown)
+    when cell_id is None (config-only generation) or wasn't seen during training."""
+    if cell_encoder is None or cell_id is None:
+        return 0
+    try:
+        return int(cell_encoder.transform([str(cell_id)])[0]) + 1
+    except ValueError:
+        return 0
+
+
 def _run_batched_generation(
-    model, y_windows: np.ndarray, batch_size: int, c_windows: np.ndarray | None = None
+    model,
+    y_windows: np.ndarray,
+    batch_size: int,
+    c_windows: np.ndarray | None = None,
+    cell_idx_windows: np.ndarray | None = None,
 ) -> np.ndarray:
     decoded = []
     for start in range(0, len(y_windows), batch_size):
-        yb = y_windows[start : start + batch_size]
+        end = start + batch_size
+        yb = y_windows[start:end]
+        kwargs = {}
         if c_windows is not None:
-            x_syn, _ = model.generate(yb, calendar=c_windows[start : start + batch_size])
-        else:
-            x_syn, _ = model.generate(yb)
+            kwargs["calendar"] = c_windows[start:end]
+        if cell_idx_windows is not None:
+            kwargs["cell_idx"] = cell_idx_windows[start:end]
+        x_syn, _ = model.generate(yb, **kwargs)
         decoded.append(_to_numpy(x_syn))
     return np.concatenate(decoded)
 
@@ -176,9 +195,14 @@ def generate_windows(
 
     Args:
         model: A trained generator exposing ``generate``; ``model.cond_dim`` > 0
-            signals it needs per-timestep calendar features (rebuilt here).
+            signals it needs per-timestep calendar features (rebuilt here), and
+            ``model.cell_vocab_size`` > 0 signals it needs the cell-identity index
+            (resolved here via ``cell_config_map["cell_encoder"]`` — falls back to
+            the "unknown cell" index when ``cell_id`` is None/unseen, i.e. the
+            explicit-``cell_configs`` generation mode).
         config_encoder: Fitted one-hot encoder for config values.
-        cell_config_map: ``{"map": {cell_id: config_values}}`` saved at training time.
+        cell_config_map: ``{"map": {cell_id: config_values}, "cell_encoder": ...}``
+            saved at training time.
         cell_id: Cell to generate for; its configs are looked up unless
             ``cell_configs`` is given. Also labels the output (``cell_id`` column).
         anchor_date: Start date of the first synthetic week.
@@ -237,8 +261,19 @@ def generate_windows(
     if getattr(model, "cond_dim", 0) > 0:
         c_windows = build_calendar_features(anchors_arr, seq_len=model._seq_len)
 
+    # Cell-identity index (only if the model was trained with the embedding) — one
+    # cell/config per call, so the same index repeats across all n_weeks windows.
+    cell_idx_windows = None
+    if getattr(model, "cell_vocab_size", 0) > 0:
+        idx = _cell_id_to_idx(cell_config_map.get("cell_encoder"), cell_id)
+        cell_idx_windows = np.full(n_weeks, idx, dtype=np.int32)
+
     kpi_array = _run_batched_generation(
-        model, y_windows, batch_size=batch_size, c_windows=c_windows
+        model,
+        y_windows,
+        batch_size=batch_size,
+        c_windows=c_windows,
+        cell_idx_windows=cell_idx_windows,
     )
     _, seq_len, n_dim = kpi_array.shape
     kpi_flat = kpi_array.reshape(n_weeks * seq_len, n_dim)
